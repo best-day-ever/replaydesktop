@@ -1,8 +1,8 @@
-# LinuxRemote
+# ReplayDesktop
 
 ## What This Is
 
-LinuxRemote is a prototype-first, high-performance remote desktop system for
+ReplayDesktop is a prototype-first, high-performance remote desktop system for
 controlling a physical Linux X11 desktop from an Apple Silicon Mac. It uses
 Kyber/Kymux as the direct peer-to-peer media and input foundation, with NVIDIA
 capture and NVENC on the host, and prioritizes proving a sharp, responsive

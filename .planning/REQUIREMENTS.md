@@ -259,18 +259,68 @@ Explicit exclusions for the v1 prototype.
 
 ## Traceability
 
-Populated during roadmap creation. Every v1 requirement must map to exactly one
-phase.
+Every v1 requirement maps to exactly one roadmap phase. Deferred v2
+requirements are intentionally excluded.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (Pending roadmap generation) | — | Pending |
+| BASE-01 | Phase 2 | Pending |
+| BASE-02 | Phase 2 | Pending |
+| BASE-03 | Phase 2 | Pending |
+| BASE-04 | Phase 2 | Pending |
+| CONN-01 | Phase 2 | Pending |
+| CONN-02 | Phase 2 | Pending |
+| CONN-03 | Phase 2 | Pending |
+| CONN-04 | Phase 2 | Pending |
+| CONN-05 | Phase 2 | Pending |
+| HOST-01 | Phase 1 | Pending |
+| HOST-02 | Phase 1 | Pending |
+| HOST-03 | Phase 1 | Pending |
+| HOST-04 | Phase 1 | Pending |
+| HOST-05 | Phase 3 | Pending |
+| HOST-06 | Phase 3 | Pending |
+| CODE-01 | Phase 4 | Pending |
+| CODE-02 | Phase 6 | Pending |
+| CODE-03 | Phase 6 | Pending |
+| CODE-04 | Phase 4 | Pending |
+| CODE-05 | Phase 5 | Pending |
+| CODE-06 | Phase 5 | Pending |
+| CODE-07 | Phase 6 | Pending |
+| CODE-08 | Phase 6 | Pending |
+| CODE-09 | Phase 5 | Pending |
+| PERF-01 | Phase 3 | Pending |
+| PERF-02 | Phase 3 | Pending |
+| PERF-03 | Phase 3 | Pending |
+| PERF-04 | Phase 6 | Pending |
+| PERF-05 | Phase 6 | Pending |
+| PERF-06 | Phase 6 | Pending |
+| PERF-07 | Phase 6 | Pending |
+| PERF-08 | Phase 3 | Pending |
+| INPT-01 | Phase 7 | Pending |
+| INPT-02 | Phase 7 | Pending |
+| INPT-03 | Phase 7 | Pending |
+| INPT-04 | Phase 7 | Pending |
+| INPT-05 | Phase 7 | Pending |
+| INPT-06 | Phase 7 | Pending |
+| CLIP-01 | Phase 8 | Pending |
+| CLIP-02 | Phase 8 | Pending |
+| CLIP-03 | Phase 8 | Pending |
+| CLIP-04 | Phase 8 | Pending |
+| CLIP-05 | Phase 8 | Pending |
+| COMP-01 | Phase 2 | Pending |
+| COMP-02 | Phase 9 | Pending |
+| COMP-03 | Phase 9 | Pending |
+| COMP-04 | Phase 9 | Pending |
+| COMP-05 | Phase 9 | Pending |
+| COMP-06 | Phase 9 | Pending |
 
 **Coverage:**
 - v1 requirements: 49 total
-- Mapped to phases: 0
-- Unmapped: 49 ⚠️
+- Mapped to phases: 49
+- Unmapped: 0
+- Duplicate mappings: 0
+- v2 requirements mapped: 0
 
 ---
 *Requirements defined: 2026-07-26*
-*Last updated: 2026-07-26 after initial definition*
+*Last updated: 2026-07-26 after roadmap creation*

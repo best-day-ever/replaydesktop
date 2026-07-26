@@ -1,0 +1,73 @@
+{
+  "ecosystem": "remote-desktop",
+  "config": {
+    "exa_search": false,
+    "brave_search": false,
+    "firecrawl": false,
+    "tavily_search": false
+  },
+  "questions": [
+    {
+      "text": "NVIDIA Video Codec SDK official capability matrix: which Ampere and Ada NVENC generations support HEVC 4:4:4 and AV1 chroma/profile modes, and how must applications query runtime encoder capabilities?",
+      "kind": "docs",
+      "library": "NVIDIA Video Codec SDK",
+      "version": "13.0"
+    },
+    {
+      "text": "NVIDIA official Linux capture and encode documentation: what memory transfers occur between X11/NvFBC/CUDA and NVENC, and how can a purported zero-copy path be proven rather than inferred?",
+      "kind": "web"
+    },
+    {
+      "text": "Apple VideoToolbox official APIs: how can a macOS application require or verify hardware-accelerated video decode for a specific HEVC 4:4:4 or AV1 bitstream at runtime?",
+      "kind": "web"
+    },
+    {
+      "text": "Apple official VideoToolbox codec support and hardware decode documentation for HEVC 4:4:4, AV1, output pixel formats, and Apple Silicon generation differences",
+      "kind": "web"
+    },
+    {
+      "text": "Official QUIC RFC guidance on streams versus DATAGRAM frames, head-of-line blocking, flow control, loss, congestion control, and low-latency media behavior",
+      "kind": "web"
+    },
+    {
+      "text": "Official guidance for measuring end-to-end interactive remote-desktop latency with stage timestamps, clock domains, queue depth, dropped frames, and glass-to-glass validation",
+      "kind": "web"
+    },
+    {
+      "text": "Apple official APIs and permissions for CGEvent taps, Accessibility authorization, keyboard grab limitations, secure input, pointer confinement, and macOS global shortcut interception",
+      "kind": "web"
+    },
+    {
+      "text": "Apple NSPasteboard official documentation for changeCount, ownership, polling, promised data, text and HTML, and preventing bidirectional clipboard echo loops",
+      "kind": "web"
+    },
+    {
+      "text": "Official QUIC TLS requirements and rustls certificate verification guidance relevant to direct IP connections, certificate pinning, test certificates, and default credentials",
+      "kind": "web"
+    },
+    {
+      "text": "Kyber Desktop 0.27.0 official source, release, submodule pins, test certificate/default credential behavior, protocol compatibility, and license details",
+      "kind": "web"
+    },
+    {
+      "text": "GNU AGPLv3 official network interaction Corresponding Source obligations and implications of distributing or modifying a remote desktop server",
+      "kind": "web"
+    },
+    {
+      "text": "Official guidance on Linux binary portability across Arch Ubuntu Rocky: glibc symbol versions, shared libraries, FFmpeg/libVLC, NVIDIA driver ABI and packaging pitfalls",
+      "kind": "web"
+    },
+    {
+      "text": "Apple official macOS beta compatibility, SDK availability checks, deployment targets, deprecated API behavior, and testing guidance for macOS 15 through current macOS 27 beta",
+      "kind": "web"
+    },
+    {
+      "text": "Official X11 capture documentation relevant to multiple monitors, damage regions, compositor effects, refresh synchronization, and 4K60 capture correctness",
+      "kind": "web"
+    },
+    {
+      "text": "Best practices for maintaining a narrow long-lived fork with pinned Git submodules and detecting upstream protocol or dependency drift",
+      "kind": "web"
+    }
+  ]
+}

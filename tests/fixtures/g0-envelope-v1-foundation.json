@@ -1,0 +1,78 @@
+{
+  "schema": "replaydesktop.g0-evidence-envelope",
+  "version": 1,
+  "base": {
+    "schema": "replaydesktop.g0-evidence-base.v1",
+    "provenance": "diagnostic",
+    "run_id": "foundation-fixture-run",
+    "boot_id": "foundation-fixture-boot",
+    "session_id": "foundation-fixture-session",
+    "argv": [
+      "replay-host-doctor",
+      "diagnose",
+      "--fixture",
+      "g0-envelope-v1-foundation.json"
+    ],
+    "executable_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wall_started_unix_ns": 1785100000000000000,
+    "wall_finished_unix_ns": 1785100000001000000,
+    "monotonic_started_ns": 1000000000,
+    "monotonic_finished_ns": 1001000000,
+    "status": "fail",
+    "reasons": [
+      {
+        "extension": "host-foundation.v1",
+        "status": "unproven"
+      },
+      {
+        "extension": "selected-output.v1",
+        "status": "unproven"
+      },
+      {
+        "extension": "nvfbc-capture.v1",
+        "status": "unproven"
+      },
+      {
+        "extension": "nvenc-tuples.v1",
+        "status": "unproven"
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "host-foundation.v1",
+      "version": 1,
+      "status": "unproven",
+      "payload": {},
+      "payload_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "selected-output.v1",
+      "version": 1,
+      "status": "unproven",
+      "payload": {},
+      "payload_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "nvfbc-capture.v1",
+      "version": 1,
+      "status": "unproven",
+      "payload": {},
+      "payload_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "nvenc-tuples.v1",
+      "version": 1,
+      "status": "unproven",
+      "payload": {},
+      "payload_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "future-display-proof.v2",
+      "version": 2,
+      "status": "unproven",
+      "payload": { "future": [1, 2, 3], "note": "preserve me" },
+      "payload_sha256": "d67864bb4b327df080fb23e032ba9b218743b77e480ef39178cf05da1743188c"
+    }
+  ]
+}

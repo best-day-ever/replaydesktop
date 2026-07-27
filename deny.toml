@@ -1,0 +1,112 @@
+# cargo-deny policy reviewed for cargo-deny 0.20.2.
+#
+# The exact package allowlist below intentionally makes any lockfile graph
+# change fail review until DEPENDENCIES.md and this policy are updated together.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.95
+exceptions = []
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "deny"
+external-default-features = "allow"
+allow-workspace = true
+allow = [
+    "bitflags@2.13.1",
+    "block-buffer@0.12.1",
+    "cfg-if@1.0.4",
+    "cpufeatures@0.3.0",
+    "crypto-common@0.2.2",
+    "digest@0.11.3",
+    "errno@0.3.14",
+    "gethostname@1.1.0",
+    "hybrid-array@0.4.13",
+    "itoa@1.0.18",
+    "libc@0.2.189",
+    "libloading@0.9.0",
+    "linux-raw-sys@0.12.1",
+    "memchr@2.8.3",
+    "proc-macro2@1.0.107",
+    "quote@1.0.47",
+    "rustix@1.1.4",
+    "serde@1.0.229",
+    "serde_core@1.0.229",
+    "serde_derive@1.0.229",
+    "serde_json@1.0.151",
+    "sha2@0.11.0",
+    "syn@3.0.3",
+    "typenum@1.20.1",
+    "unicode-ident@1.0.24",
+    "windows-link@0.2.1",
+    "windows-sys@0.61.2",
+    "x11rb@0.14.0",
+    "x11rb-protocol@0.14.0",
+    "zmij@1.0.23",
+]
+deny = []
+skip = []
+skip-tree = []
+
+[[bans.features]]
+crate = "serde@1.0.229"
+allow = ["derive", "serde_derive", "std"]
+exact = true
+
+[[bans.features]]
+crate = "serde_json@1.0.151"
+allow = ["raw_value", "std"]
+exact = true
+
+[[bans.features]]
+crate = "sha2@0.11.0"
+allow = []
+exact = true
+
+[[bans.features]]
+crate = "libloading@0.9.0"
+allow = ["std"]
+exact = true
+
+[[bans.features]]
+crate = "rustix@1.1.4"
+allow = ["alloc", "event", "fs", "net", "process", "std", "system"]
+exact = true
+
+[[bans.features]]
+crate = "x11rb@0.14.0"
+allow = ["randr", "render"]
+exact = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

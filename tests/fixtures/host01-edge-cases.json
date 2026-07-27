@@ -1,0 +1,134 @@
+{
+  "schema": "replaydesktop.host01-diagnostic-fixtures.v1",
+  "cases": [
+    {
+      "id": "positive",
+      "behavior": "normal",
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-positive" },
+        { "probe": "selected-output", "available": true, "code": "fixture-positive" },
+        { "probe": "nvfbc-capture", "available": true, "code": "fixture-positive" },
+        { "probe": "nvenc-tuples", "available": true, "code": "fixture-positive" }
+      ]
+    },
+    {
+      "id": "empty",
+      "behavior": "normal",
+      "observations": []
+    },
+    {
+      "id": "permuted",
+      "behavior": "normal",
+      "observations": [
+        { "probe": "nvenc-tuples", "available": false, "code": "fixture-permuted" },
+        { "probe": "host-foundation", "available": false, "code": "fixture-permuted" },
+        { "probe": "nvfbc-capture", "available": false, "code": "fixture-permuted" },
+        { "probe": "selected-output", "available": false, "code": "fixture-permuted" }
+      ]
+    },
+    {
+      "id": "duplicate-observations",
+      "behavior": "normal",
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-first" },
+        { "probe": "host-foundation", "available": true, "code": "fixture-duplicate" }
+      ]
+    },
+    {
+      "id": "timeout",
+      "behavior": "timeout",
+      "observations": []
+    },
+    {
+      "id": "malformed-response",
+      "behavior": "malformed-response",
+      "observations": []
+    },
+    {
+      "id": "oversize-output",
+      "behavior": "oversize-output",
+      "observations": []
+    },
+    {
+      "id": "oversize-stderr",
+      "behavior": "oversize-stderr",
+      "observations": []
+    },
+    {
+      "id": "child-crash",
+      "behavior": "child-crash",
+      "observations": []
+    },
+    {
+      "id": "duplicate-response",
+      "behavior": "duplicate-response",
+      "observations": []
+    },
+    {
+      "id": "injected-pass",
+      "behavior": "injected-authority",
+      "authority": { "status": "pass" },
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-injected" }
+      ]
+    },
+    {
+      "id": "injected-currentness",
+      "behavior": "injected-authority",
+      "authority": { "current": true, "wall_finished_unix_ns": 9999999999999999999 },
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-injected" }
+      ]
+    },
+    {
+      "id": "injected-digest",
+      "behavior": "injected-authority",
+      "authority": {
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-injected" }
+      ]
+    },
+    {
+      "id": "injected-run-id",
+      "behavior": "injected-authority",
+      "authority": { "run_id": "fixture-owned-run" },
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-injected" }
+      ]
+    },
+    {
+      "id": "stale-cache",
+      "behavior": "injected-authority",
+      "authority": { "cached": true, "boot_id": "stale-boot" },
+      "observations": [
+        { "probe": "host-foundation", "available": true, "code": "fixture-stale" }
+      ]
+    },
+    {
+      "id": "unicode",
+      "behavior": "normal",
+      "observations": [
+        { "probe": "host-foundation", "available": false, "code": "diagnostic-雪-🛰" }
+      ]
+    },
+    {
+      "id": "secret-sentinel",
+      "behavior": "secret-sentinel",
+      "observations": []
+    },
+    {
+      "id": "path-sentinel",
+      "behavior": "stderr-sentinel",
+      "sentinel": "/private/operator/diagnostic/native-driver-secret-path",
+      "observations": []
+    },
+    {
+      "id": "native-error-sentinel",
+      "behavior": "stderr-sentinel",
+      "sentinel": "NVML_PRIVATE_NATIVE_ERROR_0xDEADBEEF",
+      "observations": []
+    }
+  ]
+}

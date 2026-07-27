@@ -18,6 +18,10 @@ pub use model::{
     DecodedG0Evidence, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
     decode_g0_evidence,
 };
+pub use native_nvml::{
+    LiveUnavailableNvmlProvider, NativeNvmlProvider, NvmlDeviceObservationV1, NvmlEvidenceV1,
+    NvmlObservationV1, NvmlProvider, NvmlRuntimeFailureV1, NvmlSourceFailureV1,
+};
 pub use probe::{BoundedProbeRunner, FixtureProbeBackend, LiveProbeBackend, ProbeBackend, ProbeId};
 
 use cli::{DoctorOutput, public_usage};

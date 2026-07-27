@@ -214,7 +214,8 @@ impl BoundedProbeRunner {
             .checked_add(self.timeout)
             .ok_or(ProbeFailure::Timeout)?;
 
-        let mut child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .arg("__probe-worker")
             .arg("--request-json")
             .arg(request_json)
@@ -222,9 +223,13 @@ impl BoundedProbeRunner {
             .env("REPLAY_HOST_DOCTOR_WORKER", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| ProbeFailure::Spawn)?;
+            .stderr(Stdio::piped());
+        if matches!(request.source, ProbeSourceV1::Live)
+            && let Some(root) = std::env::var_os("REPLAY_NVML_SDK_ROOT")
+        {
+            command.env("REPLAY_NVML_SDK_ROOT", root);
+        }
+        let mut child = command.spawn().map_err(|_| ProbeFailure::Spawn)?;
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
             None => {

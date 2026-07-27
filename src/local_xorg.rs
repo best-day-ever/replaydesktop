@@ -55,6 +55,8 @@ pub struct HostFoundationObservationV1 {
     pub accessible_render_node_count: u32,
     pub connected_drm_connector_count: u32,
     pub nvidia_kernel_version: Option<String>,
+    #[serde(default)]
+    pub nvml: crate::native_nvml::NvmlObservationV1,
 }
 
 impl HostFoundationObservationV1 {
@@ -77,7 +79,7 @@ impl HostFoundationObservationV1 {
         {
             return false;
         }
-        true
+        self.nvml.is_valid()
     }
 }
 
@@ -127,7 +129,7 @@ pub struct HostFoundationEvidenceV1 {
     pub render_access: FoundationCheckEvidenceV1,
     pub physical_output: FoundationCheckEvidenceV1,
     pub nvidia_kernel_version: Option<String>,
-    pub nvml: FoundationCheckEvidenceV1,
+    pub nvml: crate::native_nvml::NvmlEvidenceV1,
     pub selected_output_correlation: FoundationCheckEvidenceV1,
     pub reasons: Vec<HostFoundationReasonV1>,
 }
@@ -135,8 +137,11 @@ pub struct HostFoundationEvidenceV1 {
 impl HostFoundationEvidenceV1 {
     pub fn has_failure(&self) -> bool {
         self.reasons.iter().any(|reason| {
-            reason.code != "NVML_SOURCE_UNAVAILABLE"
-                && reason.code != "SELECTED_OUTPUT_CORRELATION_UNPROVEN"
+            if reason.code == "NVML_SOURCE_UNAVAILABLE" {
+                self.nvml.status == crate::native_nvml::NvmlEvidenceStatusV1::Fail
+            } else {
+                reason.code != "SELECTED_OUTPUT_CORRELATION_UNPROVEN"
+            }
         })
     }
 }
@@ -184,10 +189,15 @@ pub fn evaluate_host_foundation(
             "Connect and enable a physical DRM output before rerunning the doctor.",
         ));
     }
-    reasons.push(reason(
-        "NVML_SOURCE_UNAVAILABLE",
-        "Provide an operator-controlled official nvml.h source root before NVML admission.",
-    ));
+    let nvml = crate::native_nvml::evaluate_nvml(
+        &observation.nvml,
+        observation.nvidia_kernel_version.as_deref(),
+    );
+    reasons.extend(
+        nvml.reasons
+            .iter()
+            .map(|entry| reason(&entry.code, &entry.remediation)),
+    );
     reasons.push(reason(
         "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
         "Select and correlate one physical X11 output in the owning later gate.",
@@ -209,10 +219,7 @@ pub fn evaluate_host_foundation(
             observation.connected_drm_connector_count,
         ),
         nvidia_kernel_version: observation.nvidia_kernel_version.clone(),
-        nvml: FoundationCheckEvidenceV1 {
-            status: FoundationCheckStatusV1::Unproven,
-            observed: 0,
-        },
+        nvml,
         selected_output_correlation: FoundationCheckEvidenceV1 {
             status: FoundationCheckStatusV1::Unproven,
             observed: 0,
@@ -305,6 +312,7 @@ fn reason(code: &str, remediation: &str) -> HostFoundationReasonV1 {
 pub fn observe_live_host_foundation() -> HostFoundationObservationV1 {
     let mut observation = empty_observation();
     collect_device_facts(&mut observation);
+    observation.nvml = crate::native_nvml::observe_live_nvml();
     let sessions = collect_sessions();
     observation.session_candidate_count = u32::try_from(sessions.len()).unwrap_or(u32::MAX);
     if sessions.len() != 1 {
@@ -417,6 +425,7 @@ fn empty_observation() -> HostFoundationObservationV1 {
         accessible_render_node_count: 0,
         connected_drm_connector_count: 0,
         nvidia_kernel_version: None,
+        nvml: crate::native_nvml::NvmlObservationV1::default(),
     }
 }
 

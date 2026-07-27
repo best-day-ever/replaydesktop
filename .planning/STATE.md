@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-07-27T00:33:37.801Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-07-27T01:11:20.750Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-07-27 — Phase 01 execution started
 
-Progress: [█░░░░░░░░░] 10%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [█░░░░░░░░░] 10%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 33 min | 3 tasks | 10 files |
+| Phase 01 P02 | 29 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 01]: Require all four known G0 records and derive overall status/reasons from their ordered terminal states.
 - [Phase 01]: Use one sha2-backed 32-byte lowercase SHA-256 identity contract for bytes, readers, and files.
 - [Phase 01]: Deny dependency drift with exact locked-package and direct-feature allowlists.
+- [Phase 01]: Keep run identity, provenance, currentness, extension status, and G0 verdict exclusively parent-owned; workers return nonce-bound primitive observations only.
+- [Phase 01]: Fixture observations traverse production evaluation and persistence but remain diagnostic FAIL/UNPROVEN regardless of supplied positives.
+- [Phase 01]: Accept evidence only after mode-0600 atomic persistence, strict V1 decoding, byte-identical exact-run readback, and current boot/session/binary/time verification.
 
 ### Pending Todos
 
@@ -94,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-27T00:33:37.791Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-07-27T01:10:45.642Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None

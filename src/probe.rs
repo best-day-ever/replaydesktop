@@ -208,6 +208,9 @@ impl BoundedProbeRunner {
         if request_json.len() > MAX_REQUEST_BYTES {
             return Err(ProbeFailure::ProtocolMismatch);
         }
+        let deadline = Instant::now()
+            .checked_add(self.timeout)
+            .ok_or(ProbeFailure::Timeout)?;
 
         let mut child = Command::new(&self.executable)
             .arg("__probe-worker")
@@ -220,14 +223,23 @@ impl BoundedProbeRunner {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| ProbeFailure::Spawn)?;
-        let stdout = child.stdout.take().ok_or(ProbeFailure::Spawn)?;
-        let stderr = child.stderr.take().ok_or(ProbeFailure::Spawn)?;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                terminate_and_reap(&mut child);
+                return Err(ProbeFailure::Spawn);
+            }
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                terminate_and_reap(&mut child);
+                return Err(ProbeFailure::Spawn);
+            }
+        };
         let stdout_reader = read_stream(stdout, self.stdout_limit);
         let stderr_reader = read_stream(stderr, self.stderr_limit);
 
-        let deadline = Instant::now()
-            .checked_add(self.timeout)
-            .ok_or(ProbeFailure::Timeout)?;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(_)) => {
@@ -235,15 +247,13 @@ impl BoundedProbeRunner {
                 }
                 Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
                 Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_and_reap(&mut child);
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
                     return Err(ProbeFailure::Timeout);
                 }
                 Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_and_reap(&mut child);
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
                     return Err(ProbeFailure::AbnormalExit);
@@ -310,6 +320,11 @@ impl BoundedProbeRunner {
 struct StreamCapture {
     bytes: Vec<u8>,
     overflowed: bool,
+}
+
+fn terminate_and_reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn read_stream<R>(mut reader: R, limit: usize) -> thread::JoinHandle<StreamCapture>

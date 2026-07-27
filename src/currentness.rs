@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_AGE_NS: u64 = 5 * 60 * 1_000_000_000;
 const DEFAULT_MAX_FUTURE_SKEW_NS: u64 = 5 * 1_000_000_000;
-const DEFAULT_MAX_RUN_DURATION_NS: u64 = 60 * 1_000_000_000;
+const DEFAULT_MAX_RUN_DURATION_NS: u64 = 5 * 60 * 1_000_000_000;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RunIdentityV1 {
@@ -296,5 +296,12 @@ mod tests {
         assert_eq!(parse_decimal_seconds_ns("7"), Some(7_000_000_000));
         assert_eq!(parse_decimal_seconds_ns("1.0000000000"), None);
         assert_eq!(parse_decimal_seconds_ns("bad"), None);
+    }
+
+    #[test]
+    fn currentness_default_duration_contains_four_maximum_probe_deadlines() {
+        let policy = CurrentnessPolicy::default();
+        assert!(policy.max_run_duration_ns >= 4 * 60 * 1_000_000_000);
+        assert!(policy.max_run_duration_ns <= policy.max_age_ns);
     }
 }

@@ -24,7 +24,7 @@ last_updated: 2026-07-27T08:22:29.832Z
 | 7 | 01 | deviation | src/native_nvml.rs |  | Retained the exact loaded NVML userspace version when initialization fails so live kernel/userspace mismatch evidence remains complete | fixed |  | 2026-07-27T07:47:42.911Z | 2026-07-27T07:47:43.071Z |
 | 8 | 01 | deviation | src/archive.rs |  | Accepted Cargo-style hard-linked executable descriptors while retaining single-link evidence input and descriptor-only copying | fixed |  | 2026-07-27T07:47:42.986Z | 2026-07-27T07:47:43.146Z |
 | 9 | 01 | deviation | tests/host_doctor_cli.rs | 112 | Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed. | fixed |  | 2026-07-27T08:22:00.694Z | 2026-07-27T08:22:29.832Z |
-| 10 | 01 | deviation | tests/host_doctor_cli.rs | 655 | Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed. | open |  | 2026-07-27T08:22:24.528Z |  |
+| 10 | 01 | deviation | tests/host_doctor_cli.rs | 655 | Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed. | fixed |  | 2026-07-27T08:22:24.528Z | 2026-07-27T08:45:40.172Z |
 
 ````json
 [
@@ -47,10 +47,10 @@ last_updated: 2026-07-27T08:22:29.832Z
     "file": "deny.toml",
     "line": null,
     "description": "cargo-deny 0.20.2 conditional policy check was not run because the pinned executable is unavailable",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-07-27T00:31:18.358Z",
-    "resolved_at": null
+    "resolved_at": "2026-07-27T08:45:40.172Z"
   },
   {
     "id": 3,

@@ -205,13 +205,16 @@ None in files created or modified by this plan. Live output collection and G0
 selected-output evidence are explicit Plan 01-06 scope, not incomplete code in
 the pure Plan 01-05 contract.
 
-## Deferred Issues
+## Post-Wave Issue Resolution
 
 - The extra default-parallel full-suite run intermittently hit Linux
   `ETXTBSY` in the pre-existing
   `archive_archived_binary_tamper_and_path_escape_fail_closed` test. The exact
   test passed immediately in isolation and all 86 tests passed serially.
-  Archive code and tests were unchanged. The archive-test harness race is
+  Post-wave commit `164c365` fixed the test-harness race by serializing copied
+  executable creation through the child `exec` handshake. The exact test then
+  passed 10 consecutive runs, the parallel archive cluster passed 20 runs, and
+  the default-parallel 86-test suite passed three times. The resolution is
   recorded in `deferred-items.md` and `.planning/WINDOWS.md` entry 10.
 
 ## Validation Results
@@ -263,5 +266,5 @@ remediated; fixture success cannot substitute for that live proof.
   pass the documented verification gates.
 - The generic V1 decoder, local-Xorg collector, native NVML provider, and
   archive verifier are unchanged by Plan 01-05.
-- The one out-of-scope parallel-test race is recorded in both the phase
-  deferred-items file and `.planning/WINDOWS.md`.
+- The one out-of-scope parallel-test race is resolved and recorded in both the
+  phase deferred-items file and `.planning/WINDOWS.md`.

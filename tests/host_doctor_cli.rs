@@ -17,6 +17,10 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host01-edge-cases.json")
 }
 
+fn session_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host01-session-spoofing.json")
+}
+
 fn temp_dir(label: &str) -> PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let timestamp = SystemTime::now()
@@ -32,11 +36,20 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn diagnose(case: &str, evidence: &Path, timeout_ms: u64) -> Output {
+    diagnose_with_fixture(&fixture(), case, evidence, timeout_ms)
+}
+
+fn diagnose_with_fixture(
+    fixture_path: &Path,
+    case: &str,
+    evidence: &Path,
+    timeout_ms: u64,
+) -> Output {
     Command::new(binary())
         .args([
             "diagnose",
             "--fixture",
-            fixture().to_str().expect("fixture path must be UTF-8"),
+            fixture_path.to_str().expect("fixture path must be UTF-8"),
             "--fixture-case",
             case,
             "--evidence",
@@ -509,5 +522,153 @@ fn currentness_repeated_diagnostic_runs_have_unique_parent_identities() {
         .output()
         .expect("verify process must launch");
     assert_eq!(verify_old.status.code(), Some(74));
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+fn host_foundation_payload(envelope: &replay_host_doctor::G0EvidenceEnvelopeV1) -> Value {
+    let extension = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == "host-foundation.v1")
+        .expect("host-foundation.v1 must exist");
+    serde_json::from_str(extension.payload.get()).expect("host-foundation payload must be JSON")
+}
+
+#[test]
+fn local_xorg_joined_predicate_accepts_only_the_complete_shape() {
+    let cases = [
+        ("local-xorg-shaped", "pass", None),
+        ("fake-environment-only", "fail", Some("SESSION_NOT_XORG")),
+        ("remote-session", "fail", Some("SESSION_REMOTE")),
+        ("tcp-transport", "fail", Some("X11_TRANSPORT_NOT_UNIX")),
+        ("wrong-peer", "fail", Some("X11_PEER_CREDENTIALS_INVALID")),
+        ("xwayland-peer", "fail", Some("X11_PEER_NOT_XORG")),
+        ("nested-xephyr-peer", "fail", Some("X11_PEER_NOT_XORG")),
+        ("malformed-randr", "fail", Some("XRANDR_QUERY_FAILED")),
+    ];
+
+    for (case, local_xorg_status, local_xorg_reason) in cases {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_with_fixture(&session_fixture(), case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        assert_eq!(envelope.base.status, G0GateStatusV1::Fail, "case {case}");
+        let foundation = envelope
+            .extensions
+            .iter()
+            .find(|extension| extension.id == "host-foundation.v1")
+            .expect("host-foundation extension");
+        assert_eq!(
+            foundation.status,
+            if local_xorg_status == "pass" {
+                G0ExtensionStatusV1::Unproven
+            } else {
+                G0ExtensionStatusV1::Fail
+            },
+            "case {case}"
+        );
+        let payload = host_foundation_payload(&envelope);
+        assert_eq!(
+            payload["schema"], "replaydesktop.host-foundation.v1",
+            "case {case}"
+        );
+        assert_eq!(
+            payload["local_xorg"]["status"], local_xorg_status,
+            "case {case}"
+        );
+        match local_xorg_reason {
+            Some(reason) => assert_eq!(
+                payload["local_xorg"]["reason"]["code"], reason,
+                "case {case}"
+            ),
+            None => assert!(payload["local_xorg"]["reason"].is_null(), "case {case}"),
+        }
+        assert_eq!(payload["nvml"]["status"], "unproven", "case {case}");
+        assert_eq!(
+            payload["selected_output_correlation"]["status"], "unproven",
+            "case {case}"
+        );
+        assert!(
+            envelope.extensions[1..]
+                .iter()
+                .all(|extension| extension.status == G0ExtensionStatusV1::Unproven),
+            "case {case}"
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host01_source_neutral_device_failures_are_stable_and_actionable() {
+    for (case, reason) in [
+        ("missing-uinput", "UINPUT_ACCESS_REQUIRED"),
+        ("missing-render", "DRM_RENDER_ACCESS_REQUIRED"),
+        ("missing-physical-output", "PHYSICAL_OUTPUT_REQUIRED"),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_with_fixture(&session_fixture(), case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        let foundation = envelope
+            .extensions
+            .iter()
+            .find(|extension| extension.id == "host-foundation.v1")
+            .expect("host-foundation extension");
+        assert_eq!(foundation.status, G0ExtensionStatusV1::Fail, "case {case}");
+        let payload = host_foundation_payload(&envelope);
+        assert_eq!(payload["local_xorg"]["status"], "pass", "case {case}");
+        assert!(
+            payload["reasons"]
+                .as_array()
+                .expect("reasons array")
+                .iter()
+                .any(|entry| entry["code"] == reason
+                    && entry["remediation"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())),
+            "case {case}"
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn bounded_probe_session_clears_environment_only_xorg_claims() {
+    let directory = temp_dir("session-environment");
+    let evidence = directory.join("evidence.json");
+    let display_sentinel = "remote.example.invalid:123";
+    let output = Command::new(binary())
+        .args([
+            "run",
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            "1000",
+        ])
+        .env("DISPLAY", display_sentinel)
+        .env("XDG_SESSION_TYPE", "x11")
+        .output()
+        .expect("doctor process must launch");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope = read_envelope(&evidence);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    let foundation = host_foundation_payload(&envelope);
+    assert_eq!(foundation["schema"], "replaydesktop.host-foundation.v1");
+    assert!(matches!(
+        foundation["local_xorg"]["status"].as_str(),
+        Some("fail" | "unproven")
+    ));
+    let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+    assert!(!persisted.contains(display_sentinel));
+    assert!(!persisted.contains("XDG_SESSION_TYPE"));
+    assert!(
+        envelope
+            .extensions
+            .iter()
+            .skip(1)
+            .all(|extension| extension.status == G0ExtensionStatusV1::Unproven)
+    );
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }

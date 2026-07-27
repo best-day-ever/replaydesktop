@@ -117,6 +117,7 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
         DoctorCommand::VerifyEvidence { evidence, run_id } => {
             let store = JsonFileEvidenceStore::new(evidence);
             let envelope = store.read_exact(run_id)?;
+            validate_known_extensions(&envelope)?;
             verify_current_run(&envelope, run_id, &CurrentnessPolicy::default())
                 .map_err(|_| DoctorError::Persistence)?;
             let value = serde_json::json!({
@@ -169,6 +170,7 @@ fn execute_fresh_run(
     let run_id = envelope.base.run_id.clone();
     let store = JsonFileEvidenceStore::new(evidence_path);
     let readback = store.persist_and_readback(&envelope)?;
+    validate_known_extensions(&readback)?;
     verify_current_run(&readback, &run_id, &CurrentnessPolicy::default())
         .map_err(|_| DoctorError::Persistence)?;
 
@@ -202,6 +204,17 @@ fn execute_fresh_run(
         ),
         stderr: String::new(),
     })
+}
+
+fn validate_known_extensions(envelope: &G0EvidenceEnvelopeV1) -> Result<(), DoctorError> {
+    let foundation = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == HOST_FOUNDATION_EXTENSION_ID)
+        .ok_or(DoctorError::Persistence)?;
+    local_xorg::validate_host_foundation_record(foundation)
+        .then_some(())
+        .ok_or(DoctorError::Persistence)
 }
 
 #[derive(Debug)]

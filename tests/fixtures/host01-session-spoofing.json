@@ -388,6 +388,618 @@
           }
         }
       ]
+    },
+    {
+      "id": "multiple-sessions",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 2,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "inactive-session",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": false,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "missing-peer-credentials",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": false,
+            "peer_uid_matches": false,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "xnest-peer",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xnest",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "xvnc-peer",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xvnc",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "xdummy-peer",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xdummy",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "malformed-setup",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": false,
+            "x11_protocol_major": null,
+            "x11_root_count": 0,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-source-unavailable",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": null,
+              "source_sha256": null,
+              "abi_verified": false,
+              "source_failure": "unavailable",
+              "runtime": {
+                "loaded": false,
+                "initialized": false,
+                "userspace_driver_version": null,
+                "devices": [],
+                "shutdown_attempted": false,
+                "shutdown_succeeded": false,
+                "failure": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-abi-mismatch",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": false,
+              "source_failure": "abi-mismatch",
+              "runtime": {
+                "loaded": false,
+                "initialized": false,
+                "userspace_driver_version": null,
+                "devices": [],
+                "shutdown_attempted": false,
+                "shutdown_succeeded": false,
+                "failure": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-symbol-missing",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": false,
+                "initialized": false,
+                "userspace_driver_version": null,
+                "devices": [],
+                "shutdown_attempted": false,
+                "shutdown_succeeded": false,
+                "failure": "symbol-missing"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-init-failed",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": true,
+                "initialized": false,
+                "userspace_driver_version": null,
+                "devices": [],
+                "shutdown_attempted": false,
+                "shutdown_succeeded": false,
+                "failure": "initialize"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-zero-devices",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": true,
+                "initialized": true,
+                "userspace_driver_version": "610.43.02",
+                "devices": [],
+                "shutdown_attempted": true,
+                "shutdown_succeeded": true,
+                "failure": "zero-devices"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-shutdown-failed",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": true,
+                "initialized": true,
+                "userspace_driver_version": "610.43.02",
+                "devices": [
+                  {
+                    "uuid": "GPU-2f5f4db7-b156-4c8d-8d2a-b74904c3f861",
+                    "pci_bdf": "00000000:01:00.0"
+                  }
+                ],
+                "shutdown_attempted": true,
+                "shutdown_succeeded": false,
+                "failure": "shutdown"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nvml-complete-matching",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": true,
+            "display_number": 0,
+            "transport_unix": true,
+            "peer_credentials_available": true,
+            "peer_uid_matches": true,
+            "peer_executable": "xorg",
+            "x11_setup_succeeded": true,
+            "x11_protocol_major": 11,
+            "x11_root_count": 1,
+            "randr_succeeded": true,
+            "randr_provider_count": 1,
+            "randr_output_count": 2,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": true,
+                "initialized": true,
+                "userspace_driver_version": "610.43.02",
+                "devices": [
+                  {
+                    "uuid": "GPU-2f5f4db7-b156-4c8d-8d2a-b74904c3f861",
+                    "pci_bdf": "00000000:01:00.0"
+                  }
+                ],
+                "shutdown_attempted": true,
+                "shutdown_succeeded": true,
+                "failure": null
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -242,6 +242,105 @@ pub struct NvmlEvidenceV1 {
     pub reasons: Vec<NvmlReasonV1>,
 }
 
+impl NvmlEvidenceV1 {
+    pub(crate) fn is_valid(&self) -> bool {
+        if self.device_count as usize != self.devices.len()
+            || self.devices.len() > MAX_NVML_DEVICES as usize
+            || self
+                .kernel_driver_version
+                .as_deref()
+                .is_some_and(|version| !valid_version(version))
+            || self
+                .userspace_driver_version
+                .as_deref()
+                .is_some_and(|version| !valid_version(version))
+            || self.shutdown_succeeded && !self.shutdown_attempted
+            || self.initialized && !self.runtime_loaded
+            || self.shutdown_attempted && !self.initialized
+        {
+            return false;
+        }
+        let mut uuids = HashSet::new();
+        let mut pci_ids = HashSet::new();
+        if self.devices.iter().any(|device| {
+            !valid_uuid(&device.uuid)
+                || !valid_pci_bdf(&device.pci_bdf)
+                || !uuids.insert(device.uuid.as_str())
+                || !pci_ids.insert(device.pci_bdf.as_str())
+        }) {
+            return false;
+        }
+        match (
+            self.source_identity.as_deref(),
+            self.source_sha256,
+            compiled_source_metadata(),
+        ) {
+            (None, None, _) => {}
+            (Some(identity), Some(digest), Some(compiled))
+                if identity == compiled.identity && digest == compiled.sha256 => {}
+            _ => return false,
+        }
+        let allowed = allowed_nvml_reasons();
+        let mut reason_codes = HashSet::new();
+        if self
+            .reasons
+            .iter()
+            .any(|reason| !allowed.contains(reason) || !reason_codes.insert(reason.code.as_str()))
+        {
+            return false;
+        }
+
+        let complete_runtime = self.abi_verified
+            && self.runtime_loaded
+            && self.initialized
+            && self.device_count > 0
+            && self.shutdown_attempted
+            && self.shutdown_succeeded
+            && self.kernel_driver_version.is_some()
+            && self.userspace_driver_version.is_some();
+        match self.status {
+            NvmlEvidenceStatusV1::Pass => {
+                self.reasons.is_empty()
+                    && complete_runtime
+                    && self.source_identity.is_some()
+                    && self.source_sha256.is_some()
+                    && self.kernel_driver_version == self.userspace_driver_version
+            }
+            NvmlEvidenceStatusV1::Fail => {
+                if self.reasons.is_empty() {
+                    return false;
+                }
+                let mismatch = self.kernel_driver_version.is_some()
+                    && self.userspace_driver_version.is_some()
+                    && self.kernel_driver_version != self.userspace_driver_version;
+                mismatch
+                    == self
+                        .reasons
+                        .iter()
+                        .any(|reason| reason.code == "NVIDIA_VERSION_MISMATCH")
+                    && (self.shutdown_succeeded
+                        || self
+                            .reasons
+                            .iter()
+                            .any(|reason| reason.code == "NVML_SHUTDOWN_FAILED")
+                        || !self.initialized)
+            }
+            NvmlEvidenceStatusV1::Unproven => {
+                !self.abi_verified
+                    && !self.runtime_loaded
+                    && !self.initialized
+                    && self.source_identity.is_none()
+                    && self.source_sha256.is_none()
+                    && self.device_count == 0
+                    && !self.shutdown_attempted
+                    && !self.shutdown_succeeded
+                    && self.reasons.len() == 1
+                    && self.reasons[0].code == "NVML_SOURCE_UNAVAILABLE"
+            }
+        }
+    }
+}
+
 pub trait NvmlProvider {
     fn observe(&self) -> NvmlObservationV1;
 }
@@ -451,6 +550,51 @@ fn nvml_reason(code: &str, remediation: &str) -> NvmlReasonV1 {
         code: code.to_owned(),
         remediation: remediation.to_owned(),
     }
+}
+
+fn allowed_nvml_reasons() -> Vec<NvmlReasonV1> {
+    let mut reasons = vec![
+        nvml_reason(
+            "NVML_SOURCE_UNAVAILABLE",
+            "Provide an operator-controlled official nvml.h source root before NVML admission.",
+        ),
+        nvml_reason(
+            "NVIDIA_VERSION_MISMATCH",
+            "Boot a kernel and NVIDIA userspace from the same exact driver release, then rerun the doctor.",
+        ),
+        nvml_reason(
+            "NVIDIA_KERNEL_VERSION_UNAVAILABLE",
+            "Load the matching NVIDIA kernel module before rerunning the doctor.",
+        ),
+    ];
+    reasons.extend(
+        [
+            NvmlSourceFailureV1::Unavailable,
+            NvmlSourceFailureV1::Ambiguous,
+            NvmlSourceFailureV1::DigestMismatch,
+            NvmlSourceFailureV1::AbiMismatch,
+        ]
+        .into_iter()
+        .map(source_failure_reason),
+    );
+    reasons.extend(
+        [
+            NvmlRuntimeFailureV1::LibraryLoad,
+            NvmlRuntimeFailureV1::SymbolMissing,
+            NvmlRuntimeFailureV1::Initialize,
+            NvmlRuntimeFailureV1::DriverVersion,
+            NvmlRuntimeFailureV1::DeviceCount,
+            NvmlRuntimeFailureV1::ZeroDevices,
+            NvmlRuntimeFailureV1::DeviceHandle,
+            NvmlRuntimeFailureV1::DeviceUuid,
+            NvmlRuntimeFailureV1::DevicePci,
+            NvmlRuntimeFailureV1::DeviceIdentity,
+            NvmlRuntimeFailureV1::Shutdown,
+        ]
+        .into_iter()
+        .map(runtime_failure_reason),
+    );
+    reasons
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -144,6 +144,213 @@ impl HostFoundationEvidenceV1 {
             }
         })
     }
+
+    fn is_valid(&self) -> bool {
+        if self.schema != HOST_FOUNDATION_EVIDENCE_SCHEMA_V1
+            || !valid_local_xorg_evidence(&self.local_xorg)
+            || !valid_foundation_check(&self.uinput, Some(1))
+            || !valid_foundation_check(&self.render_access, None)
+            || !valid_foundation_check(&self.physical_output, None)
+            || self
+                .nvidia_kernel_version
+                .as_deref()
+                .is_some_and(|version| !valid_driver_version(version))
+            || self.nvidia_kernel_version != self.nvml.kernel_driver_version
+            || !self.nvml.is_valid()
+            || self.selected_output_correlation.status != FoundationCheckStatusV1::Unproven
+            || self.selected_output_correlation.observed != 0
+        {
+            return false;
+        }
+
+        let mut expected_reasons = self.local_xorg.reason.iter().cloned().collect::<Vec<_>>();
+        if self.uinput.status == FoundationCheckStatusV1::Fail {
+            expected_reasons.push(reason(
+                "UINPUT_ACCESS_REQUIRED",
+                "Grant the invoking user read/write access to /dev/uinput, then rerun the doctor.",
+            ));
+        }
+        if self.render_access.status == FoundationCheckStatusV1::Fail {
+            expected_reasons.push(reason(
+                "DRM_RENDER_ACCESS_REQUIRED",
+                "Grant the invoking user access to at least one DRM render node, then rerun the doctor.",
+            ));
+        }
+        if self.physical_output.status == FoundationCheckStatusV1::Fail {
+            expected_reasons.push(reason(
+                "PHYSICAL_OUTPUT_REQUIRED",
+                "Connect and enable a physical DRM output before rerunning the doctor.",
+            ));
+        }
+        expected_reasons.extend(
+            self.nvml
+                .reasons
+                .iter()
+                .map(|entry| reason(&entry.code, &entry.remediation)),
+        );
+        expected_reasons.push(reason(
+            "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
+            "Select and correlate one physical X11 output in the owning later gate.",
+        ));
+        self.reasons == expected_reasons
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "worker_status", rename_all = "lowercase", deny_unknown_fields)]
+enum HostFoundationFallbackPayloadV1 {
+    Observed {
+        schema: String,
+        probe: String,
+        admission: String,
+        primitive_available: bool,
+        observation_class: String,
+    },
+    Rejected {
+        schema: String,
+        probe: String,
+        admission: String,
+        reason: String,
+    },
+}
+
+pub(crate) fn validate_host_foundation_record(record: &crate::model::G0ExtensionRecordV1) -> bool {
+    use crate::model::G0ExtensionStatusV1;
+
+    if record.version != 1 {
+        return false;
+    }
+    if let Ok(evidence) = serde_json::from_str::<HostFoundationEvidenceV1>(record.payload.get()) {
+        let expected_status = if evidence.has_failure() {
+            G0ExtensionStatusV1::Fail
+        } else {
+            G0ExtensionStatusV1::Unproven
+        };
+        return evidence.is_valid() && record.status == expected_status;
+    }
+
+    if record.status != G0ExtensionStatusV1::Unproven {
+        return false;
+    }
+    let Ok(payload) = serde_json::from_str::<HostFoundationFallbackPayloadV1>(record.payload.get())
+    else {
+        return false;
+    };
+    match payload {
+        HostFoundationFallbackPayloadV1::Observed {
+            schema,
+            probe,
+            admission,
+            primitive_available,
+            observation_class,
+        } => {
+            schema == "replaydesktop.host-foundation-observation.v1"
+                && probe == "host-foundation"
+                && admission == "unproven"
+                && observation_class
+                    == if primitive_available {
+                        "primitive-available"
+                    } else {
+                        "primitive-unavailable"
+                    }
+        }
+        HostFoundationFallbackPayloadV1::Rejected {
+            schema,
+            probe,
+            admission,
+            reason,
+        } => {
+            schema == "replaydesktop.host-foundation-observation.v1"
+                && probe == "host-foundation"
+                && admission == "unproven"
+                && matches!(
+                    reason.as_str(),
+                    "worker-spawn"
+                        | "worker-timeout"
+                        | "worker-stdout-limit"
+                        | "worker-stderr-limit"
+                        | "worker-stderr"
+                        | "worker-abnormal-exit"
+                        | "worker-malformed-response"
+                        | "worker-protocol-mismatch"
+                        | "worker-secret-leak"
+                )
+        }
+    }
+}
+
+fn valid_local_xorg_evidence(evidence: &LocalXorgEvidenceV1) -> bool {
+    if evidence.session_candidate_count > 64
+        || evidence
+            .display_number
+            .is_some_and(|display| display > 1023)
+        || evidence.x11_root_count > MAX_COUNT
+        || evidence.randr_provider_count > MAX_COUNT
+        || evidence.randr_output_count > MAX_COUNT
+    {
+        return false;
+    }
+    match evidence.status {
+        FoundationCheckStatusV1::Pass => evidence.reason.is_none(),
+        FoundationCheckStatusV1::Fail => evidence
+            .reason
+            .as_ref()
+            .is_some_and(|reason| allowed_local_xorg_reasons().contains(reason)),
+        FoundationCheckStatusV1::Unproven => false,
+    }
+}
+
+fn valid_foundation_check(check: &FoundationCheckEvidenceV1, maximum: Option<u32>) -> bool {
+    if check.observed > maximum.unwrap_or(MAX_COUNT) {
+        return false;
+    }
+    matches!(
+        (check.status, check.observed),
+        (FoundationCheckStatusV1::Pass, 1..) | (FoundationCheckStatusV1::Fail, 0)
+    )
+}
+
+fn allowed_local_xorg_reasons() -> Vec<HostFoundationReasonV1> {
+    vec![
+        reason(
+            "SESSION_NOT_XORG",
+            "Log into exactly one active local Xorg user session, then rerun the doctor.",
+        ),
+        reason(
+            "SESSION_REMOTE",
+            "Run the doctor from the active local seat rather than a remote session.",
+        ),
+        reason(
+            "SESSION_NOT_XORG",
+            "Log into one active local Xorg user session and run the doctor inside it.",
+        ),
+        reason(
+            "X11_TRANSPORT_NOT_UNIX",
+            "Use the local Xorg UNIX-domain socket; TCP and proxy transports are not admissible.",
+        ),
+        reason(
+            "X11_PEER_CREDENTIALS_INVALID",
+            "Use the X socket owned by the current local Xorg seat and rerun the doctor.",
+        ),
+        reason(
+            "X11_PEER_NOT_XORG",
+            "Exit Xwayland, nested, VNC, dummy, or proxy servers and log into real Xorg.",
+        ),
+        reason(
+            "X11_SETUP_FAILED",
+            "Repair local Xorg authorization/setup and rerun the doctor.",
+        ),
+        reason(
+            "XRANDR_QUERY_FAILED",
+            "Enable the physical Xorg RandR provider/output and rerun the doctor.",
+        ),
+    ]
+}
+
+fn valid_driver_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= MAX_VERSION_BYTES
+        && version.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 pub fn prove_local_xorg(observation: &HostFoundationObservationV1) -> LocalXorgEvidenceV1 {

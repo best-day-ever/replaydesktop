@@ -1,0 +1,76 @@
+{
+  "schema": "replaydesktop.host01-diagnostic-fixtures.v1",
+  "cases": [
+    {
+      "id": "current-wayland-driver-mismatch",
+      "behavior": "normal",
+      "observations": [
+        {
+          "probe": "host-foundation",
+          "available": true,
+          "code": "host-foundation-observed",
+          "host_foundation": {
+            "session_candidate_count": 1,
+            "session_active": true,
+            "session_local": true,
+            "session_user_matches": true,
+            "session_leader_contains_doctor": true,
+            "session_type_x11": false,
+            "display_number": null,
+            "transport_unix": false,
+            "peer_credentials_available": false,
+            "peer_uid_matches": false,
+            "peer_executable": "xwayland",
+            "x11_setup_succeeded": false,
+            "x11_protocol_major": null,
+            "x11_root_count": 0,
+            "randr_succeeded": false,
+            "randr_provider_count": 0,
+            "randr_output_count": 0,
+            "uinput_access": true,
+            "render_node_count": 1,
+            "accessible_render_node_count": 1,
+            "connected_drm_connector_count": 2,
+            "nvidia_kernel_version": "610.43.02",
+            "nvml": {
+              "source_attempted": true,
+              "source_identity": "nvidia-nvml-api-13",
+              "source_sha256": "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f",
+              "abi_verified": true,
+              "source_failure": null,
+              "runtime": {
+                "loaded": true,
+                "initialized": true,
+                "userspace_driver_version": "610.43.03",
+                "devices": [
+                  {
+                    "uuid": "GPU-00000000-1111-2222-3333-444444444444",
+                    "pci_bdf": "00000000:01:00.0"
+                  }
+                ],
+                "shutdown_attempted": true,
+                "shutdown_succeeded": true,
+                "failure": null
+              }
+            }
+          }
+        },
+        {
+          "probe": "selected-output",
+          "available": false,
+          "code": "selected-output-unproven"
+        },
+        {
+          "probe": "nvfbc-capture",
+          "available": false,
+          "code": "nvfbc-unproven"
+        },
+        {
+          "probe": "nvenc-tuples",
+          "available": false,
+          "code": "nvenc-unproven"
+        }
+      ]
+    }
+  ]
+}

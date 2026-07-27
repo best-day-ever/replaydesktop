@@ -21,6 +21,11 @@ fn session_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host01-session-spoofing.json")
 }
 
+fn current_host_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/current-wayland-driver-mismatch.json")
+}
+
 fn temp_dir(label: &str) -> PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let timestamp = SystemTime::now()
@@ -678,5 +683,226 @@ fn bounded_probe_session_clears_environment_only_xorg_claims() {
             .skip(1)
             .all(|extension| extension.status == G0ExtensionStatusV1::Unproven)
     );
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host01_native_current_wayland_driver_mismatch_is_specific_and_deterministic() {
+    let directory = temp_dir("current-wayland-driver-mismatch");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_with_fixture(
+        &current_host_fixture(),
+        "current-wayland-driver-mismatch",
+        &evidence,
+        500,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let result = stdout_json(&output);
+    assert_eq!(result["status"], "fail");
+    let envelope = read_envelope(&evidence);
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Diagnostic);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    let payload = host_foundation_payload(&envelope);
+    assert_eq!(payload["local_xorg"]["status"], "fail");
+    assert_eq!(payload["local_xorg"]["reason"]["code"], "SESSION_NOT_XORG");
+    assert_eq!(payload["nvidia_kernel_version"], "610.43.02");
+    assert_eq!(payload["nvml"]["status"], "fail");
+    assert_eq!(payload["nvml"]["source_identity"], "nvidia-nvml-api-13");
+    assert_eq!(
+        payload["nvml"]["source_sha256"],
+        "31a26e3ce6f0b98a76cea38a3cf28aa112a20cfb37e9057786c768712d6a487f"
+    );
+    assert_eq!(payload["nvml"]["kernel_driver_version"], "610.43.02");
+    assert_eq!(payload["nvml"]["userspace_driver_version"], "610.43.03");
+    assert_eq!(
+        payload["reasons"]
+            .as_array()
+            .expect("foundation reasons")
+            .iter()
+            .map(|reason| reason["code"].as_str().expect("reason code"))
+            .collect::<Vec<_>>(),
+        [
+            "SESSION_NOT_XORG",
+            "NVIDIA_VERSION_MISMATCH",
+            "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
+        ]
+    );
+    assert!(
+        envelope
+            .extensions
+            .iter()
+            .skip(1)
+            .all(|extension| extension.status == G0ExtensionStatusV1::Unproven)
+    );
+    assert_eq!(
+        verify(
+            &evidence,
+            result["run_id"].as_str().expect("diagnostic run ID")
+        )
+        .status
+        .code(),
+        Some(0)
+    );
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host01_native_session_and_nvml_partial_matrix_never_clears_later_blockers() {
+    for (case, expected_reason) in [
+        ("multiple-sessions", "SESSION_NOT_XORG"),
+        ("inactive-session", "SESSION_NOT_XORG"),
+        ("missing-peer-credentials", "X11_PEER_CREDENTIALS_INVALID"),
+        ("xnest-peer", "X11_PEER_NOT_XORG"),
+        ("xvnc-peer", "X11_PEER_NOT_XORG"),
+        ("xdummy-peer", "X11_PEER_NOT_XORG"),
+        ("malformed-setup", "X11_SETUP_FAILED"),
+        ("nvml-source-unavailable", "NVML_SOURCE_UNAVAILABLE"),
+        ("nvml-abi-mismatch", "NVML_SOURCE_ABI_MISMATCH"),
+        ("nvml-symbol-missing", "NVML_SYMBOL_MISSING"),
+        ("nvml-init-failed", "NVML_INITIALIZATION_FAILED"),
+        ("nvml-zero-devices", "NVML_NO_DEVICES"),
+        ("nvml-shutdown-failed", "NVML_SHUTDOWN_FAILED"),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_with_fixture(&session_fixture(), case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        assert_eq!(envelope.base.status, G0GateStatusV1::Fail, "case {case}");
+        let foundation = envelope
+            .extensions
+            .iter()
+            .find(|extension| extension.id == "host-foundation.v1")
+            .expect("host-foundation extension");
+        assert_eq!(foundation.status, G0ExtensionStatusV1::Fail, "case {case}");
+        let payload = host_foundation_payload(&envelope);
+        assert!(
+            payload["reasons"]
+                .as_array()
+                .expect("foundation reasons")
+                .iter()
+                .any(|reason| reason["code"] == expected_reason),
+            "case {case}"
+        );
+        assert_eq!(
+            payload["selected_output_correlation"]["status"], "unproven",
+            "case {case}"
+        );
+        assert!(
+            envelope
+                .extensions
+                .iter()
+                .skip(1)
+                .all(|extension| extension.status == G0ExtensionStatusV1::Unproven),
+            "case {case}"
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host01_native_complete_foundation_still_cannot_clear_g0() {
+    let directory = temp_dir("nvml-complete-matching");
+    let evidence = directory.join("evidence.json");
+    let output =
+        diagnose_with_fixture(&session_fixture(), "nvml-complete-matching", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+    let envelope = read_envelope(&evidence);
+    let foundation = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == "host-foundation.v1")
+        .expect("host-foundation extension");
+    assert_eq!(foundation.status, G0ExtensionStatusV1::Unproven);
+    let payload = host_foundation_payload(&envelope);
+    assert_eq!(payload["local_xorg"]["status"], "pass");
+    assert_eq!(payload["nvml"]["status"], "pass");
+    assert_eq!(payload["selected_output_correlation"]["status"], "unproven");
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    assert_eq!(
+        envelope
+            .extensions
+            .iter()
+            .map(|extension| extension.status)
+            .collect::<Vec<_>>(),
+        [
+            G0ExtensionStatusV1::Unproven,
+            G0ExtensionStatusV1::Unproven,
+            G0ExtensionStatusV1::Unproven,
+            G0ExtensionStatusV1::Unproven,
+        ]
+    );
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host01_native_worker_faults_are_bounded_and_sanitized() {
+    for (case, timeout_ms) in [
+        ("timeout", 40),
+        ("child-crash", 500),
+        ("duplicate-response", 500),
+        ("path-sentinel", 500),
+        ("native-error-sentinel", 500),
+        ("injected-pass", 500),
+        ("stale-cache", 500),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let started = Instant::now();
+        let output = diagnose(case, &evidence, timeout_ms);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        assert!(started.elapsed() < Duration::from_secs(2), "case {case}");
+        let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+        for forbidden in [
+            "/private/operator/diagnostic/native-driver-secret-path",
+            "NVML_PRIVATE_NATIVE_ERROR_0xDEADBEEF",
+            "fixture-owned-run",
+            "stale-boot",
+            "0xDEADBEEF",
+            "EDID_PRIVATE_SENTINEL",
+        ] {
+            assert!(!persisted.contains(forbidden), "case {case}: {forbidden}");
+        }
+        assert_eq!(read_envelope(&evidence).base.status, G0GateStatusV1::Fail);
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host01_native_known_extension_payload_is_strict_at_verify_readback() {
+    let directory = temp_dir("strict-known-extension");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_with_fixture(
+        &current_host_fixture(),
+        "current-wayland-driver-mismatch",
+        &evidence,
+        500,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let run_id = stdout_json(&output)["run_id"]
+        .as_str()
+        .expect("run ID")
+        .to_owned();
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(&evidence).expect("evidence must exist"))
+            .expect("evidence must be JSON");
+    let extension = document["extensions"]
+        .as_array_mut()
+        .expect("extensions array")
+        .iter_mut()
+        .find(|extension| extension["id"] == "host-foundation.v1")
+        .expect("host-foundation extension");
+    extension["payload"]["injected_status"] = json!("pass");
+    extension["payload"]["source_path"] = json!("/private/operator/nvml.h");
+    let payload =
+        serde_json::to_vec(&extension["payload"]).expect("payload mutation must serialize");
+    extension["payload_sha256"] = json!(replay_host_doctor::sha256_bytes(&payload));
+    std::fs::write(
+        &evidence,
+        serde_json::to_vec(&document).expect("document must serialize"),
+    )
+    .expect("mutated evidence must be writable");
+
+    assert_private_error(&verify(&evidence, &run_id), 74, "EVIDENCE_PERSISTENCE");
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }

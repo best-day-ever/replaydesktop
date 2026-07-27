@@ -281,6 +281,147 @@ fn pre_reboot_archive_manifest_path_digest_schema() {
 }
 
 #[test]
+fn g0_v1_foundation_compat() {
+    const UNKNOWN_ID: &str = "future-display-proof.v2";
+    const UNKNOWN_PAYLOAD: &str = r#"{ "future": [1, 2, 3], "note": "preserve me" }"#;
+    const UNKNOWN_DIGEST: &str = "d67864bb4b327df080fb23e032ba9b218743b77e480ef39178cf05da1743188c";
+
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/g0-envelope-v1-foundation.json");
+    let fixture_bytes =
+        std::fs::read(&fixture_path).expect("foundation V1 fixture must remain readable");
+    let envelope = decode_g0_evidence(&fixture_bytes)
+        .expect("foundation V1 fixture must decode")
+        .into_v1();
+    let base = envelope.base.clone();
+    let unknown = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == UNKNOWN_ID)
+        .expect("unknown extension must remain present");
+    assert_eq!(unknown.payload.get(), UNKNOWN_PAYLOAD);
+    assert_eq!(unknown.payload_sha256.to_string(), UNKNOWN_DIGEST);
+    assert_eq!(
+        replay_host_doctor::sha256_bytes(unknown.payload.get().as_bytes()),
+        unknown.payload_sha256
+    );
+
+    let reencoded = serde_json::to_vec(&envelope).expect("foundation V1 must re-encode");
+    let decoded_again = decode_g0_evidence(&reencoded)
+        .expect("re-encoded foundation V1 must decode")
+        .into_v1();
+    assert_eq!(decoded_again.base, base);
+    let unknown_again = decoded_again
+        .extensions
+        .iter()
+        .find(|extension| extension.id == UNKNOWN_ID)
+        .expect("unknown extension must survive re-encoding");
+    assert_eq!(unknown_again.payload.get(), UNKNOWN_PAYLOAD);
+    assert_eq!(unknown_again.payload_sha256.to_string(), UNKNOWN_DIGEST);
+
+    let readme = include_str!("../README.md");
+    let validation = include_str!("../.planning/phases/01-host-readiness-gate/01-VALIDATION.md");
+    assert!(
+        readme.contains("Plans 01-06, 01-08, and 01-10")
+            && validation.contains("Plans 01-06, 01-08, and 01-10"),
+        "integration/live compatibility obligation must be documented"
+    );
+}
+
+#[test]
+fn original_pre_reboot_archive_compat() {
+    const ARCHIVED_BINARY_DIGEST: &str =
+        "9662e8ee6a8196ee81f2011ce60fe6aba9712db7960e3640c19ba22fe01e677e";
+    const ARCHIVED_EVIDENCE_DIGEST: &str =
+        "5ee84e7214944d041b550319be80f85732609200ed0897eb71e3c3117f8b5b61";
+    const MANIFEST_DIGEST: &str =
+        "d4d16fc2bee5960cedd01881e3fcc8cd1496ed014ceadb88fe67f288490ee136";
+
+    let archive_root = pre_reboot_archive_root();
+    let index_path = archive_root.join("index.json");
+    let index_bytes = std::fs::read(&index_path).expect("original index must remain readable");
+    let index: Value = serde_json::from_slice(&index_bytes).expect("original index must be JSON");
+    assert_eq!(index["manifest_sha256"], MANIFEST_DIGEST);
+
+    let manifest_relative = index["manifest_path"]
+        .as_str()
+        .expect("original index must contain a manifest pointer");
+    let manifest_path = archive_root.join(manifest_relative);
+    let manifest_bytes =
+        std::fs::read(&manifest_path).expect("original manifest must remain readable");
+    assert_eq!(
+        replay_host_doctor::sha256_bytes(&manifest_bytes).to_string(),
+        MANIFEST_DIGEST
+    );
+    let manifest: replay_host_doctor::G0ArchiveManifestV1 =
+        serde_json::from_slice(&manifest_bytes).expect("original manifest must strictly decode");
+    assert_eq!(
+        manifest.archived_binary.sha256.to_string(),
+        ARCHIVED_BINARY_DIGEST
+    );
+    assert_eq!(
+        manifest.evidence.sha256.to_string(),
+        ARCHIVED_EVIDENCE_DIGEST
+    );
+    assert_eq!(
+        replay_host_doctor::verify_archive(&index_path)
+            .expect("original archive must verify offline"),
+        manifest
+    );
+
+    let run_directory = manifest_path
+        .parent()
+        .expect("original manifest must have a run directory");
+    let archived_binary = run_directory.join(&manifest.archived_binary.path);
+    assert_eq!(
+        replay_host_doctor::sha256_file(&archived_binary)
+            .expect("original archived binary bytes must hash")
+            .to_string(),
+        ARCHIVED_BINARY_DIGEST
+    );
+    let evidence_path = run_directory.join(&manifest.evidence.path);
+    let evidence_bytes =
+        std::fs::read(&evidence_path).expect("original evidence bytes must be readable");
+    assert_eq!(
+        replay_host_doctor::sha256_bytes(&evidence_bytes).to_string(),
+        ARCHIVED_EVIDENCE_DIGEST
+    );
+    let envelope = decode_g0_evidence(&evidence_bytes)
+        .expect("original evidence V1 must decode")
+        .into_v1();
+    assert_eq!(envelope.base.run_id, manifest.run_id);
+    assert_eq!(envelope.base.boot_id, manifest.boot_id);
+    assert_eq!(envelope.base.session_id, manifest.session_id);
+    assert_eq!(
+        envelope.base.executable_sha256,
+        manifest.archived_binary.sha256
+    );
+    assert_eq!(envelope.extensions.len(), manifest.extensions.len());
+    for archived in &manifest.extensions {
+        let extension = envelope
+            .extensions
+            .iter()
+            .find(|extension| extension.id == archived.id)
+            .expect("every manifest extension must remain in original evidence");
+        assert_eq!(extension.version, archived.version);
+        assert_eq!(extension.status, archived.status);
+        assert_eq!(extension.payload_sha256, archived.payload_sha256);
+        assert_eq!(
+            replay_host_doctor::sha256_bytes(extension.payload.get().as_bytes()),
+            archived.payload_sha256
+        );
+    }
+
+    let readme = include_str!("../README.md");
+    let validation = include_str!("../.planning/phases/01-host-readiness-gate/01-VALIDATION.md");
+    assert!(
+        readme.contains("Known-extension validators are additional checks")
+            && validation.contains("Known-extension validators are additional checks"),
+        "known-extension validators must not replace base/archive verification"
+    );
+}
+
+#[test]
 fn archive_proc_self_exe_magic_link_source_open() {
     let directory = temp_dir("archive-proc-self-exe");
     let executable = copied_executable(&directory, "running-doctor");

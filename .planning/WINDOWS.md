@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 1
+open_count: 2
 waived_count: 0
-fixed_count: 2
-total_count: 3
-last_updated: 2026-07-27T00:31:31.540Z
+fixed_count: 4
+total_count: 6
+last_updated: 2026-07-27T01:07:52.258Z
 ---
 
 # Broken Windows Ledger
@@ -18,6 +18,9 @@ last_updated: 2026-07-27T00:31:31.540Z
 | 1 | 01 | deviation | src/model.rs |  | Removed the stale unreachable NotImplemented decoder error variant found by the plan stub scan | fixed |  | 2026-07-27T00:29:48.042Z | 2026-07-27T00:30:09.403Z |
 | 2 | 01 | unrun-verify | deny.toml |  | cargo-deny 0.20.2 conditional policy check was not run because the pinned executable is unavailable | open |  | 2026-07-27T00:31:18.358Z |  |
 | 3 | 01 | deviation | .gitignore |  | Added Cargo target output exclusion so locked verification artifacts do not remain untracked | fixed |  | 2026-07-27T00:31:31.464Z | 2026-07-27T00:31:31.540Z |
+| 4 | 01 | stub | src/probe.rs | 429 | Live probe worker deliberately returns native-probe-not-implemented until later Phase 1 plans supply native proofs. | open |  | 2026-07-27T01:06:43.669Z |  |
+| 5 | 01 | deviation | src/probe.rs |  | Moved deadline validation before spawn and terminate/reap children when piped handles are unavailable. | fixed |  | 2026-07-27T01:07:37.629Z | 2026-07-27T01:07:52.178Z |
+| 6 | 01 | deviation | src/currentness.rs |  | Expanded default run-duration currentness bound to contain all four maximum worker deadlines. | fixed |  | 2026-07-27T01:07:37.703Z | 2026-07-27T01:07:52.258Z |
 
 ````json
 [
@@ -56,6 +59,42 @@ last_updated: 2026-07-27T00:31:31.540Z
     "reason": "",
     "recorded_at": "2026-07-27T00:31:31.464Z",
     "resolved_at": "2026-07-27T00:31:31.540Z"
+  },
+  {
+    "id": 4,
+    "kind": "stub",
+    "phase": "01",
+    "file": "src/probe.rs",
+    "line": 429,
+    "description": "Live probe worker deliberately returns native-probe-not-implemented until later Phase 1 plans supply native proofs.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-07-27T01:06:43.669Z",
+    "resolved_at": null
+  },
+  {
+    "id": 5,
+    "kind": "deviation",
+    "phase": "01",
+    "file": "src/probe.rs",
+    "line": null,
+    "description": "Moved deadline validation before spawn and terminate/reap children when piped handles are unavailable.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-07-27T01:07:37.629Z",
+    "resolved_at": "2026-07-27T01:07:52.178Z"
+  },
+  {
+    "id": 6,
+    "kind": "deviation",
+    "phase": "01",
+    "file": "src/currentness.rs",
+    "line": null,
+    "description": "Expanded default run-duration currentness bound to contain all four maximum worker deadlines.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-07-27T01:07:37.703Z",
+    "resolved_at": "2026-07-27T01:07:52.258Z"
   }
 ]
 ````

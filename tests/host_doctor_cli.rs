@@ -139,7 +139,15 @@ fn host01_skeleton_run_writes_mode_0600_and_verifies_the_exact_run() {
             "nvenc-tuples.v1",
         ]
     );
-    assert!(reasons.iter().all(|reason| reason["status"] == "unproven"));
+    assert!(
+        matches!(reasons[0]["status"].as_str(), Some("fail" | "unproven")),
+        "host foundation must never pass before authenticated NVML evidence"
+    );
+    assert!(
+        reasons[1..]
+            .iter()
+            .all(|reason| reason["status"] == "unproven")
+    );
 
     let mode = std::fs::metadata(&evidence)
         .expect("evidence metadata must exist")

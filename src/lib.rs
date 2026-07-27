@@ -2,6 +2,7 @@ pub mod cli;
 pub mod currentness;
 pub mod digest;
 pub mod evidence;
+pub mod local_xorg;
 pub mod model;
 pub mod probe;
 
@@ -9,6 +10,9 @@ pub use cli::{DoctorCommand, DoctorExit, DoctorOptions};
 pub use currentness::{CurrentnessPolicy, RunIdentityV1, verify_current_run};
 pub use digest::{Sha256DigestV1, sha256_bytes, sha256_file, sha256_reader};
 pub use evidence::{EvidenceStore, JsonFileEvidenceStore};
+pub use local_xorg::{
+    HostFoundationEvidenceV1, HostFoundationObservationV1, LocalXorgEvidenceV1, prove_local_xorg,
+};
 pub use model::{
     DecodedG0Evidence, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
     decode_g0_evidence,
@@ -291,6 +295,22 @@ fn probe_extension_records(
     outcomes
         .iter()
         .map(|outcome| {
+            if outcome.probe == ProbeId::HostFoundation
+                && let Some(observation) = outcome
+                    .observation
+                    .as_ref()
+                    .and_then(|observation| observation.host_foundation.as_ref())
+            {
+                let evidence = local_xorg::evaluate_host_foundation(observation);
+                let status = if evidence.has_failure() {
+                    G0ExtensionStatusV1::Fail
+                } else {
+                    G0ExtensionStatusV1::Unproven
+                };
+                let payload = serde_json::to_value(evidence).map_err(|_| DoctorError::Internal)?;
+                return extension_record(HOST_FOUNDATION_EXTENSION_ID, status, payload)
+                    .map_err(|_| DoctorError::Internal);
+            }
             let (id, schema) = match outcome.probe {
                 ProbeId::HostFoundation => (
                     HOST_FOUNDATION_EXTENSION_ID,

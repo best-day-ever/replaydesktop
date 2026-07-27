@@ -50,6 +50,8 @@ impl ProbeId {
 pub struct PrimitiveObservationV1 {
     pub available: bool,
     pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -305,6 +307,8 @@ impl BoundedProbeRunner {
         if response.schema != RESPONSE_SCHEMA
             || response.nonce != request.nonce
             || response.probe != request.probe
+            || (response.observation.host_foundation.is_some()
+                && request.probe != ProbeId::HostFoundation)
         {
             return Err(ProbeFailure::ProtocolMismatch);
         }
@@ -422,11 +426,20 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
     }
 
     match &request.source {
+        ProbeSourceV1::Live if request.probe == ProbeId::HostFoundation => normal_worker_output(
+            &request,
+            PrimitiveObservationV1 {
+                available: true,
+                code: "host-foundation-observed".to_owned(),
+                host_foundation: Some(crate::local_xorg::observe_live_host_foundation()),
+            },
+        ),
         ProbeSourceV1::Live => normal_worker_output(
             &request,
             PrimitiveObservationV1 {
                 available: false,
                 code: "native-probe-not-implemented".to_owned(),
+                host_foundation: None,
             },
         ),
         ProbeSourceV1::Fixture { path, case_id } => fixture_worker_output(&request, path, case_id),
@@ -463,9 +476,15 @@ fn fixture_worker_output(
                 if !seen.insert(observation.probe) {
                     return Err(WorkerRequestError);
                 }
+                if observation.host_foundation.is_some()
+                    && observation.probe != ProbeId::HostFoundation
+                {
+                    return Err(WorkerRequestError);
+                }
                 validate_observation(&PrimitiveObservationV1 {
                     available: observation.available,
                     code: observation.code.clone(),
+                    host_foundation: observation.host_foundation.clone(),
                 })
                 .map_err(|_| WorkerRequestError)?;
             }
@@ -476,10 +495,12 @@ fn fixture_worker_output(
                 .map(|observation| PrimitiveObservationV1 {
                     available: observation.available,
                     code: observation.code.clone(),
+                    host_foundation: observation.host_foundation.clone(),
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
+                    host_foundation: None,
                 });
             normal_worker_output(request, observation)
         }
@@ -490,6 +511,7 @@ fn fixture_worker_output(
                 PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-timeout-returned".to_owned(),
+                    host_foundation: None,
                 },
             )
         }
@@ -519,6 +541,7 @@ fn fixture_worker_output(
                 PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-duplicate-response".to_owned(),
+                    host_foundation: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -535,10 +558,12 @@ fn fixture_worker_output(
                 .map(|observation| PrimitiveObservationV1 {
                     available: observation.available,
                     code: observation.code.clone(),
+                    host_foundation: observation.host_foundation.clone(),
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
+                    host_foundation: None,
                 });
             let response = ProbeResponseV1 {
                 schema: RESPONSE_SCHEMA.to_owned(),
@@ -576,6 +601,7 @@ fn fixture_worker_output(
                     } else {
                         "secret-not-inherited".to_owned()
                     },
+                    host_foundation: None,
                 },
             )
         }
@@ -589,6 +615,7 @@ fn fixture_worker_output(
                 PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-stderr-rejected".to_owned(),
+                    host_foundation: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -631,6 +658,14 @@ fn validate_observation(observation: &PrimitiveObservationV1) -> Result<(), ()> 
         || observation.code.as_bytes().contains(&0)
     {
         return Err(());
+    }
+    if let Some(foundation) = &observation.host_foundation {
+        if !observation.available || observation.code != "host-foundation-observed" {
+            return Err(());
+        }
+        if !foundation.is_valid() {
+            return Err(());
+        }
     }
     Ok(())
 }
@@ -695,6 +730,8 @@ struct FixtureObservation {
     probe: ProbeId,
     available: bool,
     code: String,
+    #[serde(default)]
+    host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
 }
 
 #[derive(Debug)]

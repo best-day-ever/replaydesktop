@@ -604,6 +604,49 @@
       }
     },
     {
+      "id": "invalid-timing",
+      "topology_patch": {
+        "randr_outputs": [
+          {
+            "output_xid": 73,
+            "crtc_xid": 81,
+            "mode_xid": 89,
+            "name": {
+              "hex": "44502d30",
+              "display": "DP-0"
+            },
+            "connected": true,
+            "physical": true,
+            "non_desktop": false,
+            "clone_output_xids": [],
+            "connector_kind": "display-port",
+            "connector_number": 7,
+            "width_px": 3840,
+            "height_px": 2160,
+            "origin_x": -3840,
+            "origin_y": 0,
+            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "timing": {
+              "pixel_clock_hz": 0,
+              "hdisplay": 3840,
+              "hsync_start": 4016,
+              "hsync_end": 4104,
+              "htotal": 4400,
+              "vdisplay": 2160,
+              "vsync_start": 2168,
+              "vsync_end": 2178,
+              "vtotal": 2250,
+              "flags": 5
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_INVALID_OBSERVATION"
+      }
+    },
+    {
       "id": "conflicting-facts",
       "topology_patch": {
         "randr_outputs": [

@@ -73,6 +73,10 @@ fn current_host_fixture() -> PathBuf {
         .join("tests/fixtures/current-wayland-driver-mismatch.json")
 }
 
+fn host02_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host02-output-topologies.json")
+}
+
 fn pre_reboot_archive_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/validation/g0/pre-reboot")
 }
@@ -131,6 +135,36 @@ fn diagnose_with_fixture(
             evidence.to_str().expect("evidence path must be UTF-8"),
             "--probe-timeout-ms",
             &timeout_ms.to_string(),
+        ])
+        .output()
+        .expect("doctor process must launch")
+}
+
+fn diagnose_host02(
+    fixture_path: &Path,
+    case: &str,
+    output_name: Option<&str>,
+    evidence: &Path,
+    timeout_ms: u64,
+) -> Output {
+    let timeout = timeout_ms.to_string();
+    let mut command = Command::new(binary());
+    command.args([
+        "diagnose",
+        "--fixture",
+        fixture_path.to_str().expect("fixture path must be UTF-8"),
+        "--fixture-case",
+        case,
+    ]);
+    if let Some(output_name) = output_name {
+        command.args(["--output", output_name]);
+    }
+    command
+        .args([
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            &timeout,
         ])
         .output()
         .expect("doctor process must launch")
@@ -274,6 +308,21 @@ fn read_envelope(path: &Path) -> replay_host_doctor::G0EvidenceEnvelopeV1 {
     decode_g0_evidence(&std::fs::read(path).expect("evidence must be readable"))
         .expect("evidence must decode")
         .into_v1()
+}
+
+fn extension<'a>(
+    envelope: &'a replay_host_doctor::G0EvidenceEnvelopeV1,
+    identifier: &str,
+) -> &'a replay_host_doctor::G0ExtensionRecordV1 {
+    envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == identifier)
+        .expect("known extension must be present")
+}
+
+fn extension_payload(extension: &replay_host_doctor::G0ExtensionRecordV1) -> Value {
+    serde_json::from_str(extension.payload.get()).expect("extension payload must be JSON")
 }
 
 #[test]
@@ -1706,4 +1755,305 @@ fn host01_native_known_extension_payload_is_strict_at_verify_readback() {
 
     assert_private_error(&verify(&evidence, &run_id), 74, "EVIDENCE_PERSISTENCE");
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host02_discovery_and_namespace_disjoint_selection_use_the_production_path() {
+    let directory = temp_dir("host02-selection");
+    let discovery_path = directory.join("discovery.json");
+    let discovery = diagnose_host02(
+        &host02_fixture(),
+        "namespace-disjoint-unique",
+        None,
+        &discovery_path,
+        500,
+    );
+    assert_eq!(discovery.status.code(), Some(2));
+    let discovery_envelope = read_envelope(&discovery_path);
+    let discovery_record = extension(&discovery_envelope, "selected-output.v1");
+    assert_eq!(discovery_record.status, G0ExtensionStatusV1::Unproven);
+    let discovery_payload = extension_payload(discovery_record);
+    assert_eq!(
+        discovery_payload["schema"],
+        "replaydesktop.selected-output-discovery.v1"
+    );
+    assert_eq!(discovery_payload["candidates"][0]["display"], "DP-0");
+    assert!(discovery_payload.get("requested_output").is_none());
+
+    let selected_path = directory.join("selected.json");
+    let selected = diagnose_host02(
+        &host02_fixture(),
+        "namespace-disjoint-unique",
+        Some("DP-0"),
+        &selected_path,
+        500,
+    );
+    assert_eq!(selected.status.code(), Some(2));
+    let result = stdout_json(&selected);
+    let selected_envelope = read_envelope(&selected_path);
+    let selected_record = extension(&selected_envelope, "selected-output.v1");
+    assert_eq!(selected_record.status, G0ExtensionStatusV1::Pass);
+    let selected_payload = extension_payload(selected_record);
+    assert_eq!(
+        selected_payload["schema"],
+        "replaydesktop.selected-output.v1"
+    );
+    assert_eq!(selected_payload["output_name"]["display"], "DP-0");
+    assert_eq!(selected_payload["randr_output_xid"], 73);
+    assert_eq!(selected_payload["drm_connector_id"], 911);
+    assert_ne!(
+        selected_payload["randr_output_xid"],
+        selected_payload["drm_connector_id"]
+    );
+    assert_eq!(
+        selected_envelope.base.status,
+        G0GateStatusV1::Fail,
+        "HOST-03 and HOST-04 must remain blockers"
+    );
+
+    let verified = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            selected_path.to_str().expect("evidence path must be UTF-8"),
+            "--run-id",
+            result["run_id"].as_str().expect("run ID"),
+            "--require-host02",
+            "pass",
+            "--require-host03",
+            "unproven",
+            "--require-host04",
+            "unproven",
+            "--validate-extension",
+            "selected-output.v1",
+        ])
+        .output()
+        .expect("verify process must launch");
+    assert_eq!(verified.status.code(), Some(0));
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host02_ambiguous_missing_and_racing_relations_fail_closed_in_process() {
+    for (case, reason, relation, cardinality) in [
+        (
+            "identical-displays-ambiguous",
+            "BLOCKED_AMBIGUOUS",
+            "drm-connector",
+            Some(2),
+        ),
+        (
+            "duplicate-edid-missing-metadata",
+            "BLOCKED_AMBIGUOUS",
+            "drm-connector",
+            Some(2),
+        ),
+        (
+            "multiple-providers",
+            "BLOCKED_AMBIGUOUS",
+            "randr-provider",
+            Some(2),
+        ),
+        (
+            "multiple-drm-connectors",
+            "BLOCKED_AMBIGUOUS",
+            "drm-connector",
+            Some(2),
+        ),
+        (
+            "multiple-pci-bdfs",
+            "BLOCKED_AMBIGUOUS",
+            "canonical-pci-bdf",
+            Some(2),
+        ),
+        (
+            "multiple-nvml-matches",
+            "BLOCKED_AMBIGUOUS",
+            "nvml-device",
+            Some(2),
+        ),
+        (
+            "missing-edid",
+            "BLOCKED_AMBIGUOUS",
+            "drm-connector",
+            Some(0),
+        ),
+        (
+            "topology-changed",
+            "BLOCKED_TOPOLOGY_CHANGED",
+            "topology-token",
+            None,
+        ),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_host02(&host02_fixture(), case, Some("DP-0"), &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        let selected = extension(&envelope, "selected-output.v1");
+        assert_eq!(selected.status, G0ExtensionStatusV1::Fail, "case {case}");
+        let payload = extension_payload(selected);
+        assert_eq!(payload["mapping_failure"]["reason"], reason, "case {case}");
+        assert_eq!(
+            payload["mapping_failure"]["relation"], relation,
+            "case {case}"
+        );
+        match cardinality {
+            Some(cardinality) => assert_eq!(
+                payload["mapping_failure"]["observed_cardinality"], cardinality,
+                "case {case}"
+            ),
+            None => assert!(
+                payload["mapping_failure"]["observed_cardinality"].is_null(),
+                "case {case}"
+            ),
+        }
+        assert_eq!(envelope.base.status, G0GateStatusV1::Fail, "case {case}");
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host02_invalid_timing_and_output_name_are_rejected_before_admission() {
+    let directory = temp_dir("host02-invalid");
+    let timing_evidence = directory.join("timing.json");
+    let timing = diagnose_host02(
+        &host02_fixture(),
+        "invalid-timing",
+        Some("DP-0"),
+        &timing_evidence,
+        500,
+    );
+    assert_eq!(timing.status.code(), Some(2));
+    let timing_envelope = read_envelope(&timing_evidence);
+    let timing_record = extension(&timing_envelope, "selected-output.v1");
+    assert_eq!(timing_record.status, G0ExtensionStatusV1::Fail);
+    assert_eq!(
+        extension_payload(timing_record)["collection_failure"],
+        "invalid-observation"
+    );
+
+    let invalid_name_evidence = directory.join("invalid-name.json");
+    let invalid_name = diagnose_host02(
+        &host02_fixture(),
+        "namespace-disjoint-unique",
+        Some("DP-\n0"),
+        &invalid_name_evidence,
+        500,
+    );
+    assert_eq!(invalid_name.status.code(), Some(64));
+    assert!(invalid_name.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid_name.stderr).contains("output"));
+    assert!(!invalid_name_evidence.exists());
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host02_worker_timeout_cache_and_secrecy_cases_fail_closed() {
+    let secret = "HOST02_PRIVATE_SENTINEL_98d9f2";
+    for (case, timeout_ms) in [
+        ("timeout", 40),
+        ("stale-cache", 500),
+        ("injected-currentness", 500),
+        ("secret-sentinel", 500),
+        ("path-sentinel", 500),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let started = Instant::now();
+        let mut command = Command::new(binary());
+        command
+            .args([
+                "diagnose",
+                "--fixture",
+                fixture().to_str().expect("fixture path must be UTF-8"),
+                "--fixture-case",
+                case,
+                "--output",
+                "DP-0",
+                "--evidence",
+                evidence.to_str().expect("evidence path must be UTF-8"),
+                "--probe-timeout-ms",
+                &timeout_ms.to_string(),
+            ])
+            .env("REPLAY_HOST_DOCTOR_SECRET_SENTINEL", secret);
+        let output = command.output().expect("doctor process must launch");
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        assert!(started.elapsed() < Duration::from_secs(2), "case {case}");
+        let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+        for forbidden in [
+            secret,
+            "/private/operator/diagnostic/native-driver-secret-path",
+            "stale-boot",
+            "fixture-owned-run",
+            "EDID_PRIVATE_SENTINEL",
+        ] {
+            assert!(!persisted.contains(forbidden), "case {case}: {forbidden}");
+        }
+        let envelope = read_envelope(&evidence);
+        assert_eq!(envelope.base.status, G0GateStatusV1::Fail, "case {case}");
+        assert_eq!(
+            extension(&envelope, "selected-output.v1").status,
+            G0ExtensionStatusV1::Fail,
+            "an explicit request must never degrade to discovery after worker rejection: {case}"
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host02_foundation_fixture_and_original_archive_remain_compatible() {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/g0-envelope-v1-foundation.json");
+    let fixture_bytes =
+        std::fs::read(&fixture_path).expect("foundation V1 fixture must remain readable");
+    let envelope = decode_g0_evidence(&fixture_bytes)
+        .expect("foundation V1 fixture must decode")
+        .into_v1();
+    assert_eq!(envelope.base.run_id, "foundation-fixture-run");
+    assert!(envelope.extensions.iter().any(|record| {
+        record.id == "future-display-proof.v2"
+            && record.payload.get() == r#"{ "future": [1, 2, 3], "note": "preserve me" }"#
+    }));
+
+    let archive = verify_archive(&pre_reboot_archive_root().join("index.json"));
+    assert_eq!(archive.status.code(), Some(0));
+    assert_eq!(stdout_json(&archive)["status"], "verified");
+}
+
+#[test]
+fn host02_operator_docs_cover_discovery_selection_and_honest_blockers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme =
+        std::fs::read_to_string(root.join("README.md")).expect("README must remain readable");
+    let validation = std::fs::read_to_string(
+        root.join(".planning/phases/01-host-readiness-gate/01-VALIDATION.md"),
+    )
+    .expect("validation guide must remain readable");
+    let combined = format!("{readme}\n{validation}");
+    for required in [
+        "selected-output.v1",
+        "REPLAY_HOST_OUTPUT",
+        "g0-post-reboot-output-discovery.json",
+        "--require-host01 pass",
+        "--require-host02 pass",
+        "--require-host03 unproven",
+        "--require-host04 unproven",
+        "--validate-extension selected-output.v1",
+        "XRandR",
+        "DRM",
+        "EDID",
+        "PCI BDF",
+        "NVML UUID",
+        "HOST-03",
+        "HOST-04",
+        "overall G0 remains FAIL",
+    ] {
+        assert!(
+            combined.contains(required),
+            "operator docs missing {required}"
+        );
+    }
 }

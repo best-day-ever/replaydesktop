@@ -1930,8 +1930,8 @@ fn host02_invalid_timing_and_output_name_are_rejected_before_admission() {
     let timing_record = extension(&timing_envelope, "selected-output.v1");
     assert_eq!(timing_record.status, G0ExtensionStatusV1::Fail);
     assert_eq!(
-        extension_payload(timing_record)["collection_failure"],
-        "invalid-observation"
+        extension_payload(timing_record)["mapping_failure"]["reason"],
+        "BLOCKED_INVALID_OBSERVATION"
     );
 
     let invalid_name_evidence = directory.join("invalid-name.json");

@@ -134,6 +134,91 @@ It verifies the relative two-component manifest pointer, index-to-manifest
 digest, schemas, provenance, FAIL status, and the complete offline archive
 verification path.
 
+## Corrected-host HOST-01/HOST-02 procedure
+
+The immutable archive verification above must succeed first. The only manual
+host action is for the operator to reboot into an installed kernel matching
+the NVIDIA userspace driver and log into one active local physical Xorg
+session. The doctor does not repair the driver, select a session, reboot,
+install packages, change permissions, or alter display state.
+
+After that operator transition, build with the approved official NVML header
+root:
+
+```console
+REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include \
+  cargo build --locked --bin replay-host-doctor
+```
+
+First run discovery with no `--output`. Exit 2 is required; omission never
+selects a default:
+
+```console
+set +e
+REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include \
+  target/debug/replay-host-doctor run \
+    --evidence target/g0-post-reboot-output-discovery.json
+discovery_status=$?
+set -e
+test "$discovery_status" -eq 2
+```
+
+Enumerate exact candidate names from the persisted `selected-output.v1`
+payload:
+
+```console
+jq -r '.extensions[]
+  | select(.id == "selected-output.v1")
+  | .payload.candidates[]
+  | select(.display != null)
+  | .display' target/g0-post-reboot-output-discovery.json
+```
+
+The operator chooses one exact listed XRandR name. Do not select by array
+position or connector numbering:
+
+```console
+export REPLAY_HOST_OUTPUT='DP-0'
+```
+
+Run the selected relation and require the honest nonzero result:
+
+```console
+set +e
+REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include \
+  target/debug/replay-host-doctor run \
+    --output "$REPLAY_HOST_OUTPUT" \
+    --evidence target/g0-post-reboot-output.json
+selected_status=$?
+set -e
+test "$selected_status" -eq 2
+```
+
+Verify only the persisted readback. HOST-01 and HOST-02 must pass, while
+HOST-03 and HOST-04 remain unproven and the overall G0 remains FAIL:
+
+```console
+cargo run --locked --bin replay-host-doctor -- verify-evidence \
+  --evidence target/g0-post-reboot-output.json \
+  --require-host01 pass \
+  --require-host02 pass \
+  --require-host03 unproven \
+  --require-host04 unproven \
+  --validate-extension selected-output.v1
+```
+
+The selected proof joins the exact XRandR output, CRTC, mode, provider,
+geometry and timing to an EDID SHA-256, one active DRM connector, one canonical
+PCI BDF, and one matching NVML UUID. It records unequal namespace IDs
+independently and rechecks XRandR, DRM, and NVML topology before admission.
+Missing, ambiguous, malformed, cached, raced, clone/MST/PRIME, timeout, or
+secret-bearing observations fail closed. Raw EDID, authority files, SDK paths,
+and native error strings are never evidence.
+
+The corrected evidence must also identify a different boot and session from
+the preserved archive (`be28f2a4-b236-4fbf-b0e2-5a90d0e9641e` and
+`sid-1968565`). A repeated original identity is not post-reboot proof.
+
 ## Permanent compatibility obligation
 
 The two stable regressions are:

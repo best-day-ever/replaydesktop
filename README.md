@@ -5,10 +5,11 @@ bounded, read-only host observations, derives one fail-closed G0 decision,
 writes one versioned evidence envelope, reads those exact bytes back, and
 verifies that the evidence belongs to the current run.
 
-The host-foundation probe now proves or rejects the local Xorg session and
-exact NVIDIA kernel/NVML userspace identity. Selected output mapping, NvFBC
-capture, and NVENC tuples remain `UNPROVEN`, so the current command still
-cannot produce G0 PASS.
+The host-foundation probe proves or rejects the local Xorg session and exact
+NVIDIA kernel/NVML userspace identity. Selected output mapping is available
+only through explicit, measured selection; omission enters discovery and never
+chooses a default. NvFBC capture and NVENC tuples remain `UNPROVEN`, so the
+current command still cannot produce G0 PASS.
 
 ## Run the doctor
 
@@ -35,6 +36,65 @@ digests, requires the requested run ID, and rechecks the current boot, process
 session, executable digest, and time bounds. A successful verification prints
 one result object and returns exit 0; it verifies integrity and currentness,
 not readiness.
+
+## Discover and select one physical output
+
+Output discovery uses the same bounded production worker as an explicit run.
+It queries XRandR but makes no selection, writes a `selected-output.v1`
+discovery payload, and exits 2:
+
+```console
+REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include \
+  cargo run --locked --bin replay-host-doctor -- run \
+    --evidence target/g0-post-reboot-output-discovery.json
+```
+
+Enumerate the exact UTF-8 XRandR candidate names from persisted evidence:
+
+```console
+jq -r '.extensions[]
+  | select(.id == "selected-output.v1")
+  | .payload.candidates[]
+  | select(.display != null)
+  | .display' target/g0-post-reboot-output-discovery.json
+```
+
+The operator must choose one exact candidate; the doctor never selects by
+position, display order, or an inferred default:
+
+```console
+export REPLAY_HOST_OUTPUT='DP-0'
+```
+
+Run the full read-only relation with that exact name. A successful HOST-02
+proof still exits 2 because later media gates remain open:
+
+```console
+set +e
+REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include \
+  cargo run --locked --bin replay-host-doctor -- run \
+    --output "$REPLAY_HOST_OUTPUT" \
+    --evidence target/g0-post-reboot-output.json
+doctor_status=$?
+set -e
+test "$doctor_status" -eq 2
+
+cargo run --locked --bin replay-host-doctor -- verify-evidence \
+  --evidence target/g0-post-reboot-output.json \
+  --require-host01 pass \
+  --require-host02 pass \
+  --require-host03 unproven \
+  --require-host04 unproven \
+  --validate-extension selected-output.v1
+```
+
+The admitted extension records the exact XRandR output/CRTC/mode/provider,
+active timing and origin, an in-memory EDID SHA-256, the unique DRM connector,
+canonical PCI BDF, matching NVML UUID, and before/after topology digests.
+Missing or ambiguous relations, malformed observations, unsupported
+clone/MST/PRIME layouts, or a topology change produce a typed HOST-02 failure.
+No raw EDID bytes, native errors, SDK paths, or inherited secrets are
+persisted.
 
 ## Preserved pre-reboot failure
 
@@ -142,10 +202,14 @@ This skeleton reports rather than hides the remaining work:
 - remediate the rejected Wayland session and exact NVIDIA
   `610.43.02`/`610.43.03` kernel/userspace mismatch, then prove the repaired
   local physical Xorg/NVML foundation;
-- select and bind the physical output to that GPU;
-- prove one NvFBC shared-CUDA capture with the required format and cleanup;
-- open the required NVENC codec/chroma tuples and record their exact
+- on that corrected host, explicitly select and prove the physical output to
+  clear HOST-02;
+- prove one NvFBC shared-CUDA capture with the required format and cleanup for
+  HOST-03;
+- open the required NVENC codec/chroma tuples for HOST-04 and record their exact
   capabilities.
 
-Those proofs belong to later Phase 1 plans. Diagnostic fixtures, cached
-evidence, and child-supplied claims can never substitute for them.
+Even after HOST-01 and HOST-02 pass, HOST-03 and HOST-04 remain `UNPROVEN`, so
+the overall G0 remains FAIL. Those media proofs belong to later Phase 1 plans.
+Diagnostic fixtures, cached evidence, and child-supplied claims can never
+substitute for them.

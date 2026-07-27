@@ -252,7 +252,7 @@ fn execute_fresh_run(
         None => None,
     };
     let outcomes = probe::collect_probes(backend, identity.run_id(), requested_output.as_ref());
-    let extensions = probe_extension_records(&outcomes)?;
+    let extensions = probe_extension_records(&outcomes, requested_output.as_ref())?;
     let envelope = evaluate_g0(&identity, provenance, extensions)?;
     let run_id = envelope.base.run_id.clone();
     let store = JsonFileEvidenceStore::new(evidence_path);
@@ -449,13 +449,14 @@ pub fn evaluate_g0(
 
 fn probe_extension_records(
     outcomes: &[probe::ProbeOutcome],
+    requested_output: Option<&OutputNameV1>,
 ) -> Result<Vec<G0ExtensionRecordV1>, DoctorError> {
     let selected_outcome = outcomes
         .iter()
         .find(|outcome| outcome.probe == ProbeId::SelectedOutput)
         .ok_or(DoctorError::Internal)?;
     let (selected_record, selected_output_proven) =
-        selected_output_extension_record(selected_outcome)?;
+        selected_output_extension_record(selected_outcome, requested_output)?;
 
     outcomes
         .iter()
@@ -535,12 +536,32 @@ fn probe_extension_records(
 
 fn selected_output_extension_record(
     outcome: &probe::ProbeOutcome,
+    requested_output: Option<&OutputNameV1>,
 ) -> Result<(G0ExtensionRecordV1, bool), DoctorError> {
     let Some(observation) = outcome
         .observation
         .as_ref()
         .and_then(|observation| observation.selected_output.as_ref())
     else {
+        if let Some(requested_output) = requested_output {
+            let rejected = output_mapping::OutputCollectorObservationV1 {
+                requested_output: Some(requested_output.clone()),
+                candidates: Vec::new(),
+                topology: None,
+                collection_failure: Some(
+                    output_mapping::OutputCollectionFailureV1::InvalidObservation,
+                ),
+            };
+            let failure = output_mapping::selected_output_failure(&rejected, None)
+                .ok_or(DoctorError::Internal)?;
+            return extension_record(
+                SELECTED_OUTPUT_EXTENSION_ID,
+                G0ExtensionStatusV1::Fail,
+                serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
+            )
+            .map(|record| (record, false))
+            .map_err(|_| DoctorError::Internal);
+        }
         let discovery = output_mapping::SelectedOutputDiscoveryV1 {
             schema: output_mapping::SELECTED_OUTPUT_DISCOVERY_SCHEMA_V1.to_owned(),
             candidates: Vec::new(),

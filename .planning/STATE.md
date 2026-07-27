@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-07-27T07:11:32.312Z"
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-07-27T07:48:45.843Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-07-27 — Phase 01 execution started
 
-Progress: [███░░░░░░░] 30%
+Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
@@ -61,6 +61,7 @@ Progress: [███░░░░░░░] 30%
 | Phase 01 P01 | 33 min | 3 tasks | 10 files |
 | Phase 01 P02 | 29 min | 3 tasks | 9 files |
 | Phase 01-host-readiness-gate P03 | 33m 28s | 3 tasks | 9 files |
+| Phase 01-host-readiness-gate P04 | 29m 58s | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,10 @@ Recent decisions affecting current work:
 - [Phase 01]: NVML admission requires authenticated API 13 source/ABI metadata and the complete fixed-SONAME runtime/device/shutdown sequence.
 - [Phase 01]: Strict host-foundation.v1 semantics are enforced on application readback without changing the generic V1 base decoder.
 - [Phase 01]: Selected-output correlation remains UNPROVEN and prevents G0 PASS even when the HOST-01 foundation passes.
+- [Phase 01]: The executable source is trusted only through an open /proc/self/exe descriptor; Cargo-style hard links are safe because path identity is never reopened or resolved.
+- [Phase 01]: The loaded libnvidia-ml.so exact filename version is recorded before NVML initialization so initialization failure cannot hide a real kernel/userspace mismatch.
+- [Phase 01]: Archive verification is offline and never executes the archived binary or consults target/ or the current executable.
+- [Phase 01]: Plans 01-06, 01-08, and 01-10 and every base-decoder/archive-verifier change must run both permanent compatibility tests.
 
 ### Pending Todos
 
@@ -103,6 +108,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-27T07:11:32.305Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-07-27T07:48:45.834Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None

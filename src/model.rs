@@ -120,7 +120,6 @@ impl DecodedG0Evidence {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum G0DecodeError {
-    NotImplemented,
     InputTooLarge {
         actual: usize,
         maximum: usize,
@@ -156,7 +155,6 @@ pub enum G0DecodeError {
 impl fmt::Display for G0DecodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotImplemented => formatter.write_str("G0 evidence decoding is not implemented"),
             Self::InputTooLarge { actual, maximum } => {
                 write!(
                     formatter,

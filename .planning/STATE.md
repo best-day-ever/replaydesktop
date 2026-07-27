@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-07-27T01:11:20.750Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-07-27T07:11:32.312Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-07-27 — Phase 01 execution started
 
-Progress: [██░░░░░░░░] 20%
+Progress: [███░░░░░░░] 30%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [██░░░░░░░░] 20%
 |------|----------|-------|-------|
 | Phase 01 P01 | 33 min | 3 tasks | 10 files |
 | Phase 01 P02 | 29 min | 3 tasks | 9 files |
+| Phase 01-host-readiness-gate P03 | 33m 28s | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,10 @@ Recent decisions affecting current work:
 - [Phase 01]: Keep run identity, provenance, currentness, extension status, and G0 verdict exclusively parent-owned; workers return nonce-bound primitive observations only.
 - [Phase 01]: Fixture observations traverse production evaluation and persistence but remain diagnostic FAIL/UNPROVEN regardless of supplied positives.
 - [Phase 01]: Accept evidence only after mode-0600 atomic persistence, strict V1 decoding, byte-identical exact-run readback, and current boot/session/binary/time verification.
+- [Phase 01]: Local Xorg admission requires one active local logind session whose AF_UNIX peer identity, real Xorg executable, X11 setup, and RandR facts all agree.
+- [Phase 01]: NVML admission requires authenticated API 13 source/ABI metadata and the complete fixed-SONAME runtime/device/shutdown sequence.
+- [Phase 01]: Strict host-foundation.v1 semantics are enforced on application readback without changing the generic V1 base decoder.
+- [Phase 01]: Selected-output correlation remains UNPROVEN and prevents G0 PASS even when the HOST-01 foundation passes.
 
 ### Pending Todos
 
@@ -98,6 +103,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-27T01:10:45.642Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-07-27T07:11:32.305Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None

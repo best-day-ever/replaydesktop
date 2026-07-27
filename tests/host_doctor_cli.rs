@@ -1537,6 +1537,75 @@ fn bounded_probe_session_clears_environment_only_xorg_claims() {
 }
 
 #[test]
+fn host01_environment_locators_cannot_override_joined_session_or_peer_failures() {
+    let cases = [
+        (
+            session_fixture(),
+            "fake-environment-only",
+            "SESSION_NOT_XORG",
+        ),
+        (session_fixture(), "remote-session", "SESSION_REMOTE"),
+        (session_fixture(), "multiple-sessions", "SESSION_NOT_XORG"),
+        (
+            session_fixture(),
+            "wrong-peer",
+            "X11_PEER_CREDENTIALS_INVALID",
+        ),
+        (session_fixture(), "xwayland-peer", "X11_PEER_NOT_XORG"),
+        (session_fixture(), "nested-xephyr-peer", "X11_PEER_NOT_XORG"),
+        (session_fixture(), "xnest-peer", "X11_PEER_NOT_XORG"),
+        (session_fixture(), "xvnc-peer", "X11_PEER_NOT_XORG"),
+        (session_fixture(), "xdummy-peer", "X11_PEER_NOT_XORG"),
+        (
+            current_host_fixture(),
+            "current-wayland-driver-mismatch",
+            "SESSION_NOT_XORG",
+        ),
+    ];
+    for (fixture_path, case, expected_reason) in cases {
+        let directory = temp_dir(&format!("environment-locator-{case}"));
+        let evidence = directory.join("evidence.json");
+        let xauthority_sentinel = directory.join("must-not-be-evidence.xauth");
+        let output = Command::new(binary())
+            .args([
+                "diagnose",
+                "--fixture",
+                fixture_path.to_str().expect("fixture path must be UTF-8"),
+                "--fixture-case",
+                case,
+                "--evidence",
+                evidence.to_str().expect("evidence path must be UTF-8"),
+                "--probe-timeout-ms",
+                "500",
+            ])
+            .env("DISPLAY", ":0")
+            .env("XAUTHORITY", &xauthority_sentinel)
+            .env("XDG_SESSION_TYPE", "x11")
+            .output()
+            .expect("doctor process must launch");
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        let foundation = host_foundation_payload(&envelope);
+        assert_eq!(
+            foundation["local_xorg"]["reason"]["code"], expected_reason,
+            "case {case}"
+        );
+        let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+        assert!(!persisted.contains("XAUTHORITY"), "case {case}");
+        assert!(
+            !persisted.contains(
+                xauthority_sentinel
+                    .to_str()
+                    .expect("sentinel path must be UTF-8")
+            ),
+            "case {case}"
+        );
+        assert!(!persisted.contains("XDG_SESSION_TYPE"), "case {case}");
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
 fn host01_native_current_wayland_driver_mismatch_is_specific_and_deterministic() {
     let directory = temp_dir("current-wayland-driver-mismatch");
     let evidence = directory.join("evidence.json");

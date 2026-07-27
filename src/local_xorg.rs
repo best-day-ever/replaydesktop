@@ -14,6 +14,8 @@ pub const HOST_FOUNDATION_EVIDENCE_SCHEMA_V1: &str = "replaydesktop.host-foundat
 const MAX_LOGINCTL_BYTES: usize = 64 * 1024;
 const MAX_PROC_BYTES: usize = 64 * 1024;
 const MAX_XAUTHORITY_BYTES: usize = 1024 * 1024;
+const MAX_DISPLAY_LOCATOR_BYTES: usize = 16;
+const MAX_XAUTHORITY_PATH_BYTES: usize = 4096;
 const MAX_VERSION_BYTES: usize = 64;
 const MAX_COUNT: u32 = 4096;
 
@@ -550,11 +552,19 @@ pub fn observe_live_host_foundation() -> HostFoundationObservationV1 {
     observation.session_user_matches = session.user == rustix::process::geteuid().as_raw();
     observation.session_leader_contains_doctor = ancestry_contains(session.leader);
     observation.session_type_x11 = session.session_type == "x11";
-    observation.display_number = parse_display_number(&session.display).map(|(display, _)| display);
-
-    let Some((display, screen)) = parse_display_number(&session.display) else {
+    if !session_is_current_local_x11(session) {
+        return observation;
+    }
+    // DISPLAY is only a bounded socket locator when logind omits Display. The
+    // socket peer, Xorg process, session, authenticated setup, and RandR facts
+    // below remain the admission evidence.
+    let environment_display = std::env::var_os("DISPLAY");
+    let Some(locator) = display_locator(&session.display, environment_display.as_deref()) else {
         return observation;
     };
+    let display = locator.display;
+    let screen = locator.screen;
+    observation.display_number = Some(display);
     let socket_path = PathBuf::from(format!("/tmp/.X11-unix/X{display}"));
     let Ok(socket) = UnixStream::connect(&socket_path) else {
         return observation;
@@ -568,11 +578,17 @@ pub fn observe_live_host_foundation() -> HostFoundationObservationV1 {
     observation.peer_uid_matches = peer_uid == session.user || credentials.uid.is_root();
     let peer_pid = credentials.pid.as_raw_pid();
     observation.peer_executable = classify_peer_executable(peer_pid);
+    if observation.peer_executable == PeerExecutableV1::Xorg
+        && !xorg_process_matches_session(peer_pid, session)
+    {
+        observation.peer_executable = PeerExecutableV1::Other;
+    }
     if observation.peer_executable != PeerExecutableV1::Xorg {
         return observation;
     }
 
-    let (auth_name, auth_data) = xauthority_for(session.leader, display).unwrap_or_default();
+    let (auth_name, auth_data) =
+        xauthority_for(session.leader, display, locator.used_environment).unwrap_or_default();
     let Ok((stream, _)) = DefaultStream::from_unix_stream(socket) else {
         return observation;
     };
@@ -638,25 +654,25 @@ pub(crate) fn connect_authenticated_local_xorg() -> Option<AuthenticatedLocalXor
         return None;
     }
     let session = &sessions[0];
-    if !session.active
-        || session.remote
-        || !session.remote_host.is_empty()
-        || session.user != rustix::process::geteuid().as_raw()
-        || !ancestry_contains(session.leader)
-        || session.session_type != "x11"
-    {
+    if !session_is_current_local_x11(session) {
         return None;
     }
-    let (display, screen) = parse_display_number(&session.display)?;
+    // See observe_live_host_foundation: environment values locate resources;
+    // they never replace the joined logind/kernel/X11 proof.
+    let environment_display = std::env::var_os("DISPLAY");
+    let locator = display_locator(&session.display, environment_display.as_deref())?;
+    let display = locator.display;
+    let screen = locator.screen;
     let socket = UnixStream::connect(format!("/tmp/.X11-unix/X{display}")).ok()?;
     let credentials = rustix::net::sockopt::socket_peercred(&socket).ok()?;
     let peer_uid = credentials.uid.as_raw();
     if (peer_uid != session.user && !credentials.uid.is_root())
         || classify_peer_executable(credentials.pid.as_raw_pid()) != PeerExecutableV1::Xorg
+        || !xorg_process_matches_session(credentials.pid.as_raw_pid(), session)
     {
         return None;
     }
-    let (auth_name, auth_data) = xauthority_for(session.leader, display)?;
+    let (auth_name, auth_data) = xauthority_for(session.leader, display, locator.used_environment)?;
     let (stream, _) = DefaultStream::from_unix_stream(socket).ok()?;
     let connection = RustConnection::connect_to_stream_with_auth_info(
         stream,
@@ -707,6 +723,15 @@ struct LogindSession {
     active: bool,
     display: String,
     leader: i32,
+    seat: String,
+    vtnr: u16,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct DisplayLocator {
+    display: u16,
+    screen: u16,
+    used_environment: bool,
 }
 
 fn collect_sessions() -> Vec<LogindSession> {
@@ -738,11 +763,12 @@ fn collect_sessions() -> Vec<LogindSession> {
 }
 
 fn show_session(identifier: &str) -> Option<LogindSession> {
-    const PROPERTIES: [&str; 13] = [
+    const PROPERTIES: [&str; 14] = [
         "Id",
         "User",
         "Seat",
         "TTY",
+        "VTNr",
         "Display",
         "Remote",
         "RemoteHost",
@@ -767,11 +793,15 @@ fn show_session(identifier: &str) -> Option<LogindSession> {
             return None;
         }
     }
+    let seat = values.get("Seat").copied()?;
+    let vtnr = values.get("VTNr")?.parse::<u16>().ok()?;
     if values.len() != PROPERTIES.len()
         || values.get("Id").copied()? != identifier
         || values.get("Class").copied()? != "user"
         || values.get("State").copied()? != "active"
-        || values.get("Seat").copied()?.is_empty()
+        || seat.is_empty()
+        || !(1..=63).contains(&vtnr)
+        || values.get("TTY").copied()? != format!("tty{vtnr}")
         || values.get("Scope").copied()?.is_empty()
     {
         return None;
@@ -788,6 +818,8 @@ fn show_session(identifier: &str) -> Option<LogindSession> {
         active: values.get("Active").copied()? == "yes",
         display: values.get("Display").copied()?.to_owned(),
         leader: values.get("Leader")?.parse().ok()?,
+        seat: seat.to_owned(),
+        vtnr,
     })
 }
 
@@ -808,13 +840,17 @@ fn run_loginctl(arguments: &[&str]) -> Option<String> {
 }
 
 fn ancestry_contains(leader: i32) -> bool {
-    if leader <= 1 {
+    let pid = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
+    ancestry_contains_from(pid, leader)
+}
+
+fn ancestry_contains_from(mut pid: i32, ancestor: i32) -> bool {
+    if ancestor <= 1 {
         return false;
     }
-    let mut pid = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
     let mut seen = HashSet::new();
     for _ in 0..128 {
-        if pid == leader {
+        if pid == ancestor {
             return true;
         }
         if pid <= 1 || !seen.insert(pid) {
@@ -836,6 +872,44 @@ fn ancestry_contains(leader: i32) -> bool {
         pid = parent;
     }
     false
+}
+
+fn session_is_current_local_x11(session: &LogindSession) -> bool {
+    session.active
+        && !session.remote
+        && session.remote_host.is_empty()
+        && session.user == rustix::process::geteuid().as_raw()
+        && ancestry_contains(session.leader)
+        && session.session_type == "x11"
+}
+
+fn display_locator(
+    logind_display: &str,
+    environment_display: Option<&std::ffi::OsStr>,
+) -> Option<DisplayLocator> {
+    if !logind_display.is_empty() {
+        let (display, screen) = parse_display_number(logind_display)?;
+        return Some(DisplayLocator {
+            display,
+            screen,
+            used_environment: false,
+        });
+    }
+    let bytes = environment_display?.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_DISPLAY_LOCATOR_BYTES {
+        return None;
+    }
+    let value = std::str::from_utf8(bytes).ok()?;
+    let (display, screen) = parse_display_number(value)?;
+    Some(DisplayLocator {
+        display,
+        screen,
+        used_environment: true,
+    })
+}
+
+pub(crate) fn valid_environment_display_locator(value: &std::ffi::OsStr) -> bool {
+    display_locator("", Some(value)).is_some()
 }
 
 fn parse_display_number(value: &str) -> Option<(u16, u16)> {
@@ -865,7 +939,8 @@ fn classify_peer_executable(pid: i32) -> PeerExecutableV1 {
     };
     match path.file_name().and_then(|name| name.to_str()) {
         Some("Xorg")
-            if metadata.is_file()
+            if path == Path::new("/usr/lib/Xorg")
+                && metadata.is_file()
                 && metadata.uid() == 0
                 && metadata.mode() & 0o111 != 0
                 && metadata.mode() & 0o022 == 0 =>
@@ -883,11 +958,62 @@ fn classify_peer_executable(pid: i32) -> PeerExecutableV1 {
     }
 }
 
-fn xauthority_for(leader: i32, display: u16) -> Option<(Vec<u8>, Vec<u8>)> {
+fn xorg_process_matches_session(pid: i32, session: &LogindSession) -> bool {
+    if !ancestry_contains_from(pid, session.leader) {
+        return false;
+    }
+    let Some(command) = read_bounded(Path::new(&format!("/proc/{pid}/cmdline")), MAX_PROC_BYTES)
+    else {
+        return false;
+    };
+    xorg_command_matches_session(&command, &session.seat, session.vtnr)
+}
+
+fn xorg_command_matches_session(command: &[u8], seat: &str, vtnr: u16) -> bool {
+    if seat.is_empty() || seat.len() > 64 || !(1..=63).contains(&vtnr) {
+        return false;
+    }
+    let arguments = command
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .collect::<Vec<_>>();
+    let seat_matches = arguments
+        .windows(2)
+        .filter(|pair| pair[0] == b"-seat" && pair[1] == seat.as_bytes())
+        .count();
+    let expected_vt = format!("vt{vtnr}");
+    let vt_matches = arguments
+        .iter()
+        .filter(|argument| **argument == expected_vt.as_bytes())
+        .count();
+    seat_matches == 1 && vt_matches == 1
+}
+
+fn xauthority_for(
+    leader: i32,
+    display: u16,
+    allow_current_environment: bool,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let path = process_xauthority_path(leader).or_else(|| {
+        allow_current_environment
+            .then(current_xauthority_path)
+            .flatten()
+    })?;
+    if !valid_xauthority_path(&path) {
+        return None;
+    }
+    parse_xauthority(&read_bounded(&path, MAX_XAUTHORITY_BYTES)?, display)
+}
+
+fn process_xauthority_path(leader: i32) -> Option<PathBuf> {
     let bytes = read_bounded(
         Path::new(&format!("/proc/{leader}/environ")),
         MAX_PROC_BYTES,
     )?;
+    xauthority_path_from_environment(&bytes)
+}
+
+fn xauthority_path_from_environment(bytes: &[u8]) -> Option<PathBuf> {
     let variables = bytes
         .split(|byte| *byte == 0)
         .filter_map(|entry| {
@@ -897,7 +1023,7 @@ fn xauthority_for(leader: i32, display: u16) -> Option<(Vec<u8>, Vec<u8>)> {
                 .map(|separator| (&entry[..separator], &entry[separator + 1..]))
         })
         .collect::<HashMap<_, _>>();
-    let path = variables
+    variables
         .get(&b"XAUTHORITY"[..])
         .filter(|value| !value.is_empty())
         .map(|value| PathBuf::from(std::ffi::OsStr::from_bytes(value)))
@@ -907,8 +1033,34 @@ fn xauthority_for(leader: i32, display: u16) -> Option<(Vec<u8>, Vec<u8>)> {
                 path.push(".Xauthority");
                 path
             })
-        })?;
-    parse_xauthority(&read_bounded(&path, MAX_XAUTHORITY_BYTES)?, display)
+        })
+}
+
+fn current_xauthority_path() -> Option<PathBuf> {
+    let value = std::env::var_os("XAUTHORITY")?;
+    xauthority_environment_locator(&value)
+}
+
+pub(crate) fn valid_environment_xauthority_locator(value: &std::ffi::OsStr) -> bool {
+    xauthority_environment_locator(value).is_some()
+}
+
+fn xauthority_environment_locator(value: &std::ffi::OsStr) -> Option<PathBuf> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_XAUTHORITY_PATH_BYTES {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+fn valid_xauthority_path(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    metadata.is_file()
+        && metadata.uid() == rustix::process::geteuid().as_raw()
+        && metadata.mode() & 0o022 == 0
 }
 
 fn parse_xauthority(bytes: &[u8], display: u16) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -1029,6 +1181,64 @@ mod tests {
         assert_eq!(parse_display_number(":12.1"), Some((12, 1)));
         assert_eq!(parse_display_number("host:0"), None);
         assert_eq!(parse_display_number(":0.1.extra"), None);
+    }
+
+    #[test]
+    fn local_xorg_environment_display_is_only_a_bounded_empty_logind_locator() {
+        let environment = std::ffi::OsStr::new(":0");
+        assert_eq!(
+            display_locator("", Some(environment)),
+            Some(DisplayLocator {
+                display: 0,
+                screen: 0,
+                used_environment: true,
+            })
+        );
+        assert_eq!(
+            display_locator(":12.1", Some(environment)),
+            Some(DisplayLocator {
+                display: 12,
+                screen: 1,
+                used_environment: false,
+            })
+        );
+        for rejected in [
+            "host:0",
+            "localhost:0",
+            "unix/:0",
+            ":0.1.extra",
+            ":0/evil",
+            ":",
+        ] {
+            assert_eq!(
+                display_locator("", Some(std::ffi::OsStr::new(rejected))),
+                None,
+                "{rejected}"
+            );
+        }
+        let oversized = format!(":{}", "1".repeat(32));
+        assert_eq!(
+            display_locator("", Some(std::ffi::OsStr::new(&oversized))),
+            None
+        );
+    }
+
+    #[test]
+    fn local_xorg_peer_command_must_match_logind_seat_and_vt() {
+        let matching = b"/usr/lib/Xorg\0-nolisten\0tcp\0-seat\0seat0\0-auth\0/private\0vt2\0";
+        assert!(xorg_command_matches_session(matching, "seat0", 2));
+        assert!(!xorg_command_matches_session(matching, "seat1", 2));
+        assert!(!xorg_command_matches_session(matching, "seat0", 3));
+        assert!(!xorg_command_matches_session(
+            b"/usr/lib/Xorg\0-seat\0seat0\0-seat\0seat0\0vt2\0",
+            "seat0",
+            2
+        ));
+        assert!(!xorg_command_matches_session(
+            b"/usr/lib/Xorg\0-seat\0seat0\0vt2\0vt2\0",
+            "seat0",
+            2
+        ));
     }
 
     #[test]

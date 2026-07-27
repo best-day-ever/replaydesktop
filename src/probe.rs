@@ -248,6 +248,26 @@ impl BoundedProbeRunner {
         {
             command.env("REPLAY_NVML_SDK_ROOT", root);
         }
+        if matches!(request.source, ProbeSourceV1::Live)
+            && matches!(
+                request.probe,
+                ProbeId::HostFoundation | ProbeId::SelectedOutput
+            )
+        {
+            // The worker starts from an empty environment. Forward only the
+            // bounded local display/auth locators needed to open the socket;
+            // the worker still proves the session and Xorg peer independently.
+            if let Some(display) = std::env::var_os("DISPLAY")
+                && crate::local_xorg::valid_environment_display_locator(&display)
+            {
+                command.env("DISPLAY", display);
+            }
+            if let Some(xauthority) = std::env::var_os("XAUTHORITY")
+                && crate::local_xorg::valid_environment_xauthority_locator(&xauthority)
+            {
+                command.env("XAUTHORITY", xauthority);
+            }
+        }
         let mut child = command.spawn().map_err(|_| ProbeFailure::Spawn)?;
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,

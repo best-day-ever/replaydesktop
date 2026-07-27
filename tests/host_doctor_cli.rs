@@ -92,6 +92,92 @@ fn verify(evidence: &Path, run_id: &str) -> Output {
         .expect("verify process must launch")
 }
 
+fn copied_executable(directory: &Path, label: &str) -> PathBuf {
+    let path = directory.join(label);
+    std::fs::copy(binary(), &path).expect("doctor executable must be copyable");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("copied executable mode must be settable");
+    path
+}
+
+fn run_with_executable(executable: &Path, evidence: &Path) -> Output {
+    Command::new(executable)
+        .args([
+            "run",
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            "1000",
+        ])
+        .output()
+        .expect("copied doctor process must launch")
+}
+
+fn archive_with_executable(executable: &Path, evidence: &Path, archive_root: &Path) -> Output {
+    Command::new(executable)
+        .args([
+            "archive-pre-reboot",
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--archive-root",
+            archive_root
+                .to_str()
+                .expect("archive root path must be UTF-8"),
+        ])
+        .output()
+        .expect("archive process must launch")
+}
+
+fn verify_archive(index: &Path) -> Output {
+    Command::new(binary())
+        .args([
+            "verify-archive",
+            "--index",
+            index.to_str().expect("index path must be UTF-8"),
+        ])
+        .output()
+        .expect("archive verification process must launch")
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(path).expect("JSON file must be readable"))
+        .expect("file must contain JSON")
+}
+
+fn archived_manifest_path(archive_root: &Path) -> PathBuf {
+    let index = read_json(&archive_root.join("index.json"));
+    let relative = index["manifest_path"]
+        .as_str()
+        .expect("index must carry a relative manifest path");
+    assert!(!Path::new(relative).is_absolute());
+    archive_root.join(relative)
+}
+
+fn rewrite_manifest_and_index(
+    archive_root: &Path,
+    mutate: impl FnOnce(&mut Value, &Path),
+) -> PathBuf {
+    let index_path = archive_root.join("index.json");
+    let mut index = read_json(&index_path);
+    let manifest_path = archived_manifest_path(archive_root);
+    let mut manifest = read_json(&manifest_path);
+    mutate(&mut manifest, &manifest_path);
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest must serialize");
+    std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o600))
+        .expect("manifest must become writable for adversarial test");
+    std::fs::write(&manifest_path, &manifest_bytes).expect("manifest mutation must write");
+    std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o400))
+        .expect("manifest mode must be restored");
+    index["manifest_sha256"] = json!(replay_host_doctor::sha256_bytes(&manifest_bytes));
+    let index_bytes = serde_json::to_vec(&index).expect("index must serialize");
+    std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o600))
+        .expect("index must become writable for adversarial test");
+    std::fs::write(&index_path, index_bytes).expect("index mutation must write");
+    std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o400))
+        .expect("index mode must be restored");
+    manifest_path
+}
+
 fn stdout_json(output: &Output) -> Value {
     assert!(output.stderr.is_empty());
     serde_json::from_slice(&output.stdout).expect("stdout must contain one JSON object")
@@ -115,6 +201,270 @@ fn read_envelope(path: &Path) -> replay_host_doctor::G0EvidenceEnvelopeV1 {
     decode_g0_evidence(&std::fs::read(path).expect("evidence must be readable"))
         .expect("evidence must decode")
         .into_v1()
+}
+
+#[test]
+fn archive_proc_self_exe_magic_link_source_open() {
+    let directory = temp_dir("archive-proc-self-exe");
+    let executable = copied_executable(&directory, "running-doctor");
+    let executable_digest =
+        replay_host_doctor::sha256_file(&executable).expect("copied executable must hash");
+    let evidence = directory.join("fresh-live.json");
+    let run = run_with_executable(&executable, &evidence);
+    assert_eq!(run.status.code(), Some(2));
+    let run_id = stdout_json(&run)["run_id"]
+        .as_str()
+        .expect("live result must expose a run ID")
+        .to_owned();
+
+    let archive_root = directory.join("nested/pre-reboot");
+    let archived = archive_with_executable(&executable, &evidence, &archive_root);
+    assert_eq!(archived.status.code(), Some(0));
+    let result = stdout_json(&archived);
+    assert_eq!(result["command"], "archive-pre-reboot");
+    assert_eq!(result["run_id"], run_id);
+
+    let index_path = archive_root.join("index.json");
+    let manifest_path = archived_manifest_path(&archive_root);
+    let manifest = read_json(&manifest_path);
+    assert_eq!(
+        manifest["schema"],
+        "replaydesktop.g0-pre-reboot-archive-manifest.v1"
+    );
+    assert_eq!(
+        manifest["source_executable"]["kind"],
+        "proc-self-exe-magic-link"
+    );
+    assert_eq!(manifest["source_executable"]["file_type"], "regular");
+    assert_eq!(
+        manifest["source_executable"]["size_bytes"],
+        std::fs::metadata(&executable)
+            .expect("copied executable metadata")
+            .len()
+    );
+    for field in ["mode", "device", "inode", "size_bytes"] {
+        assert!(
+            manifest["source_executable"][field].as_u64().is_some(),
+            "source descriptor metadata missing {field}"
+        );
+    }
+
+    let run_directory = manifest_path.parent().expect("manifest must have a parent");
+    let archived_binary = run_directory.join(
+        manifest["archived_binary"]["path"]
+            .as_str()
+            .expect("binary path"),
+    );
+    assert_eq!(
+        replay_host_doctor::sha256_file(&archived_binary).expect("contained executable must hash"),
+        executable_digest
+    );
+    assert_eq!(
+        std::fs::metadata(&archived_binary)
+            .expect("archived executable metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o500
+    );
+    assert_eq!(
+        std::fs::metadata(run_directory.join("g0-evidence.json"))
+            .expect("archived evidence metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o400
+    );
+
+    std::fs::write(&executable, b"replacement build output")
+        .expect("future build replacement must be writable");
+    let verified = verify_archive(&index_path);
+    assert_eq!(verified.status.code(), Some(0));
+    assert_eq!(stdout_json(&verified)["status"], "verified");
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn archive_create_once_rejects_collision_and_symlink_root() {
+    let directory = temp_dir("archive-create-once");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+    let archive_root = directory.join("pre-reboot");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &archive_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let index_before =
+        std::fs::read(archive_root.join("index.json")).expect("index must be readable");
+    let manifest_path = archived_manifest_path(&archive_root);
+    let manifest_before = std::fs::read(&manifest_path).expect("manifest must be readable");
+
+    assert_private_error(
+        &archive_with_executable(&executable, &evidence, &archive_root),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+    assert_eq!(
+        std::fs::read(archive_root.join("index.json")).expect("index must remain readable"),
+        index_before
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("manifest must remain readable"),
+        manifest_before
+    );
+
+    let real_root = directory.join("real-root");
+    std::fs::create_dir(&real_root).expect("real root must be creatable");
+    let symlink_root = directory.join("symlink-root");
+    symlink(&real_root, &symlink_root).expect("root symlink must be creatable");
+    assert_private_error(
+        &archive_with_executable(&executable, &evidence, &symlink_root),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+    assert!(
+        std::fs::read_dir(&real_root)
+            .expect("real root must remain readable")
+            .next()
+            .is_none()
+    );
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn archive_archived_binary_tamper_and_path_escape_fail_closed() {
+    let directory = temp_dir("archive-adversarial");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+
+    let tamper_root = directory.join("tamper-root");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &tamper_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let tamper_manifest_path = archived_manifest_path(&tamper_root);
+    let tamper_manifest = read_json(&tamper_manifest_path);
+    let archived_binary = tamper_manifest_path.parent().unwrap().join(
+        tamper_manifest["archived_binary"]["path"]
+            .as_str()
+            .expect("archived binary path"),
+    );
+    let mut bytes = std::fs::read(&archived_binary).expect("archived binary must be readable");
+    bytes[0] ^= 0xff;
+    std::fs::set_permissions(&archived_binary, std::fs::Permissions::from_mode(0o700))
+        .expect("archived binary must become writable for adversarial test");
+    std::fs::write(&archived_binary, bytes).expect("archived binary mutation must write");
+    std::fs::set_permissions(&archived_binary, std::fs::Permissions::from_mode(0o500))
+        .expect("archived binary mode must be restored");
+    assert_private_error(
+        &verify_archive(&tamper_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    let escape_root = directory.join("escape-root");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &escape_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let outside = directory.join("outside-sentinel");
+    std::fs::write(&outside, b"must not be read as archived binary")
+        .expect("outside sentinel must write");
+    rewrite_manifest_and_index(&escape_root, |manifest, _| {
+        manifest["archived_binary"]["path"] = json!("../outside-sentinel");
+    });
+    assert_private_error(
+        &verify_archive(&escape_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+    assert_eq!(
+        std::fs::read(&outside).expect("outside sentinel must remain readable"),
+        b"must not be read as archived binary"
+    );
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn archive_v1_compat_rejects_malformed_evidence_after_outer_digests_match() {
+    let directory = temp_dir("archive-malformed-v1");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+    let archive_root = directory.join("pre-reboot");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &archive_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(
+        verify_archive(&archive_root.join("index.json"))
+            .status
+            .code(),
+        Some(0)
+    );
+
+    rewrite_manifest_and_index(&archive_root, |manifest, manifest_path| {
+        let archived_evidence = manifest_path.parent().unwrap().join(
+            manifest["evidence"]["path"]
+                .as_str()
+                .expect("archived evidence path"),
+        );
+        let malformed = b"{\"schema\":\"replaydesktop.g0-evidence-envelope\",\"version\":1";
+        std::fs::set_permissions(&archived_evidence, std::fs::Permissions::from_mode(0o600))
+            .expect("evidence must become writable for adversarial test");
+        std::fs::write(&archived_evidence, malformed).expect("malformed evidence must write");
+        std::fs::set_permissions(&archived_evidence, std::fs::Permissions::from_mode(0o400))
+            .expect("evidence mode must be restored");
+        manifest["evidence"]["size_bytes"] = json!(malformed.len());
+        manifest["evidence"]["sha256"] = json!(replay_host_doctor::sha256_bytes(malformed));
+    });
+    assert_private_error(
+        &verify_archive(&archive_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    let diagnostic = directory.join("diagnostic.json");
+    assert_eq!(
+        diagnose_with_fixture(
+            &current_host_fixture(),
+            "current-wayland-driver-mismatch",
+            &diagnostic,
+            500,
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+    assert_private_error(
+        &archive_with_executable(&executable, &diagnostic, &directory.join("diagnostic-root")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }
 
 #[test]

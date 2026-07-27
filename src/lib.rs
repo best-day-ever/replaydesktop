@@ -12,7 +12,7 @@ pub mod probe;
 pub use archive::{
     ArchiveError, ArchivedG0V1, G0ArchiveManifestV1, archive_pre_reboot, verify_archive,
 };
-pub use cli::{DoctorCommand, DoctorExit, DoctorOptions};
+pub use cli::{DoctorCommand, DoctorExit, DoctorOptions, RequiredExtensionStatuses};
 pub use currentness::{CurrentnessPolicy, RunIdentityV1, verify_current_run};
 pub use digest::{Sha256DigestV1, sha256_bytes, sha256_file, sha256_reader};
 pub use evidence::{EvidenceStore, JsonFileEvidenceStore};
@@ -32,8 +32,9 @@ pub use native_nvml::{
     NvmlObservationV1, NvmlProvider, NvmlRuntimeFailureV1, NvmlSourceFailureV1,
 };
 pub use output_mapping::{
-    OutputMappingFailureV1, OutputMappingReasonV1, OutputMappingRelationV1,
-    prove_output_gpu_mapping,
+    OutputCollectionFailureV1, OutputCollectorObservationV1, OutputMappingFailureV1,
+    OutputMappingReasonV1, OutputMappingRelationV1, SelectedOutputDiscoveryV1,
+    SelectedOutputFailureEvidenceV1, collect_fixture_output_topology, prove_output_gpu_mapping,
 };
 pub use probe::{BoundedProbeRunner, FixtureProbeBackend, LiveProbeBackend, ProbeBackend, ProbeId};
 
@@ -104,6 +105,7 @@ pub(crate) fn execute_doctor(options: DoctorOptions) -> DoctorOutput {
 fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorError> {
     match &options.command {
         DoctorCommand::Run {
+            output,
             evidence,
             probe_timeout_ms,
         } => {
@@ -116,11 +118,13 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
                 G0EvidenceProvenanceV1::Live,
                 "run",
                 &backend,
+                output.as_deref(),
             )
         }
         DoctorCommand::Diagnose {
             fixture,
             fixture_case,
+            output,
             evidence,
             probe_timeout_ms,
         } => {
@@ -135,18 +139,30 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
                 G0EvidenceProvenanceV1::Diagnostic,
                 "diagnose",
                 &backend,
+                output.as_deref(),
             )
         }
-        DoctorCommand::VerifyEvidence { evidence, run_id } => {
+        DoctorCommand::VerifyEvidence {
+            evidence,
+            run_id,
+            required_statuses,
+            validate_extensions,
+        } => {
             let store = JsonFileEvidenceStore::new(evidence);
-            let envelope = store.read_exact(run_id)?;
+            let envelope = match run_id {
+                Some(run_id) => store.read_exact(run_id)?,
+                None => store.read_current()?,
+            };
             validate_known_extensions(&envelope)?;
-            verify_current_run(&envelope, run_id, &CurrentnessPolicy::default())
+            validate_requested_extensions(&envelope, validate_extensions)?;
+            validate_required_statuses(&envelope, required_statuses)?;
+            let expected_run_id = run_id.as_deref().unwrap_or(&envelope.base.run_id);
+            verify_current_run(&envelope, expected_run_id, &CurrentnessPolicy::default())
                 .map_err(|_| DoctorError::Persistence)?;
             let value = serde_json::json!({
                 "schema": "replaydesktop.host-doctor-result.v1",
                 "command": "verify-evidence",
-                "run_id": run_id,
+                "run_id": envelope.base.run_id,
                 "status": "verified",
                 "evidence_status": gate_status_name(envelope.base.status),
             });
@@ -226,9 +242,16 @@ fn execute_fresh_run(
     provenance: G0EvidenceProvenanceV1,
     command: &'static str,
     backend: &dyn ProbeBackend,
+    requested_output: Option<&str>,
 ) -> Result<DoctorOutput, DoctorError> {
     let identity = RunIdentityV1::capture(argv.to_vec())?;
-    let outcomes = probe::collect_probes(backend, identity.run_id());
+    let requested_output = match requested_output {
+        Some(value) => {
+            Some(output_mapping::output_name_from_cli(value).ok_or(DoctorError::Internal)?)
+        }
+        None => None,
+    };
+    let outcomes = probe::collect_probes(backend, identity.run_id(), requested_output.as_ref());
     let extensions = probe_extension_records(&outcomes)?;
     let envelope = evaluate_g0(&identity, provenance, extensions)?;
     let run_id = envelope.base.run_id.clone();
@@ -276,9 +299,62 @@ fn validate_known_extensions(envelope: &G0EvidenceEnvelopeV1) -> Result<(), Doct
         .iter()
         .find(|extension| extension.id == HOST_FOUNDATION_EXTENSION_ID)
         .ok_or(DoctorError::Persistence)?;
-    local_xorg::validate_host_foundation_record(foundation)
-        .then_some(())
-        .ok_or(DoctorError::Persistence)
+    let selected_output = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == SELECTED_OUTPUT_EXTENSION_ID)
+        .ok_or(DoctorError::Persistence)?;
+    (local_xorg::validate_host_foundation_record(foundation)
+        && evidence::validate_selected_output_record(selected_output))
+    .then_some(())
+    .ok_or(DoctorError::Persistence)
+}
+
+fn validate_requested_extensions(
+    envelope: &G0EvidenceEnvelopeV1,
+    requested: &[String],
+) -> Result<(), DoctorError> {
+    for identifier in requested {
+        let record = envelope
+            .extensions
+            .iter()
+            .find(|extension| extension.id == *identifier)
+            .ok_or(DoctorError::Persistence)?;
+        let valid = match identifier.as_str() {
+            HOST_FOUNDATION_EXTENSION_ID => local_xorg::validate_host_foundation_record(record),
+            SELECTED_OUTPUT_EXTENSION_ID => evidence::validate_selected_output_record(record),
+            _ => false,
+        };
+        if !valid {
+            return Err(DoctorError::Persistence);
+        }
+    }
+    Ok(())
+}
+
+fn validate_required_statuses(
+    envelope: &G0EvidenceEnvelopeV1,
+    required: &RequiredExtensionStatuses,
+) -> Result<(), DoctorError> {
+    for (identifier, expected) in [
+        (HOST_FOUNDATION_EXTENSION_ID, required.host01),
+        (SELECTED_OUTPUT_EXTENSION_ID, required.host02),
+        (NVFBC_CAPTURE_EXTENSION_ID, required.host03),
+        (NVENC_TUPLES_EXTENSION_ID, required.host04),
+    ] {
+        if let Some(expected) = expected {
+            let actual = envelope
+                .extensions
+                .iter()
+                .find(|extension| extension.id == identifier)
+                .map(|extension| extension.status)
+                .ok_or(DoctorError::Persistence)?;
+            if actual != expected {
+                return Err(DoctorError::Persistence);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -374,6 +450,13 @@ pub fn evaluate_g0(
 fn probe_extension_records(
     outcomes: &[probe::ProbeOutcome],
 ) -> Result<Vec<G0ExtensionRecordV1>, DoctorError> {
+    let selected_outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.probe == ProbeId::SelectedOutput)
+        .ok_or(DoctorError::Internal)?;
+    let (selected_record, selected_output_proven) =
+        selected_output_extension_record(selected_outcome)?;
+
     outcomes
         .iter()
         .map(|outcome| {
@@ -383,15 +466,23 @@ fn probe_extension_records(
                     .as_ref()
                     .and_then(|observation| observation.host_foundation.as_ref())
             {
-                let evidence = local_xorg::evaluate_host_foundation(observation);
+                let mut evidence = local_xorg::evaluate_host_foundation(observation);
+                if selected_output_proven {
+                    evidence.admit_selected_output();
+                }
                 let status = if evidence.has_failure() {
                     G0ExtensionStatusV1::Fail
+                } else if selected_output_proven {
+                    G0ExtensionStatusV1::Pass
                 } else {
                     G0ExtensionStatusV1::Unproven
                 };
                 let payload = serde_json::to_value(evidence).map_err(|_| DoctorError::Internal)?;
                 return extension_record(HOST_FOUNDATION_EXTENSION_ID, status, payload)
                     .map_err(|_| DoctorError::Internal);
+            }
+            if outcome.probe == ProbeId::SelectedOutput {
+                return clone_extension_record(&selected_record);
             }
             let (id, schema) = match outcome.probe {
                 ProbeId::HostFoundation => (
@@ -440,6 +531,91 @@ fn probe_extension_records(
                 .map_err(|_| DoctorError::Internal)
         })
         .collect()
+}
+
+fn selected_output_extension_record(
+    outcome: &probe::ProbeOutcome,
+) -> Result<(G0ExtensionRecordV1, bool), DoctorError> {
+    let Some(observation) = outcome
+        .observation
+        .as_ref()
+        .and_then(|observation| observation.selected_output.as_ref())
+    else {
+        let discovery = output_mapping::SelectedOutputDiscoveryV1 {
+            schema: output_mapping::SELECTED_OUTPUT_DISCOVERY_SCHEMA_V1.to_owned(),
+            candidates: Vec::new(),
+            collection_failure: Some(output_mapping::OutputCollectionFailureV1::InvalidObservation),
+        };
+        return extension_record(
+            SELECTED_OUTPUT_EXTENSION_ID,
+            G0ExtensionStatusV1::Unproven,
+            serde_json::to_value(discovery).map_err(|_| DoctorError::Internal)?,
+        )
+        .map(|record| (record, false))
+        .map_err(|_| DoctorError::Internal);
+    };
+
+    if observation.requested_output.is_none() {
+        let discovery =
+            output_mapping::selected_output_discovery(observation).ok_or(DoctorError::Internal)?;
+        let record = extension_record(
+            SELECTED_OUTPUT_EXTENSION_ID,
+            G0ExtensionStatusV1::Unproven,
+            serde_json::to_value(discovery).map_err(|_| DoctorError::Internal)?,
+        )
+        .map_err(|_| DoctorError::Internal)?;
+        return Ok((record, false));
+    }
+
+    if let Some(topology) = &observation.topology {
+        match prove_output_gpu_mapping(topology) {
+            Ok(selected) => {
+                let record = extension_record(
+                    SELECTED_OUTPUT_EXTENSION_ID,
+                    G0ExtensionStatusV1::Pass,
+                    serde_json::to_value(selected).map_err(|_| DoctorError::Internal)?,
+                )
+                .map_err(|_| DoctorError::Internal)?;
+                return Ok((record, true));
+            }
+            Err(mapping_failure) => {
+                let failure =
+                    output_mapping::selected_output_failure(observation, Some(mapping_failure))
+                        .ok_or(DoctorError::Internal)?;
+                let record = extension_record(
+                    SELECTED_OUTPUT_EXTENSION_ID,
+                    G0ExtensionStatusV1::Fail,
+                    serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
+                )
+                .map_err(|_| DoctorError::Internal)?;
+                return Ok((record, false));
+            }
+        }
+    }
+
+    let failure =
+        output_mapping::selected_output_failure(observation, None).ok_or(DoctorError::Internal)?;
+    let record = extension_record(
+        SELECTED_OUTPUT_EXTENSION_ID,
+        G0ExtensionStatusV1::Fail,
+        serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
+    )
+    .map_err(|_| DoctorError::Internal)?;
+    Ok((record, false))
+}
+
+fn clone_extension_record(
+    record: &G0ExtensionRecordV1,
+) -> Result<G0ExtensionRecordV1, DoctorError> {
+    let payload = RawValue::from_string(record.payload.get().to_owned())
+        .map_err(|_| DoctorError::Internal)?;
+    Ok(G0ExtensionRecordV1 {
+        id: record.id.clone(),
+        version: record.version,
+        status: record.status,
+        payload,
+        payload_sha256: record.payload_sha256,
+    })
 }
 
 pub(crate) fn extension_record(

@@ -145,6 +145,15 @@ impl HostFoundationEvidenceV1 {
         })
     }
 
+    pub(crate) fn admit_selected_output(&mut self) {
+        self.selected_output_correlation = FoundationCheckEvidenceV1 {
+            status: FoundationCheckStatusV1::Pass,
+            observed: 1,
+        };
+        self.reasons
+            .retain(|reason| reason.code != "SELECTED_OUTPUT_CORRELATION_UNPROVEN");
+    }
+
     fn is_valid(&self) -> bool {
         if self.schema != HOST_FOUNDATION_EVIDENCE_SCHEMA_V1
             || !valid_local_xorg_evidence(&self.local_xorg)
@@ -157,9 +166,15 @@ impl HostFoundationEvidenceV1 {
                 .is_some_and(|version| !valid_driver_version(version))
             || self.nvidia_kernel_version != self.nvml.kernel_driver_version
             || !self.nvml.is_valid()
-            || self.selected_output_correlation.status != FoundationCheckStatusV1::Unproven
-            || self.selected_output_correlation.observed != 0
         {
+            return false;
+        }
+        let correlation_proven = match self.selected_output_correlation.status {
+            FoundationCheckStatusV1::Pass => self.selected_output_correlation.observed == 1,
+            FoundationCheckStatusV1::Unproven => self.selected_output_correlation.observed == 0,
+            FoundationCheckStatusV1::Fail => false,
+        };
+        if !correlation_proven {
             return false;
         }
 
@@ -188,10 +203,12 @@ impl HostFoundationEvidenceV1 {
                 .iter()
                 .map(|entry| reason(&entry.code, &entry.remediation)),
         );
-        expected_reasons.push(reason(
-            "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
-            "Select and correlate one physical X11 output in the owning later gate.",
-        ));
+        if self.selected_output_correlation.status == FoundationCheckStatusV1::Unproven {
+            expected_reasons.push(reason(
+                "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
+                "Select and correlate one physical X11 output in the owning later gate.",
+            ));
+        }
         self.reasons == expected_reasons
     }
 }
@@ -223,6 +240,8 @@ pub(crate) fn validate_host_foundation_record(record: &crate::model::G0Extension
     if let Ok(evidence) = serde_json::from_str::<HostFoundationEvidenceV1>(record.payload.get()) {
         let expected_status = if evidence.has_failure() {
             G0ExtensionStatusV1::Fail
+        } else if evidence.selected_output_correlation.status == FoundationCheckStatusV1::Pass {
+            G0ExtensionStatusV1::Pass
         } else {
             G0ExtensionStatusV1::Unproven
         };
@@ -606,6 +625,49 @@ pub fn observe_live_host_foundation() -> HostFoundationObservationV1 {
     observation.randr_provider_count = u32::try_from(providers.providers.len()).unwrap_or(u32::MAX);
     observation.randr_output_count = u32::try_from(resources.outputs.len()).unwrap_or(u32::MAX);
     observation
+}
+
+pub(crate) struct AuthenticatedLocalXorg {
+    pub connection: RustConnection<DefaultStream>,
+    pub root: u32,
+}
+
+pub(crate) fn connect_authenticated_local_xorg() -> Option<AuthenticatedLocalXorg> {
+    let sessions = collect_sessions();
+    if sessions.len() != 1 {
+        return None;
+    }
+    let session = &sessions[0];
+    if !session.active
+        || session.remote
+        || !session.remote_host.is_empty()
+        || session.user != rustix::process::geteuid().as_raw()
+        || !ancestry_contains(session.leader)
+        || session.session_type != "x11"
+    {
+        return None;
+    }
+    let (display, screen) = parse_display_number(&session.display)?;
+    let socket = UnixStream::connect(format!("/tmp/.X11-unix/X{display}")).ok()?;
+    let credentials = rustix::net::sockopt::socket_peercred(&socket).ok()?;
+    let peer_uid = credentials.uid.as_raw();
+    if (peer_uid != session.user && !credentials.uid.is_root())
+        || classify_peer_executable(credentials.pid.as_raw_pid()) != PeerExecutableV1::Xorg
+    {
+        return None;
+    }
+    let (auth_name, auth_data) = xauthority_for(session.leader, display)?;
+    let (stream, _) = DefaultStream::from_unix_stream(socket).ok()?;
+    let connection = RustConnection::connect_to_stream_with_auth_info(
+        stream,
+        usize::from(screen),
+        auth_name,
+        auth_data,
+    )
+    .ok()?;
+    let setup = connection.setup();
+    let root = setup.roots.get(usize::from(screen))?.root;
+    Some(AuthenticatedLocalXorg { connection, root })
 }
 
 fn empty_observation() -> HostFoundationObservationV1 {

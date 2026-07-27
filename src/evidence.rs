@@ -1,5 +1,12 @@
 use crate::digest::{Sha256DigestV1, sha256_bytes};
-use crate::model::{G0EvidenceEnvelopeV1, MAX_G0_ENVELOPE_BYTES, decode_g0_evidence};
+use crate::model::{
+    G0EvidenceEnvelopeV1, G0ExtensionRecordV1, G0ExtensionStatusV1, MAX_G0_ENVELOPE_BYTES,
+    SELECTED_OUTPUT_EXTENSION_ID, SelectedOutputV1, decode_g0_evidence,
+};
+use crate::output_mapping::{
+    SelectedOutputDiscoveryV1, SelectedOutputFailureEvidenceV1, validate_selected_output_discovery,
+    validate_selected_output_evidence, validate_selected_output_failure,
+};
 use rustix::fs::{Mode, OFlags};
 use std::ffi::OsStr;
 use std::fmt;
@@ -17,6 +24,8 @@ pub trait EvidenceStore {
     ) -> Result<G0EvidenceEnvelopeV1, EvidenceError>;
 
     fn read_exact(&self, expected_run_id: &str) -> Result<G0EvidenceEnvelopeV1, EvidenceError>;
+
+    fn read_current(&self) -> Result<G0EvidenceEnvelopeV1, EvidenceError>;
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +114,28 @@ impl EvidenceStore for JsonFileEvidenceStore {
             return Err(EvidenceError::RunIdMismatch);
         }
         Ok(readback)
+    }
+
+    fn read_current(&self) -> Result<G0EvidenceEnvelopeV1, EvidenceError> {
+        read_and_decode(&self.path).map(|(readback, _)| readback)
+    }
+}
+
+pub fn validate_selected_output_record(record: &G0ExtensionRecordV1) -> bool {
+    if record.id != SELECTED_OUTPUT_EXTENSION_ID || record.version != 1 {
+        return false;
+    }
+    match record.status {
+        G0ExtensionStatusV1::Pass => serde_json::from_str::<SelectedOutputV1>(record.payload.get())
+            .is_ok_and(|selected| validate_selected_output_evidence(&selected)),
+        G0ExtensionStatusV1::Fail => {
+            serde_json::from_str::<SelectedOutputFailureEvidenceV1>(record.payload.get())
+                .is_ok_and(|failure| validate_selected_output_failure(&failure))
+        }
+        G0ExtensionStatusV1::Unproven => {
+            serde_json::from_str::<SelectedOutputDiscoveryV1>(record.payload.get())
+                .is_ok_and(|discovery| validate_selected_output_discovery(&discovery))
+        }
     }
 }
 
@@ -356,12 +387,9 @@ mod tests {
     fn selected_output_extension_is_strict_and_cross_field_consistent() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/host02-output-topologies.json");
-        let collected = collect_fixture_output_topology(
-            &fixture,
-            "namespace-disjoint-unique",
-            Some("DP-0"),
-        )
-        .expect("fixture collection");
+        let collected =
+            collect_fixture_output_topology(&fixture, "namespace-disjoint-unique", Some("DP-0"))
+                .expect("fixture collection");
         let mut selected = prove_output_gpu_mapping(
             collected
                 .topology

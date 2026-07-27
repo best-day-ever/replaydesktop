@@ -1,6 +1,11 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::model::{
+    G0ExtensionStatusV1, HOST_FOUNDATION_EXTENSION_ID, NVENC_TUPLES_EXTENSION_ID,
+    NVFBC_CAPTURE_EXTENSION_ID, SELECTED_OUTPUT_EXTENSION_ID,
+};
+
 pub const DEFAULT_PROBE_TIMEOUT_MS: u64 = 2_000;
 pub const MAX_PROBE_TIMEOUT_MS: u64 = 60_000;
 
@@ -13,18 +18,22 @@ pub struct DoctorOptions {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DoctorCommand {
     Run {
+        output: Option<String>,
         evidence: PathBuf,
         probe_timeout_ms: u64,
     },
     Diagnose {
         fixture: PathBuf,
         fixture_case: String,
+        output: Option<String>,
         evidence: PathBuf,
         probe_timeout_ms: u64,
     },
     VerifyEvidence {
         evidence: PathBuf,
-        run_id: String,
+        run_id: Option<String>,
+        required_statuses: RequiredExtensionStatuses,
+        validate_extensions: Vec<String>,
     },
     ArchivePreReboot {
         evidence: PathBuf,
@@ -95,6 +104,9 @@ pub enum CliError {
     DuplicateOption(&'static str),
     UnknownOption,
     InvalidTimeout,
+    InvalidOutput,
+    InvalidStatus,
+    InvalidExtension,
     InvalidRunId,
     InvalidFixtureCase,
     InvalidPath,
@@ -112,6 +124,15 @@ impl fmt::Display for CliError {
             Self::UnknownOption => formatter.write_str("unknown or misplaced option"),
             Self::InvalidTimeout => formatter
                 .write_str("probe timeout must be an integer from 1 through 60000 milliseconds"),
+            Self::InvalidOutput => formatter.write_str(
+                "output must be 1 through 256 UTF-8 bytes and contain no control characters",
+            ),
+            Self::InvalidStatus => {
+                formatter.write_str("required extension status must be pass, fail, or unproven")
+            }
+            Self::InvalidExtension => {
+                formatter.write_str("extension validation requires one known G0 extension ID")
+            }
             Self::InvalidRunId => formatter.write_str("run identity must be visible ASCII"),
             Self::InvalidFixtureCase => {
                 formatter.write_str("fixture case must be a bounded ASCII identifier")
@@ -122,6 +143,14 @@ impl fmt::Display for CliError {
 }
 
 impl std::error::Error for CliError {}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct RequiredExtensionStatuses {
+    pub host01: Option<G0ExtensionStatusV1>,
+    pub host02: Option<G0ExtensionStatusV1>,
+    pub host03: Option<G0ExtensionStatusV1>,
+    pub host04: Option<G0ExtensionStatusV1>,
+}
 
 pub fn dispatch(argv: Vec<String>) -> DoctorOutput {
     match parse(argv) {
@@ -154,11 +183,16 @@ pub fn parse(argv: Vec<String>) -> Result<DoctorOptions, CliError> {
 }
 
 fn parse_run(arguments: &[String]) -> Result<DoctorCommand, CliError> {
+    let mut output = None;
     let mut evidence = None;
     let mut timeout = None;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "--output" => {
+                let value = parse_output(next(arguments, &mut index)?)?;
+                set_once(&mut output, "--output", value)?;
+            }
             "--evidence" => {
                 set_once(&mut evidence, "--evidence", next(arguments, &mut index)?)?;
             }
@@ -171,6 +205,7 @@ fn parse_run(arguments: &[String]) -> Result<DoctorCommand, CliError> {
         index += 1;
     }
     Ok(DoctorCommand::Run {
+        output,
         evidence: PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?),
         probe_timeout_ms: timeout.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS),
     })
@@ -179,6 +214,7 @@ fn parse_run(arguments: &[String]) -> Result<DoctorCommand, CliError> {
 fn parse_diagnose(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     let mut fixture = None;
     let mut fixture_case = None;
+    let mut output = None;
     let mut evidence = None;
     let mut timeout = None;
     let mut index = 0;
@@ -194,6 +230,10 @@ fn parse_diagnose(arguments: &[String]) -> Result<DoctorCommand, CliError> {
                 }
                 set_once(&mut fixture_case, "--fixture-case", value)?;
             }
+            "--output" => {
+                let value = parse_output(next(arguments, &mut index)?)?;
+                set_once(&mut output, "--output", value)?;
+            }
             "--evidence" => {
                 set_once(&mut evidence, "--evidence", next(arguments, &mut index)?)?;
             }
@@ -208,6 +248,7 @@ fn parse_diagnose(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     Ok(DoctorCommand::Diagnose {
         fixture: PathBuf::from(fixture.ok_or(CliError::MissingOption("--fixture"))?),
         fixture_case: fixture_case.unwrap_or_else(|| "positive".to_owned()),
+        output,
         evidence: PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?),
         probe_timeout_ms: timeout.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS),
     })
@@ -216,6 +257,8 @@ fn parse_diagnose(arguments: &[String]) -> Result<DoctorCommand, CliError> {
 fn parse_verify(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     let mut evidence = None;
     let mut run_id = None;
+    let mut required_statuses = RequiredExtensionStatuses::default();
+    let mut validate_extensions = Vec::new();
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -232,13 +275,44 @@ fn parse_verify(arguments: &[String]) -> Result<DoctorCommand, CliError> {
                 }
                 set_once(&mut run_id, "--run-id", value)?;
             }
+            "--require-host01" => {
+                let value = parse_status(next(arguments, &mut index)?)?;
+                set_once(&mut required_statuses.host01, "--require-host01", value)?;
+            }
+            "--require-host02" => {
+                let value = parse_status(next(arguments, &mut index)?)?;
+                set_once(&mut required_statuses.host02, "--require-host02", value)?;
+            }
+            "--require-host03" => {
+                let value = parse_status(next(arguments, &mut index)?)?;
+                set_once(&mut required_statuses.host03, "--require-host03", value)?;
+            }
+            "--require-host04" => {
+                let value = parse_status(next(arguments, &mut index)?)?;
+                set_once(&mut required_statuses.host04, "--require-host04", value)?;
+            }
+            "--validate-extension" => {
+                let value = next(arguments, &mut index)?;
+                if !known_extension(&value) {
+                    return Err(CliError::InvalidExtension);
+                }
+                if validate_extensions
+                    .iter()
+                    .any(|existing| existing == &value)
+                {
+                    return Err(CliError::DuplicateOption("--validate-extension"));
+                }
+                validate_extensions.push(value);
+            }
             _ => return Err(CliError::UnknownOption),
         }
         index += 1;
     }
     Ok(DoctorCommand::VerifyEvidence {
         evidence: PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?),
-        run_id: run_id.ok_or(CliError::MissingOption("--run-id"))?,
+        run_id,
+        required_statuses,
+        validate_extensions,
     })
 }
 
@@ -307,6 +381,31 @@ fn parse_timeout(value: String) -> Result<u64, CliError> {
     Ok(timeout)
 }
 
+fn parse_output(value: String) -> Result<String, CliError> {
+    crate::output_mapping::output_name_from_cli(&value)
+        .map(|_| value)
+        .ok_or(CliError::InvalidOutput)
+}
+
+fn parse_status(value: String) -> Result<G0ExtensionStatusV1, CliError> {
+    match value.as_str() {
+        "pass" => Ok(G0ExtensionStatusV1::Pass),
+        "fail" => Ok(G0ExtensionStatusV1::Fail),
+        "unproven" => Ok(G0ExtensionStatusV1::Unproven),
+        _ => Err(CliError::InvalidStatus),
+    }
+}
+
+fn known_extension(value: &str) -> bool {
+    matches!(
+        value,
+        HOST_FOUNDATION_EXTENSION_ID
+            | SELECTED_OUTPUT_EXTENSION_ID
+            | NVFBC_CAPTURE_EXTENSION_ID
+            | NVENC_TUPLES_EXTENSION_ID
+    )
+}
+
 fn parse_path(value: String) -> Result<String, CliError> {
     if value.is_empty() || value.as_bytes().contains(&0) {
         return Err(CliError::InvalidPath);
@@ -323,7 +422,7 @@ fn valid_fixture_case(value: &str) -> bool {
 }
 
 pub fn public_usage() -> &'static str {
-    "usage:\n  replay-host-doctor run --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> --run-id <ID>\n  replay-host-doctor archive-pre-reboot --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor verify-archive --index <PATH>\n"
+    "usage:\n  replay-host-doctor run [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> [--run-id <ID>] [--require-host01 <STATUS>] [--require-host02 <STATUS>] [--require-host03 <STATUS>] [--require-host04 <STATUS>] [--validate-extension <ID>]\n  replay-host-doctor archive-pre-reboot --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor verify-archive --index <PATH>\n"
 }
 
 #[cfg(test)]

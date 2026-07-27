@@ -12,7 +12,7 @@ const REQUEST_SCHEMA: &str = "replaydesktop.host-probe-request.v1";
 const RESPONSE_SCHEMA: &str = "replaydesktop.host-probe-response.v1";
 const FIXTURE_SCHEMA: &str = "replaydesktop.host01-diagnostic-fixtures.v1";
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
-const MAX_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 8 * 1024;
 const MAX_FIXTURE_BYTES: usize = 1024 * 1024;
 const MAX_OBSERVATION_CODE_BYTES: usize = 256;
@@ -52,6 +52,8 @@ pub struct PrimitiveObservationV1 {
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_output: Option<crate::output_mapping::OutputCollectorObservationV1>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -109,7 +111,12 @@ impl ProbeFailure {
 }
 
 pub trait ProbeBackend {
-    fn observe(&self, probe: ProbeId, parent_nonce: &str) -> ProbeOutcome;
+    fn observe(
+        &self,
+        probe: ProbeId,
+        parent_nonce: &str,
+        requested_output: Option<&crate::model::OutputNameV1>,
+    ) -> ProbeOutcome;
 }
 
 #[derive(Debug, Clone)]
@@ -124,12 +131,18 @@ impl LiveProbeBackend {
 }
 
 impl ProbeBackend for LiveProbeBackend {
-    fn observe(&self, probe: ProbeId, parent_nonce: &str) -> ProbeOutcome {
+    fn observe(
+        &self,
+        probe: ProbeId,
+        parent_nonce: &str,
+        requested_output: Option<&crate::model::OutputNameV1>,
+    ) -> ProbeOutcome {
         let request = ProbeRequestV1 {
             schema: REQUEST_SCHEMA.to_owned(),
             nonce: parent_nonce.to_owned(),
             probe,
             source: ProbeSourceV1::Live,
+            requested_output: requested_output.cloned(),
         };
         match self.runner.run(&request) {
             Ok(observation) => ProbeOutcome::observed(probe, observation),
@@ -160,7 +173,12 @@ impl FixtureProbeBackend {
 }
 
 impl ProbeBackend for FixtureProbeBackend {
-    fn observe(&self, probe: ProbeId, parent_nonce: &str) -> ProbeOutcome {
+    fn observe(
+        &self,
+        probe: ProbeId,
+        parent_nonce: &str,
+        requested_output: Option<&crate::model::OutputNameV1>,
+    ) -> ProbeOutcome {
         let request = ProbeRequestV1 {
             schema: REQUEST_SCHEMA.to_owned(),
             nonce: parent_nonce.to_owned(),
@@ -169,6 +187,7 @@ impl ProbeBackend for FixtureProbeBackend {
                 path: self.fixture.clone(),
                 case_id: self.case_id.clone(),
             },
+            requested_output: requested_output.cloned(),
         };
         match self.runner.run(&request) {
             Ok(observation) => ProbeOutcome::observed(probe, observation),
@@ -314,6 +333,8 @@ impl BoundedProbeRunner {
             || response.probe != request.probe
             || (response.observation.host_foundation.is_some()
                 && request.probe != ProbeId::HostFoundation)
+            || (response.observation.selected_output.is_some()
+                && request.probe != ProbeId::SelectedOutput)
         {
             return Err(ProbeFailure::ProtocolMismatch);
         }
@@ -380,6 +401,8 @@ struct ProbeRequestV1 {
     nonce: String,
     probe: ProbeId,
     source: ProbeSourceV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_output: Option<crate::model::OutputNameV1>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -426,6 +449,11 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
     if request.schema != REQUEST_SCHEMA
         || !valid_nonce(&request.nonce)
         || std::env::var_os("REPLAY_HOST_DOCTOR_WORKER").as_deref() != Some("1".as_ref())
+        || (request.requested_output.is_some() && request.probe != ProbeId::SelectedOutput)
+        || request
+            .requested_output
+            .as_ref()
+            .is_some_and(|name| !crate::output_mapping::validate_output_name_evidence(name))
     {
         return Err(WorkerRequestError);
     }
@@ -437,14 +465,33 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                 available: true,
                 code: "host-foundation-observed".to_owned(),
                 host_foundation: Some(crate::local_xorg::observe_live_host_foundation()),
+                selected_output: None,
             },
         ),
+        ProbeSourceV1::Live if request.probe == ProbeId::SelectedOutput => {
+            let selected_output = crate::output_mapping::collect_live_output_topology(
+                request.requested_output.clone(),
+            );
+            normal_worker_output(
+                &request,
+                PrimitiveObservationV1 {
+                    available: selected_output.collection_failure.is_none(),
+                    code: selected_output.collection_failure.map_or_else(
+                        || "selected-output-observed".to_owned(),
+                        |failure| failure.as_code().to_owned(),
+                    ),
+                    host_foundation: None,
+                    selected_output: Some(selected_output),
+                },
+            )
+        }
         ProbeSourceV1::Live => normal_worker_output(
             &request,
             PrimitiveObservationV1 {
                 available: false,
                 code: "native-probe-not-implemented".to_owned(),
                 host_foundation: None,
+                selected_output: None,
             },
         ),
         ProbeSourceV1::Fixture { path, case_id } => fixture_worker_output(&request, path, case_id),
@@ -458,6 +505,18 @@ fn fixture_worker_output(
 ) -> Result<WorkerOutput, WorkerRequestError> {
     let bytes = read_bounded_file(path, MAX_FIXTURE_BYTES)?;
     validate_duplicate_free_json(&bytes).map_err(|_| WorkerRequestError)?;
+    let schema = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("schema")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or(WorkerRequestError)?;
+    if schema == "replaydesktop.host02-output-topologies.v1" {
+        return fixture_output_mapping_worker(request, path, case_id);
+    }
     let fixture: FixtureDocument =
         serde_json::from_slice(&bytes).map_err(|_| WorkerRequestError)?;
     if fixture.schema != FIXTURE_SCHEMA {
@@ -490,6 +549,7 @@ fn fixture_worker_output(
                     available: observation.available,
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
+                    selected_output: observation.selected_output.clone(),
                 })
                 .map_err(|_| WorkerRequestError)?;
             }
@@ -501,11 +561,13 @@ fn fixture_worker_output(
                     available: observation.available,
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
+                    selected_output: observation.selected_output.clone(),
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
                     host_foundation: None,
+                    selected_output: None,
                 });
             normal_worker_output(request, observation)
         }
@@ -517,6 +579,7 @@ fn fixture_worker_output(
                     available: false,
                     code: "fixture-timeout-returned".to_owned(),
                     host_foundation: None,
+                    selected_output: None,
                 },
             )
         }
@@ -547,6 +610,7 @@ fn fixture_worker_output(
                     available: false,
                     code: "fixture-duplicate-response".to_owned(),
                     host_foundation: None,
+                    selected_output: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -564,11 +628,13 @@ fn fixture_worker_output(
                     available: observation.available,
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
+                    selected_output: observation.selected_output.clone(),
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
                     host_foundation: None,
+                    selected_output: None,
                 });
             let response = ProbeResponseV1 {
                 schema: RESPONSE_SCHEMA.to_owned(),
@@ -607,6 +673,7 @@ fn fixture_worker_output(
                         "secret-not-inherited".to_owned()
                     },
                     host_foundation: None,
+                    selected_output: None,
                 },
             )
         }
@@ -621,6 +688,7 @@ fn fixture_worker_output(
                     available: false,
                     code: "fixture-stderr-rejected".to_owned(),
                     host_foundation: None,
+                    selected_output: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -630,6 +698,40 @@ fn fixture_worker_output(
             })
         }
     }
+}
+
+fn fixture_output_mapping_worker(
+    request: &ProbeRequestV1,
+    path: &Path,
+    case_id: &str,
+) -> Result<WorkerOutput, WorkerRequestError> {
+    if request.probe != ProbeId::SelectedOutput {
+        return normal_worker_output(
+            request,
+            PrimitiveObservationV1 {
+                available: false,
+                code: "fixture-observation-missing".to_owned(),
+                host_foundation: None,
+                selected_output: None,
+            },
+        );
+    }
+    let requested = request
+        .requested_output
+        .as_ref()
+        .and_then(|output| output.display.as_deref());
+    let selected_output =
+        crate::output_mapping::collect_fixture_output_topology(path, case_id, requested)
+            .map_err(|_| WorkerRequestError)?;
+    normal_worker_output(
+        request,
+        PrimitiveObservationV1 {
+            available: true,
+            code: "selected-output-fixture-observed".to_owned(),
+            host_foundation: None,
+            selected_output: Some(selected_output),
+        },
+    )
 }
 
 fn normal_worker_output(
@@ -671,6 +773,14 @@ fn validate_observation(observation: &PrimitiveObservationV1) -> Result<(), ()> 
         if !foundation.is_valid() {
             return Err(());
         }
+    }
+    if let Some(selected_output) = &observation.selected_output
+        && !crate::output_mapping::validate_output_collection_observation(selected_output)
+    {
+        return Err(());
+    }
+    if observation.host_foundation.is_some() && observation.selected_output.is_some() {
+        return Err(());
     }
     Ok(())
 }
@@ -737,6 +847,8 @@ struct FixtureObservation {
     code: String,
     #[serde(default)]
     host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
+    #[serde(default)]
+    selected_output: Option<crate::output_mapping::OutputCollectorObservationV1>,
 }
 
 #[derive(Debug)]
@@ -832,7 +944,11 @@ impl<'de> Visitor<'de> for DuplicateFreeVisitor {
     }
 }
 
-pub fn collect_probes(backend: &dyn ProbeBackend, run_id: &str) -> Vec<ProbeOutcome> {
+pub fn collect_probes(
+    backend: &dyn ProbeBackend,
+    run_id: &str,
+    requested_output: Option<&crate::model::OutputNameV1>,
+) -> Vec<ProbeOutcome> {
     ProbeId::ALL
         .into_iter()
         .map(|probe| {
@@ -841,7 +957,13 @@ pub fn collect_probes(backend: &dyn ProbeBackend, run_id: &str) -> Vec<ProbeOutc
             material.push(0);
             material.extend_from_slice(probe.as_str().as_bytes());
             let nonce = format!("nonce-{}", crate::sha256_bytes(&material));
-            backend.observe(probe, &nonce)
+            backend.observe(
+                probe,
+                &nonce,
+                (probe == ProbeId::SelectedOutput)
+                    .then_some(requested_output)
+                    .flatten(),
+            )
         })
         .collect()
 }

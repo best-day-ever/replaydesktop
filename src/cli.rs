@@ -26,6 +26,13 @@ pub enum DoctorCommand {
         evidence: PathBuf,
         run_id: String,
     },
+    ArchivePreReboot {
+        evidence: PathBuf,
+        archive_root: PathBuf,
+    },
+    VerifyArchive {
+        index: PathBuf,
+    },
     ProbeWorker {
         request_json: String,
     },
@@ -90,6 +97,7 @@ pub enum CliError {
     InvalidTimeout,
     InvalidRunId,
     InvalidFixtureCase,
+    InvalidPath,
 }
 
 impl fmt::Display for CliError {
@@ -108,6 +116,7 @@ impl fmt::Display for CliError {
             Self::InvalidFixtureCase => {
                 formatter.write_str("fixture case must be a bounded ASCII identifier")
             }
+            Self::InvalidPath => formatter.write_str("paths must be non-empty and contain no NUL"),
         }
     }
 }
@@ -133,6 +142,8 @@ pub fn parse(argv: Vec<String>) -> Result<DoctorOptions, CliError> {
         "run" => parse_run(&argv[2..])?,
         "diagnose" => parse_diagnose(&argv[2..])?,
         "verify-evidence" => parse_verify(&argv[2..])?,
+        "archive-pre-reboot" => parse_archive(&argv[2..])?,
+        "verify-archive" => parse_verify_archive(&argv[2..])?,
         "__probe-worker" => parse_worker(&argv[2..])?,
         _ => return Err(CliError::UnknownCommand),
     };
@@ -231,6 +242,39 @@ fn parse_verify(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     })
 }
 
+fn parse_archive(arguments: &[String]) -> Result<DoctorCommand, CliError> {
+    let mut evidence = None;
+    let mut archive_root = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--evidence" => {
+                let value = parse_path(next(arguments, &mut index)?)?;
+                set_once(&mut evidence, "--evidence", value)?;
+            }
+            "--archive-root" => {
+                let value = parse_path(next(arguments, &mut index)?)?;
+                set_once(&mut archive_root, "--archive-root", value)?;
+            }
+            _ => return Err(CliError::UnknownOption),
+        }
+        index += 1;
+    }
+    Ok(DoctorCommand::ArchivePreReboot {
+        evidence: PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?),
+        archive_root: PathBuf::from(archive_root.ok_or(CliError::MissingOption("--archive-root"))?),
+    })
+}
+
+fn parse_verify_archive(arguments: &[String]) -> Result<DoctorCommand, CliError> {
+    if arguments.len() != 2 || arguments[0] != "--index" {
+        return Err(CliError::UnknownOption);
+    }
+    Ok(DoctorCommand::VerifyArchive {
+        index: PathBuf::from(parse_path(arguments[1].clone())?),
+    })
+}
+
 fn parse_worker(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     if arguments.len() != 2 || arguments[0] != "--request-json" {
         return Err(CliError::UnknownOption);
@@ -263,6 +307,13 @@ fn parse_timeout(value: String) -> Result<u64, CliError> {
     Ok(timeout)
 }
 
+fn parse_path(value: String) -> Result<String, CliError> {
+    if value.is_empty() || value.as_bytes().contains(&0) {
+        return Err(CliError::InvalidPath);
+    }
+    Ok(value)
+}
+
 fn valid_fixture_case(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -272,7 +323,7 @@ fn valid_fixture_case(value: &str) -> bool {
 }
 
 pub fn public_usage() -> &'static str {
-    "usage:\n  replay-host-doctor run --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> --run-id <ID>\n"
+    "usage:\n  replay-host-doctor run --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> --run-id <ID>\n  replay-host-doctor archive-pre-reboot --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor verify-archive --index <PATH>\n"
 }
 
 #[cfg(test)]

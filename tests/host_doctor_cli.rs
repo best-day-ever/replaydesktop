@@ -40,6 +40,25 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
+fn remove_archive_test_dir(path: &Path) {
+    fn make_directories_writable(path: &Path) {
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return;
+        };
+        if !metadata.is_dir() {
+            return;
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("test archive directory mode must be restorable");
+        for entry in std::fs::read_dir(path).expect("test archive directory must be readable") {
+            make_directories_writable(&entry.expect("directory entry").path());
+        }
+    }
+
+    make_directories_writable(path);
+    std::fs::remove_dir_all(path).expect("test directory must be removable");
+}
+
 fn diagnose(case: &str, evidence: &Path, timeout_ms: u64) -> Output {
     diagnose_with_fixture(&fixture(), case, evidence, timeout_ms)
 }
@@ -282,7 +301,7 @@ fn archive_proc_self_exe_magic_link_source_open() {
     assert_eq!(verified.status.code(), Some(0));
     assert_eq!(stdout_json(&verified)["status"], "verified");
 
-    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    remove_archive_test_dir(&directory);
 }
 
 #[test]
@@ -336,7 +355,93 @@ fn archive_create_once_rejects_collision_and_symlink_root() {
             .is_none()
     );
 
-    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    remove_archive_test_dir(&directory);
+}
+
+#[test]
+fn archive_create_once_rejects_symlink_wrong_mode_stale_and_pass_sources() {
+    let directory = temp_dir("archive-source-attacks");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+
+    let evidence_symlink = directory.join("evidence-symlink.json");
+    symlink(&evidence, &evidence_symlink).expect("evidence symlink must be creatable");
+    assert_private_error(
+        &archive_with_executable(
+            &executable,
+            &evidence_symlink,
+            &directory.join("symlink-source-root"),
+        ),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o644))
+        .expect("evidence mode must be mutable for adversarial test");
+    assert_private_error(
+        &archive_with_executable(&executable, &evidence, &directory.join("wrong-mode-root")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+    std::fs::set_permissions(&evidence, std::fs::Permissions::from_mode(0o600))
+        .expect("evidence mode must be restored");
+
+    let fresh_document = read_json(&evidence);
+    let mut stale_document = fresh_document.clone();
+    for field in ["wall_started_unix_ns", "wall_finished_unix_ns"] {
+        let value = stale_document["base"][field]
+            .as_u64()
+            .expect("wall time must be an integer");
+        stale_document["base"][field] = json!(value.saturating_sub(600_000_000_000));
+    }
+    for field in ["monotonic_started_ns", "monotonic_finished_ns"] {
+        let value = stale_document["base"][field]
+            .as_u64()
+            .expect("monotonic time must be an integer");
+        stale_document["base"][field] = json!(value.saturating_sub(600_000_000_000));
+    }
+    let stale = directory.join("stale-live.json");
+    std::fs::write(
+        &stale,
+        serde_json::to_vec(&stale_document).expect("stale evidence must serialize"),
+    )
+    .expect("stale evidence must write");
+    std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o600))
+        .expect("stale evidence mode must be set");
+    assert_private_error(
+        &archive_with_executable(&executable, &stale, &directory.join("stale-root")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    let mut pass_document = fresh_document;
+    pass_document["base"]["status"] = json!("pass");
+    pass_document["base"]["reasons"] = json!([]);
+    for extension in pass_document["extensions"]
+        .as_array_mut()
+        .expect("extensions array")
+    {
+        extension["status"] = json!("pass");
+    }
+    let pass = directory.join("forged-pass.json");
+    std::fs::write(
+        &pass,
+        serde_json::to_vec(&pass_document).expect("PASS evidence must serialize"),
+    )
+    .expect("PASS evidence must write");
+    std::fs::set_permissions(&pass, std::fs::Permissions::from_mode(0o600))
+        .expect("PASS evidence mode must be set");
+    assert_private_error(
+        &archive_with_executable(&executable, &pass, &directory.join("pass-root")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    remove_archive_test_dir(&directory);
 }
 
 #[test]
@@ -399,7 +504,96 @@ fn archive_archived_binary_tamper_and_path_escape_fail_closed() {
         b"must not be read as archived binary"
     );
 
-    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    remove_archive_test_dir(&directory);
+}
+
+#[test]
+fn archive_archived_binary_wrong_mode_type_and_partial_files_fail_closed() {
+    let directory = temp_dir("archive-file-attacks");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+
+    let wrong_mode_root = directory.join("wrong-mode");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &wrong_mode_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let wrong_mode_manifest_path = archived_manifest_path(&wrong_mode_root);
+    let wrong_mode_manifest = read_json(&wrong_mode_manifest_path);
+    let wrong_mode_binary = wrong_mode_manifest_path.parent().unwrap().join(
+        wrong_mode_manifest["archived_binary"]["path"]
+            .as_str()
+            .expect("binary path"),
+    );
+    std::fs::set_permissions(&wrong_mode_binary, std::fs::Permissions::from_mode(0o400))
+        .expect("wrong binary mode must be set");
+    assert_private_error(
+        &verify_archive(&wrong_mode_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    let wrong_type_root = directory.join("wrong-type");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &wrong_type_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let wrong_type_manifest_path = archived_manifest_path(&wrong_type_root);
+    let wrong_type_manifest = read_json(&wrong_type_manifest_path);
+    let wrong_type_run = wrong_type_manifest_path.parent().unwrap();
+    let wrong_type_evidence = wrong_type_run.join(
+        wrong_type_manifest["evidence"]["path"]
+            .as_str()
+            .expect("evidence path"),
+    );
+    std::fs::set_permissions(wrong_type_run, std::fs::Permissions::from_mode(0o700))
+        .expect("run directory must become writable for adversarial test");
+    std::fs::remove_file(&wrong_type_evidence).expect("evidence must be replaceable in test");
+    symlink(&evidence, &wrong_type_evidence).expect("archived evidence symlink must be creatable");
+    std::fs::set_permissions(wrong_type_run, std::fs::Permissions::from_mode(0o500))
+        .expect("run directory mode must be restored");
+    assert_private_error(
+        &verify_archive(&wrong_type_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    let partial_root = directory.join("partial");
+    assert_eq!(
+        archive_with_executable(&executable, &evidence, &partial_root)
+            .status
+            .code(),
+        Some(0)
+    );
+    let partial_manifest_path = archived_manifest_path(&partial_root);
+    let partial_manifest = read_json(&partial_manifest_path);
+    let partial_evidence = partial_manifest_path.parent().unwrap().join(
+        partial_manifest["evidence"]["path"]
+            .as_str()
+            .expect("evidence path"),
+    );
+    let mut partial_bytes = std::fs::read(&partial_evidence).expect("archived evidence must read");
+    partial_bytes.truncate(partial_bytes.len() / 2);
+    std::fs::set_permissions(&partial_evidence, std::fs::Permissions::from_mode(0o600))
+        .expect("evidence must become writable for adversarial test");
+    std::fs::write(&partial_evidence, partial_bytes).expect("partial evidence must write");
+    std::fs::set_permissions(&partial_evidence, std::fs::Permissions::from_mode(0o400))
+        .expect("evidence mode must be restored");
+    assert_private_error(
+        &verify_archive(&partial_root.join("index.json")),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+
+    remove_archive_test_dir(&directory);
 }
 
 #[test]
@@ -464,7 +658,7 @@ fn archive_v1_compat_rejects_malformed_evidence_after_outer_digests_match() {
         "ARCHIVE_PERSISTENCE",
     );
 
-    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    remove_archive_test_dir(&directory);
 }
 
 #[test]

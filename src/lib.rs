@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod cli;
 pub mod currentness;
 pub mod digest;
@@ -7,6 +8,9 @@ pub mod model;
 pub mod native_nvml;
 pub mod probe;
 
+pub use archive::{
+    ArchiveError, ArchivedG0V1, G0ArchiveManifestV1, archive_pre_reboot, verify_archive,
+};
 pub use cli::{DoctorCommand, DoctorExit, DoctorOptions};
 pub use currentness::{CurrentnessPolicy, RunIdentityV1, verify_current_run};
 pub use digest::{Sha256DigestV1, sha256_bytes, sha256_file, sha256_reader};
@@ -41,6 +45,7 @@ use std::time::Duration;
 enum DoctorError {
     Internal,
     Persistence,
+    ArchivePersistence,
 }
 
 impl From<CurrentnessError> for DoctorError {
@@ -52,6 +57,12 @@ impl From<CurrentnessError> for DoctorError {
 impl From<EvidenceError> for DoctorError {
     fn from(_: EvidenceError) -> Self {
         Self::Persistence
+    }
+}
+
+impl From<ArchiveError> for DoctorError {
+    fn from(_: ArchiveError) -> Self {
+        Self::ArchivePersistence
     }
 }
 
@@ -74,6 +85,9 @@ pub(crate) fn execute_doctor(options: DoctorOptions) -> DoctorOutput {
         }
         Err(DoctorError::Persistence) => {
             DoctorOutput::failure(DoctorExit::Persistence, "EVIDENCE_PERSISTENCE")
+        }
+        Err(DoctorError::ArchivePersistence) => {
+            DoctorOutput::failure(DoctorExit::Persistence, "ARCHIVE_PERSISTENCE")
         }
     }
 }
@@ -126,6 +140,47 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
                 "run_id": run_id,
                 "status": "verified",
                 "evidence_status": gate_status_name(envelope.base.status),
+            });
+            Ok(DoctorOutput {
+                exit: DoctorExit::Success,
+                stdout: format!(
+                    "{}\n",
+                    serde_json::to_string(&value).expect("result JSON must serialize")
+                ),
+                stderr: String::new(),
+            })
+        }
+        DoctorCommand::ArchivePreReboot {
+            evidence,
+            archive_root,
+        } => {
+            let archived = archive_pre_reboot(archive_root, evidence)?;
+            let value = serde_json::json!({
+                "schema": "replaydesktop.g0-pre-reboot-archive-result.v1",
+                "command": "archive-pre-reboot",
+                "run_id": archived.manifest.run_id,
+                "status": "archived",
+                "index": archived.index_path,
+                "manifest_sha256": archived.manifest_sha256,
+            });
+            Ok(DoctorOutput {
+                exit: DoctorExit::Success,
+                stdout: format!(
+                    "{}\n",
+                    serde_json::to_string(&value).expect("result JSON must serialize")
+                ),
+                stderr: String::new(),
+            })
+        }
+        DoctorCommand::VerifyArchive { index } => {
+            let manifest = verify_archive(index)?;
+            let value = serde_json::json!({
+                "schema": "replaydesktop.g0-pre-reboot-archive-result.v1",
+                "command": "verify-archive",
+                "run_id": manifest.run_id,
+                "status": "verified",
+                "evidence_status": gate_status_name(manifest.evidence_status),
+                "archived_binary_sha256": manifest.archived_binary.sha256,
             });
             Ok(DoctorOutput {
                 exit: DoctorExit::Success,

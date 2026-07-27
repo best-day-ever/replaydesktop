@@ -164,7 +164,7 @@ pub fn archive_pre_reboot(
     let evidence_metadata = evidence_source
         .metadata()
         .map_err(|source| io_error("evidence source metadata", source))?;
-    require_regular_source(&evidence_metadata, Some(0o600))?;
+    require_regular_source(&evidence_metadata, Some(0o600), true)?;
     let evidence_bytes = read_limited(
         &mut evidence_source,
         MAX_G0_ENVELOPE_BYTES,
@@ -185,7 +185,7 @@ pub fn archive_pre_reboot(
     let executable_metadata = executable_source
         .metadata()
         .map_err(|source| io_error("proc executable descriptor metadata", source))?;
-    require_regular_source(&executable_metadata, None)?;
+    require_regular_source(&executable_metadata, None, false)?;
     if executable_metadata.len() > MAX_ARCHIVED_BINARY_BYTES {
         return Err(ArchiveError::InvalidSource(
             "executing binary exceeds archive bound",
@@ -751,9 +751,10 @@ fn require_absent(directory: &File, name: &OsStr) -> Result<(), ArchiveError> {
 fn require_regular_source(
     metadata: &std::fs::Metadata,
     expected_mode: Option<u32>,
+    require_single_link: bool,
 ) -> Result<(), ArchiveError> {
     if !metadata.is_file()
-        || metadata.nlink() != 1
+        || (require_single_link && metadata.nlink() != 1)
         || expected_mode.is_some_and(|mode| metadata.mode() & 0o777 != mode)
     {
         return Err(ArchiveError::InvalidSource(

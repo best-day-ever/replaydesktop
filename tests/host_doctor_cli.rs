@@ -1,7 +1,7 @@
 use replay_host_doctor::decode_g0_evidence;
 use replay_host_doctor::model::{G0EvidenceProvenanceV1, G0ExtensionStatusV1, G0GateStatusV1};
 use serde_json::{Value, json};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +24,10 @@ fn session_fixture() -> PathBuf {
 fn current_host_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/current-wayland-driver-mismatch.json")
+}
+
+fn pre_reboot_archive_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/validation/g0/pre-reboot")
 }
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -223,9 +227,71 @@ fn read_envelope(path: &Path) -> replay_host_doctor::G0EvidenceEnvelopeV1 {
 }
 
 #[test]
+fn pre_reboot_archive_manifest_path_digest_schema() {
+    let archive_root = pre_reboot_archive_root();
+    let index_path = archive_root.join("index.json");
+    let index_bytes = std::fs::read(&index_path).expect("immutable archive index must exist");
+    let index: Value = serde_json::from_slice(&index_bytes).expect("archive index must be JSON");
+    assert_eq!(
+        index["schema"],
+        "replaydesktop.g0-pre-reboot-archive-index.v1"
+    );
+    assert_eq!(index["version"], 1);
+
+    let manifest_relative = index["manifest_path"]
+        .as_str()
+        .expect("index must name the contained manifest");
+    let manifest_relative = Path::new(manifest_relative);
+    assert!(!manifest_relative.is_absolute());
+    assert_eq!(manifest_relative.components().count(), 2);
+    assert!(
+        manifest_relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    );
+    assert_eq!(
+        manifest_relative.file_name().and_then(|name| name.to_str()),
+        Some("manifest.json")
+    );
+
+    let manifest_path = archive_root.join(manifest_relative);
+    let manifest_bytes =
+        std::fs::read(&manifest_path).expect("contained manifest must be readable");
+    assert_eq!(
+        replay_host_doctor::sha256_bytes(&manifest_bytes).to_string(),
+        index["manifest_sha256"]
+            .as_str()
+            .expect("index must carry a manifest digest")
+    );
+    let manifest: replay_host_doctor::G0ArchiveManifestV1 =
+        serde_json::from_slice(&manifest_bytes).expect("manifest must strictly decode");
+    assert_eq!(
+        manifest.schema,
+        "replaydesktop.g0-pre-reboot-archive-manifest.v1"
+    );
+    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.provenance, G0EvidenceProvenanceV1::Live);
+    assert_eq!(manifest.evidence_status, G0GateStatusV1::Fail);
+    assert_eq!(manifest.archived_binary.path, "replay-host-doctor");
+    assert_eq!(manifest.evidence.path, "g0-evidence.json");
+
+    let verified =
+        replay_host_doctor::verify_archive(&index_path).expect("immutable archive must verify");
+    assert_eq!(verified, manifest);
+}
+
+#[test]
 fn archive_proc_self_exe_magic_link_source_open() {
     let directory = temp_dir("archive-proc-self-exe");
     let executable = copied_executable(&directory, "running-doctor");
+    std::fs::hard_link(&executable, directory.join("cargo-style-hard-link"))
+        .expect("running executable hard link must be creatable");
+    assert_eq!(
+        std::fs::metadata(&executable)
+            .expect("running executable metadata")
+            .nlink(),
+        2
+    );
     let executable_digest =
         replay_host_doctor::sha256_file(&executable).expect("copied executable must hash");
     let evidence = directory.join("fresh-live.json");

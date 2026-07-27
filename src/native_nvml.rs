@@ -200,9 +200,10 @@ impl NvmlObservationV1 {
         if self.runtime.shutdown_attempted && !self.runtime.initialized {
             return false;
         }
-        if !self.runtime.initialized
-            && (self.runtime.userspace_driver_version.is_some() || !self.runtime.devices.is_empty())
-        {
+        if !self.runtime.loaded && self.runtime.userspace_driver_version.is_some() {
+            return false;
+        }
+        if !self.runtime.initialized && !self.runtime.devices.is_empty() {
             return false;
         }
         true
@@ -418,22 +419,11 @@ pub fn evaluate_nvml(
         reasons.push(source_failure_reason(NvmlSourceFailureV1::AbiMismatch));
     }
 
-    if let Some(failure) = observation.runtime.failure {
-        reasons.push(runtime_failure_reason(failure));
-    }
-    if observation.runtime.initialized
-        && (!observation.runtime.shutdown_attempted || !observation.runtime.shutdown_succeeded)
-        && observation.runtime.failure != Some(NvmlRuntimeFailureV1::Shutdown)
-    {
-        reasons.push(runtime_failure_reason(NvmlRuntimeFailureV1::Shutdown));
-    }
-
     let userspace = observation.runtime.userspace_driver_version.as_deref();
     if observation.source_attempted
         && observation.source_failure.is_none()
         && observation.abi_verified
-        && observation.runtime.failure.is_none()
-        && observation.runtime.shutdown_succeeded
+        && observation.runtime.loaded
     {
         match (kernel_driver_version, userspace) {
             (Some(kernel), Some(user)) if kernel != user => reasons.push(nvml_reason(
@@ -449,6 +439,15 @@ pub fn evaluate_nvml(
             )),
             _ => {}
         }
+    }
+    if let Some(failure) = observation.runtime.failure {
+        reasons.push(runtime_failure_reason(failure));
+    }
+    if observation.runtime.initialized
+        && (!observation.runtime.shutdown_attempted || !observation.runtime.shutdown_succeeded)
+        && observation.runtime.failure != Some(NvmlRuntimeFailureV1::Shutdown)
+    {
+        reasons.push(runtime_failure_reason(NvmlRuntimeFailureV1::Shutdown));
     }
 
     let status = if !observation.source_attempted {
@@ -714,6 +713,7 @@ fn verify_compiled_abi() -> Result<(), NvmlSourceFailureV1> {
 trait NvmlApi {
     type Device: Copy;
 
+    fn loaded_userspace_driver_version(&self) -> &str;
     fn initialize(&mut self) -> Result<(), NvmlRuntimeFailureV1>;
     fn driver_version(&mut self) -> Result<String, NvmlRuntimeFailureV1>;
     fn device_count(&mut self) -> Result<u32, NvmlRuntimeFailureV1>;
@@ -725,6 +725,7 @@ trait NvmlApi {
 
 struct DynamicNvmlApi {
     _library: Library,
+    loaded_userspace_driver_version: String,
     initialize: NvmlInitFn,
     shutdown: NvmlShutdownFn,
     driver_version: NvmlDriverVersionFn,
@@ -749,8 +750,10 @@ impl DynamicNvmlApi {
         let device_handle = load_symbol(&library, b"nvmlDeviceGetHandleByIndex_v2\0")?;
         let device_uuid = load_symbol(&library, b"nvmlDeviceGetUUID\0")?;
         let device_pci = load_symbol(&library, b"nvmlDeviceGetPciInfo_v3\0")?;
+        let loaded_userspace_driver_version = loaded_nvml_library_version()?;
         Ok(Self {
             _library: library,
+            loaded_userspace_driver_version,
             initialize,
             shutdown,
             driver_version,
@@ -774,6 +777,10 @@ fn load_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, NvmlRuntime
 
 impl NvmlApi for DynamicNvmlApi {
     type Device = NvmlDevice;
+
+    fn loaded_userspace_driver_version(&self) -> &str {
+        &self.loaded_userspace_driver_version
+    }
 
     fn initialize(&mut self) -> Result<(), NvmlRuntimeFailureV1> {
         let status = unsafe {
@@ -874,6 +881,7 @@ fn status_result(
 fn exercise_runtime<A: NvmlApi>(api: &mut A) -> NvmlRuntimeObservationV1 {
     let mut observation = NvmlRuntimeObservationV1 {
         loaded: true,
+        userspace_driver_version: Some(api.loaded_userspace_driver_version().to_owned()),
         ..NvmlRuntimeObservationV1::default()
     };
     if let Err(failure) = api.initialize() {
@@ -894,7 +902,10 @@ fn collect_runtime_identity<A: NvmlApi>(
     api: &mut A,
     observation: &mut NvmlRuntimeObservationV1,
 ) -> Result<(), NvmlRuntimeFailureV1> {
-    observation.userspace_driver_version = Some(api.driver_version()?);
+    let queried_driver_version = api.driver_version()?;
+    if observation.userspace_driver_version.as_deref() != Some(queried_driver_version.as_str()) {
+        return Err(NvmlRuntimeFailureV1::DriverVersion);
+    }
     let count = api.device_count()?;
     if count == 0 {
         return Err(NvmlRuntimeFailureV1::ZeroDevices);
@@ -932,6 +943,37 @@ fn c_buffer_to_string(buffer: &[c_char]) -> Option<String> {
         return None;
     }
     std::str::from_utf8(value).ok().map(str::to_owned)
+}
+
+fn loaded_nvml_library_version() -> Result<String, NvmlRuntimeFailureV1> {
+    let maps = std::fs::read_to_string("/proc/self/maps")
+        .map_err(|_| NvmlRuntimeFailureV1::DriverVersion)?;
+    parse_loaded_nvml_library_version(&maps).ok_or(NvmlRuntimeFailureV1::DriverVersion)
+}
+
+fn parse_loaded_nvml_library_version(maps: &str) -> Option<String> {
+    const PREFIX: &str = "libnvidia-ml.so.";
+
+    let mut versions = HashSet::new();
+    for line in maps.lines() {
+        let Some(path) = line.split_ascii_whitespace().last() else {
+            continue;
+        };
+        let Some(file_name) = PathBuf::from(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some(version) = file_name.strip_prefix(PREFIX) else {
+            continue;
+        };
+        if valid_version(version) {
+            versions.insert(version.to_owned());
+        }
+    }
+    (versions.len() == 1).then(|| versions.into_iter().next())?
 }
 
 fn valid_version(value: &str) -> bool {
@@ -1005,6 +1047,10 @@ mod tests {
 
     impl NvmlApi for ScriptedApi {
         type Device = usize;
+
+        fn loaded_userspace_driver_version(&self) -> &str {
+            "610.43.03"
+        }
 
         fn initialize(&mut self) -> Result<(), NvmlRuntimeFailureV1> {
             self.calls.push("initialize".to_owned());
@@ -1204,8 +1250,30 @@ mod tests {
         let mut api = ScriptedApi::failing(NvmlRuntimeFailureV1::Initialize);
         let runtime = exercise_runtime(&mut api);
         assert_eq!(runtime.failure, Some(NvmlRuntimeFailureV1::Initialize));
+        assert_eq!(
+            runtime.userspace_driver_version.as_deref(),
+            Some("610.43.03")
+        );
         assert!(!runtime.shutdown_attempted);
         assert_eq!(api.calls, ["initialize"]);
+    }
+
+    #[test]
+    fn nvml_runtime_loaded_library_version_parser_is_exact_and_unambiguous() {
+        let maps = "\
+7f000000-7f001000 r--p 00000000 00:00 1 /usr/lib/libnvidia-ml.so.610.43.03\n\
+7f001000-7f002000 r-xp 00001000 00:00 1 /usr/lib/libnvidia-ml.so.610.43.03\n";
+        assert_eq!(
+            parse_loaded_nvml_library_version(maps).as_deref(),
+            Some("610.43.03")
+        );
+        assert!(parse_loaded_nvml_library_version("").is_none());
+        assert!(
+            parse_loaded_nvml_library_version(&format!(
+                "{maps}7f003000-7f004000 r-xp 0 00:00 2 /opt/libnvidia-ml.so.999.1.2\n"
+            ))
+            .is_none()
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod digest;
 pub mod evidence;
 pub mod local_xorg;
 pub mod model;
+pub mod native_nvml;
 pub mod probe;
 
 pub use cli::{DoctorCommand, DoctorExit, DoctorOptions};

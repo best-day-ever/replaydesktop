@@ -536,3 +536,195 @@ impl<'de> Visitor<'de> for DuplicateFreeVisitor {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::digest::sha256_bytes;
+    use serde_json::Value;
+
+    fn fixture_bytes() -> Vec<u8> {
+        include_bytes!("../tests/fixtures/g0-envelope-v1-foundation.json").to_vec()
+    }
+
+    fn fixture_value() -> Value {
+        serde_json::from_slice(&fixture_bytes()).expect("foundation fixture must be JSON")
+    }
+
+    fn encode_value(value: &Value) -> Vec<u8> {
+        let mut value = value.clone();
+        for extension in value["extensions"]
+            .as_array_mut()
+            .expect("extensions array")
+        {
+            let payload =
+                serde_json::to_string(&extension["payload"]).expect("test payload must serialize");
+            extension["payload_sha256"] = sha256_bytes(payload.as_bytes()).to_string().into();
+        }
+        serde_json::to_vec(&value).expect("test mutation must serialize")
+    }
+
+    fn set_raw_payload(value: &mut Value, extension_index: usize, payload: &str) {
+        value["extensions"][extension_index]["payload"] =
+            serde_json::from_str(payload).expect("test payload must be JSON");
+        value["extensions"][extension_index]["payload_sha256"] =
+            sha256_bytes(payload.as_bytes()).to_string().into();
+    }
+
+    #[test]
+    fn g0_envelope_strict_rejects_duplicate_base_and_reason_keys() {
+        let fixture = String::from_utf8(fixture_bytes()).expect("fixture must be UTF-8");
+        let duplicate_base = fixture.replacen(
+            r#"    "run_id": "foundation-fixture-run","#,
+            "    \"run_id\": \"foundation-fixture-run\",\n    \"run_id\": \"duplicate\",",
+            1,
+        );
+        assert!(decode_g0_evidence(duplicate_base.as_bytes()).is_err());
+
+        let duplicate_reason = fixture.replacen(
+            r#"        "status": "unproven""#,
+            "        \"status\": \"unproven\",\n        \"status\": \"fail\"",
+            1,
+        );
+        assert!(decode_g0_evidence(duplicate_reason.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn g0_envelope_strict_rejects_duplicate_extension_record_and_payload_keys() {
+        let fixture = String::from_utf8(fixture_bytes()).expect("fixture must be UTF-8");
+        let duplicate_record = fixture.replacen(
+            r#"      "version": 1,"#,
+            "      \"version\": 1,\n      \"version\": 2,",
+            1,
+        );
+        assert!(decode_g0_evidence(duplicate_record.as_bytes()).is_err());
+
+        let duplicate_payload = fixture.replacen(
+            r#"      "payload": {},"#,
+            "      \"payload\": {\"duplicate\": 1, \"duplicate\": 2},",
+            1,
+        );
+        assert!(matches!(
+            decode_g0_evidence(duplicate_payload.as_bytes()),
+            Err(G0DecodeError::InvalidPayloadJson { .. })
+        ));
+    }
+
+    #[test]
+    fn g0_envelope_strict_rejects_invalid_unicode_and_integer_forms() {
+        let mut invalid_utf8 = fixture_bytes();
+        let run_id_byte = invalid_utf8
+            .windows("foundation-fixture-run".len())
+            .position(|window| window == b"foundation-fixture-run")
+            .expect("fixture run id must exist");
+        invalid_utf8[run_id_byte] = 0xff;
+        assert!(decode_g0_evidence(&invalid_utf8).is_err());
+
+        let fixture = String::from_utf8(fixture_bytes()).expect("fixture must be UTF-8");
+        let fractional = fixture.replacen(
+            r#"    "wall_started_unix_ns": 1785100000000000000,"#,
+            r#"    "wall_started_unix_ns": 1.5,"#,
+            1,
+        );
+        assert!(decode_g0_evidence(fractional.as_bytes()).is_err());
+
+        let overflow = fixture.replacen(
+            r#"    "wall_started_unix_ns": 1785100000000000000,"#,
+            r#"    "wall_started_unix_ns": 18446744073709551616,"#,
+            1,
+        );
+        assert!(decode_g0_evidence(overflow.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn g0_envelope_strict_enforces_payload_and_envelope_boundaries() {
+        let mut value = fixture_value();
+        let exact_payload = format!("\"{}\"", "x".repeat(MAX_G0_EXTENSION_PAYLOAD_BYTES - 2));
+        set_raw_payload(&mut value, 4, &exact_payload);
+        let exact_payload_bytes = encode_value(&value);
+        assert!(decode_g0_evidence(&exact_payload_bytes).is_ok());
+
+        let oversized_payload = format!("\"{}\"", "x".repeat(MAX_G0_EXTENSION_PAYLOAD_BYTES - 1));
+        set_raw_payload(&mut value, 4, &oversized_payload);
+        assert!(matches!(
+            decode_g0_evidence(&encode_value(&value)),
+            Err(G0DecodeError::PayloadTooLarge { .. })
+        ));
+
+        let mut exact_envelope = fixture_bytes();
+        exact_envelope.resize(MAX_G0_ENVELOPE_BYTES, b' ');
+        assert!(decode_g0_evidence(&exact_envelope).is_ok());
+        exact_envelope.push(b' ');
+        assert!(matches!(
+            decode_g0_evidence(&exact_envelope),
+            Err(G0DecodeError::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn g0_envelope_strict_rejects_malformed_payload_and_gate_summary_mismatch() {
+        let fixture = String::from_utf8(fixture_bytes()).expect("fixture must be UTF-8");
+        let malformed = fixture.replacen(
+            r#"      "payload": {},"#,
+            "      \"payload\": {\"unterminated\": true,",
+            1,
+        );
+        assert!(decode_g0_evidence(malformed.as_bytes()).is_err());
+
+        let mut inconsistent = fixture_value();
+        inconsistent["base"]["provenance"] = "live".into();
+        inconsistent["base"]["status"] = "pass".into();
+        inconsistent["base"]["reasons"] = Value::Array(Vec::new());
+        assert!(decode_g0_evidence(&encode_value(&inconsistent)).is_err());
+
+        let mut missing_known = fixture_value();
+        missing_known["extensions"]
+            .as_array_mut()
+            .expect("extensions array")
+            .remove(0);
+        missing_known["base"]["reasons"]
+            .as_array_mut()
+            .expect("reasons array")
+            .remove(0);
+        assert!(decode_g0_evidence(&encode_value(&missing_known)).is_err());
+    }
+
+    #[test]
+    fn g0_unknown_extension_preservation() {
+        const UNKNOWN_ID: &str = "future-display-proof.v2";
+        const UNKNOWN_PAYLOAD: &str = r#"{ "future": [1, 2, 3], "note": "preserve me" }"#;
+
+        let decoded = decode_g0_evidence(&fixture_bytes()).expect("fixture must decode");
+        let unknown = decoded
+            .as_v1()
+            .extensions
+            .iter()
+            .find(|extension| extension.id == UNKNOWN_ID)
+            .expect("unknown extension must remain present");
+        assert_eq!(unknown.payload.get(), UNKNOWN_PAYLOAD);
+        assert_eq!(
+            sha256_bytes(unknown.payload.get().as_bytes()),
+            unknown.payload_sha256
+        );
+
+        let encoded = serde_json::to_vec(decoded.as_v1()).expect("envelope must re-encode");
+        let decoded_again = decode_g0_evidence(&encoded).expect("re-encoded envelope must decode");
+        let unknown_again = decoded_again
+            .as_v1()
+            .extensions
+            .iter()
+            .find(|extension| extension.id == UNKNOWN_ID)
+            .expect("unknown extension must survive re-encoding");
+        assert_eq!(unknown_again.payload.get(), UNKNOWN_PAYLOAD);
+    }
+
+    #[test]
+    fn g0_envelope_strict_keeps_known_payload_semantics_separate() {
+        let mut value = fixture_value();
+        let payload = r#"{"future_known_schema":{"nested":[true,42,"opaque"]}}"#;
+        set_raw_payload(&mut value, 0, payload);
+        let decoded = decode_g0_evidence(&encode_value(&value))
+            .expect("base decoder must not own known extension payload semantics");
+        assert_eq!(decoded.as_v1().extensions[0].payload.get(), payload);
+    }
+}

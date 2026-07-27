@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Phase 1 context gathered
-last_updated: "2026-07-26T23:46:47.033Z"
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-07-27T00:33:37.801Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 0
+  completed_plans: 1
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 1 of 10
-Status: Executing Phase 01
+Plan: 2 of 10
+Status: Ready to execute
 Last activity: 2026-07-27 — Phase 01 execution started
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 10%
 
 ## Performance Metrics
 
@@ -54,6 +54,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: No execution data
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 01 P01 | 33 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -66,6 +71,10 @@ Recent decisions affecting current work:
 - [Phase 2]: Reproducibility and authenticated direct transport precede all performance evidence.
 - [Phase 5]: Keep pinned libVLC unless exact decoder/copy/queue/presentation evidence requires the narrow native adapter.
 - [Phase 6]: Hardware 4:2:0 latency proof and HEVC 4:4:4 fidelity proof remain distinct; AV1 4:4:4 is always invalid.
+- [Phase 01]: Freeze V1 base fields; later host facts remain independently validated extension payloads.
+- [Phase 01]: Require all four known G0 records and derive overall status/reasons from their ordered terminal states.
+- [Phase 01]: Use one sha2-backed 32-byte lowercase SHA-256 identity contract for bytes, readers, and files.
+- [Phase 01]: Deny dependency drift with exact locked-package and direct-feature allowlists.
 
 ### Pending Todos
 
@@ -85,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-26T19:36:07.459Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-host-readiness-gate/01-CONTEXT.md
+Last session: 2026-07-27T00:33:37.791Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: None

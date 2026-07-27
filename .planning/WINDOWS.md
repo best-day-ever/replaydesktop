@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 2
+open_count: 3
 waived_count: 0
-fixed_count: 6
-total_count: 8
-last_updated: 2026-07-27T07:47:43.146Z
+fixed_count: 7
+total_count: 10
+last_updated: 2026-07-27T08:22:29.832Z
 ---
 
 # Broken Windows Ledger
@@ -23,6 +23,8 @@ last_updated: 2026-07-27T07:47:43.146Z
 | 6 | 01 | deviation | src/currentness.rs |  | Expanded default run-duration currentness bound to contain all four maximum worker deadlines. | fixed |  | 2026-07-27T01:07:37.703Z | 2026-07-27T01:07:52.258Z |
 | 7 | 01 | deviation | src/native_nvml.rs |  | Retained the exact loaded NVML userspace version when initialization fails so live kernel/userspace mismatch evidence remains complete | fixed |  | 2026-07-27T07:47:42.911Z | 2026-07-27T07:47:43.071Z |
 | 8 | 01 | deviation | src/archive.rs |  | Accepted Cargo-style hard-linked executable descriptors while retaining single-link evidence input and descriptor-only copying | fixed |  | 2026-07-27T07:47:42.986Z | 2026-07-27T07:47:43.146Z |
+| 9 | 01 | deviation | tests/host_doctor_cli.rs | 112 | Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed. | fixed |  | 2026-07-27T08:22:00.694Z | 2026-07-27T08:22:29.832Z |
+| 10 | 01 | deviation | tests/host_doctor_cli.rs | 655 | Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed. | open |  | 2026-07-27T08:22:24.528Z |  |
 
 ````json
 [
@@ -121,6 +123,30 @@ last_updated: 2026-07-27T07:47:43.146Z
     "reason": "",
     "recorded_at": "2026-07-27T07:47:42.986Z",
     "resolved_at": "2026-07-27T07:47:43.146Z"
+  },
+  {
+    "id": 9,
+    "kind": "deviation",
+    "phase": "01",
+    "file": "tests/host_doctor_cli.rs",
+    "line": 112,
+    "description": "Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-07-27T08:22:00.694Z",
+    "resolved_at": "2026-07-27T08:22:29.832Z"
+  },
+  {
+    "id": 10,
+    "kind": "deviation",
+    "phase": "01",
+    "file": "tests/host_doctor_cli.rs",
+    "line": 655,
+    "description": "Default-parallel full-suite run intermittently hit ETXTBSY launching a copied archive test binary; exact and serial-suite reruns passed.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-07-27T08:22:24.528Z",
+    "resolved_at": null
   }
 ]
 ````

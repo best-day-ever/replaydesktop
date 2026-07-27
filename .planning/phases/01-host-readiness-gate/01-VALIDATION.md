@@ -133,3 +133,30 @@ cargo test --locked pre_reboot_archive_manifest_path_digest_schema -- --exact
 It verifies the relative two-component manifest pointer, index-to-manifest
 digest, schemas, provenance, FAIL status, and the complete offline archive
 verification path.
+
+## Permanent compatibility obligation
+
+The two stable regressions are:
+
+```console
+cargo test --locked g0_v1_foundation_compat -- --exact
+cargo test --locked original_pre_reboot_archive_compat -- --exact
+```
+
+`g0_v1_foundation_compat` decodes the original Plan 01-01 fixture, preserves
+its unchanged V1 base, and proves the unknown `future-display-proof.v2` raw
+payload and payload digest survive re-encoding. The original-archive test
+reads only the immutable index, contained manifest, archived executable, and
+archived evidence. It verifies their fixed digests, strict V1 base identity,
+and every raw extension payload digest without executing the archived binary
+or consulting `target/`.
+
+Plans 01-06, 01-08, and 01-10 must run both named tests before their
+integration/live acceptance. Any plan that changes the base V1 decoder or
+archive verifier has the same obligation. Plans 01-05, 01-07, and 01-09 are
+isolated pure/fixture expansions that do not change those surfaces and do not
+rerun this pair.
+
+Known-extension validators are additional checks; they may not replace either
+the generic base/raw-extension compatibility test or the immutable archive
+verification.

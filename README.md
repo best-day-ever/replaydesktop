@@ -62,6 +62,26 @@ The exact capture transcript, expected exit status, containment checks, and
 recorded host facts are in
 `.planning/phases/01-host-readiness-gate/01-VALIDATION.md`.
 
+### Permanent compatibility gates
+
+The original decoder fixture and the original live archive are permanent
+compatibility inputs:
+
+```console
+cargo test --locked g0_v1_foundation_compat -- --exact
+cargo test --locked original_pre_reboot_archive_compat -- --exact
+```
+
+Plans 01-06, 01-08, and 01-10 must run both named tests at their
+integration/live checkpoints. Any plan that changes the base V1 decoder or
+the archive verifier must also run both. Plans 01-05, 01-07, and 01-09 add
+isolated pure/fixture modules without changing those surfaces, so they do not
+rerun this compatibility pair.
+
+Known-extension validators are additional checks; they may not replace the
+generic V1 base/raw-extension regression or the original offline archive
+verification.
+
 ## Diagnostic fixtures
 
 Fixtures exercise the same worker, evaluator, persistence, and readback path:

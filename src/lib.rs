@@ -3,6 +3,7 @@ pub mod currentness;
 pub mod digest;
 pub mod evidence;
 pub mod model;
+pub mod probe;
 
 pub use cli::{DoctorCommand, DoctorExit, DoctorOptions};
 pub use currentness::{CurrentnessPolicy, RunIdentityV1, verify_current_run};
@@ -12,6 +13,7 @@ pub use model::{
     DecodedG0Evidence, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
     decode_g0_evidence,
 };
+pub use probe::{BoundedProbeRunner, FixtureProbeBackend, LiveProbeBackend, ProbeBackend, ProbeId};
 
 use cli::{DoctorOutput, public_usage};
 use currentness::CurrentnessError;
@@ -24,6 +26,7 @@ use model::{
 };
 use serde_json::value::RawValue;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Debug)]
 enum DoctorError {
@@ -70,19 +73,38 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
     match &options.command {
         DoctorCommand::Run {
             evidence,
-            probe_timeout_ms: _,
-        } => execute_fresh_run(evidence, &options.argv, G0EvidenceProvenanceV1::Live, "run"),
+            probe_timeout_ms,
+        } => {
+            let backend = LiveProbeBackend::new(BoundedProbeRunner::current(
+                Duration::from_millis(*probe_timeout_ms),
+            ));
+            execute_fresh_run(
+                evidence,
+                &options.argv,
+                G0EvidenceProvenanceV1::Live,
+                "run",
+                &backend,
+            )
+        }
         DoctorCommand::Diagnose {
-            fixture: _,
-            fixture_case: _,
+            fixture,
+            fixture_case,
             evidence,
-            probe_timeout_ms: _,
-        } => execute_fresh_run(
-            evidence,
-            &options.argv,
-            G0EvidenceProvenanceV1::Diagnostic,
-            "diagnose",
-        ),
+            probe_timeout_ms,
+        } => {
+            let backend = FixtureProbeBackend::new(
+                BoundedProbeRunner::current(Duration::from_millis(*probe_timeout_ms)),
+                fixture,
+                fixture_case,
+            );
+            execute_fresh_run(
+                evidence,
+                &options.argv,
+                G0EvidenceProvenanceV1::Diagnostic,
+                "diagnose",
+                &backend,
+            )
+        }
         DoctorCommand::VerifyEvidence { evidence, run_id } => {
             let store = JsonFileEvidenceStore::new(evidence);
             let envelope = store.read_exact(run_id)?;
@@ -104,7 +126,18 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
                 stderr: String::new(),
             })
         }
-        DoctorCommand::ProbeWorker { .. } => Err(DoctorError::Internal),
+        DoctorCommand::ProbeWorker { request_json } => {
+            let worker = probe::worker_output(request_json);
+            Ok(DoctorOutput {
+                exit: if worker.exit_code == 0 {
+                    DoctorExit::Success
+                } else {
+                    DoctorExit::Internal
+                },
+                stdout: worker.stdout,
+                stderr: worker.stderr,
+            })
+        }
         DoctorCommand::Help => Ok(DoctorOutput {
             exit: DoctorExit::Success,
             stdout: public_usage().to_owned(),
@@ -118,9 +151,11 @@ fn execute_fresh_run(
     argv: &[String],
     provenance: G0EvidenceProvenanceV1,
     command: &'static str,
+    backend: &dyn ProbeBackend,
 ) -> Result<DoctorOutput, DoctorError> {
     let identity = RunIdentityV1::capture(argv.to_vec())?;
-    let extensions = unavailable_extension_records()?;
+    let outcomes = probe::collect_probes(backend, identity.run_id());
+    let extensions = probe_extension_records(&outcomes)?;
     let envelope = evaluate_g0(&identity, provenance, extensions)?;
     let run_id = envelope.base.run_id.clone();
     let store = JsonFileEvidenceStore::new(evidence_path);
@@ -250,48 +285,56 @@ pub fn evaluate_g0(
     })
 }
 
-fn unavailable_extension_records() -> Result<Vec<G0ExtensionRecordV1>, DoctorError> {
-    let definitions = [
-        (
-            HOST_FOUNDATION_EXTENSION_ID,
-            serde_json::json!({
-                "schema": "replaydesktop.host-foundation-observation.v1",
-                "admission": "unproven",
-                "reasons": [
-                    "native-local-xorg-not-implemented",
-                    "native-nvml-not-implemented"
-                ]
-            }),
-        ),
-        (
-            SELECTED_OUTPUT_EXTENSION_ID,
-            serde_json::json!({
-                "schema": "replaydesktop.selected-output-observation.v1",
-                "admission": "unproven",
-                "reason": "native-output-proof-not-implemented"
-            }),
-        ),
-        (
-            NVFBC_CAPTURE_EXTENSION_ID,
-            serde_json::json!({
-                "schema": "replaydesktop.nvfbc-capture-observation.v1",
-                "admission": "unproven",
-                "reason": "native-capture-proof-not-implemented"
-            }),
-        ),
-        (
-            NVENC_TUPLES_EXTENSION_ID,
-            serde_json::json!({
-                "schema": "replaydesktop.nvenc-tuples-observation.v1",
-                "admission": "unproven",
-                "reason": "native-encoder-proof-not-implemented"
-            }),
-        ),
-    ];
-    definitions
-        .into_iter()
-        .map(|(id, value)| {
-            extension_record(id, G0ExtensionStatusV1::Unproven, value)
+fn probe_extension_records(
+    outcomes: &[probe::ProbeOutcome],
+) -> Result<Vec<G0ExtensionRecordV1>, DoctorError> {
+    outcomes
+        .iter()
+        .map(|outcome| {
+            let (id, schema) = match outcome.probe {
+                ProbeId::HostFoundation => (
+                    HOST_FOUNDATION_EXTENSION_ID,
+                    "replaydesktop.host-foundation-observation.v1",
+                ),
+                ProbeId::SelectedOutput => (
+                    SELECTED_OUTPUT_EXTENSION_ID,
+                    "replaydesktop.selected-output-observation.v1",
+                ),
+                ProbeId::NvfbcCapture => (
+                    NVFBC_CAPTURE_EXTENSION_ID,
+                    "replaydesktop.nvfbc-capture-observation.v1",
+                ),
+                ProbeId::NvencTuples => (
+                    NVENC_TUPLES_EXTENSION_ID,
+                    "replaydesktop.nvenc-tuples-observation.v1",
+                ),
+            };
+            let payload = if let Some(observation) = &outcome.observation {
+                serde_json::json!({
+                    "schema": schema,
+                    "probe": outcome.probe.as_str(),
+                    "admission": "unproven",
+                    "worker_status": "observed",
+                    "primitive_available": observation.available,
+                    "observation_class": if observation.available {
+                        "primitive-available"
+                    } else {
+                        "primitive-unavailable"
+                    }
+                })
+            } else {
+                let failure = outcome
+                    .failure
+                    .expect("failed probe outcome must carry a typed failure");
+                serde_json::json!({
+                    "schema": schema,
+                    "probe": outcome.probe.as_str(),
+                    "admission": "unproven",
+                    "worker_status": "rejected",
+                    "reason": failure.code()
+                })
+            };
+            extension_record(id, G0ExtensionStatusV1::Unproven, payload)
                 .map_err(|_| DoctorError::Internal)
         })
         .collect()
@@ -696,6 +739,47 @@ fn cli_exit_wrong_run_readback_is_persistence_failure() {
         "wrong-run".to_owned(),
     ]);
     assert_eq!(verify.exit, DoctorExit::Persistence);
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[cfg(test)]
+#[test]
+fn currentness_expired_evidence_is_rejected_after_identity_checks() {
+    use crate::cli::{DoctorExit, dispatch};
+    use crate::currentness::{CurrentnessError, CurrentnessPolicy, verify_current_run};
+
+    let directory = plan_01_02_temp_path("expired");
+    std::fs::create_dir(&directory).expect("test directory must be creatable");
+    let evidence = directory.join("g0-evidence.json");
+    let output = dispatch(vec![
+        "replay-host-doctor".to_owned(),
+        "run".to_owned(),
+        "--evidence".to_owned(),
+        evidence.display().to_string(),
+    ]);
+    assert_eq!(output.exit, DoctorExit::G0Fail);
+    let mut envelope = decode_g0_evidence(&std::fs::read(&evidence).expect("evidence must exist"))
+        .expect("evidence must decode")
+        .into_v1();
+    let shift = 10_000_000_000;
+    envelope.base.wall_started_unix_ns = envelope.base.wall_started_unix_ns.saturating_sub(shift);
+    envelope.base.wall_finished_unix_ns = envelope.base.wall_finished_unix_ns.saturating_sub(shift);
+    envelope.base.monotonic_started_ns = envelope.base.monotonic_started_ns.saturating_sub(shift);
+    envelope.base.monotonic_finished_ns = envelope.base.monotonic_finished_ns.saturating_sub(shift);
+    let run_id = envelope.base.run_id.clone();
+
+    assert!(matches!(
+        verify_current_run(
+            &envelope,
+            &run_id,
+            &CurrentnessPolicy {
+                max_age_ns: 1_000_000_000,
+                ..CurrentnessPolicy::default()
+            }
+        ),
+        Err(CurrentnessError::EvidenceExpired)
+    ));
 
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }

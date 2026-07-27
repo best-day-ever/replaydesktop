@@ -1,7 +1,5 @@
 use replay_host_doctor::decode_g0_evidence;
-use replay_host_doctor::model::{
-    G0EvidenceProvenanceV1, G0ExtensionStatusV1, G0GateStatusV1,
-};
+use replay_host_doctor::model::{G0EvidenceProvenanceV1, G0ExtensionStatusV1, G0GateStatusV1};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,8 +12,7 @@ fn binary() -> &'static str {
 }
 
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/host01-edge-cases.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host01-edge-cases.json")
 }
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -94,16 +91,55 @@ fn bounded_probe_malformed_oversize_crash_and_duplicate_fail_closed() {
 }
 
 #[test]
+fn bounded_probe_clears_secrets_and_redacts_child_stderr() {
+    let secret = "TOP_SECRET_HOST_DOCTOR_SENTINEL_7f129d";
+    for (case, forbidden) in [
+        ("secret-sentinel", secret),
+        (
+            "path-sentinel",
+            "/private/operator/diagnostic/native-driver-secret-path",
+        ),
+        (
+            "native-error-sentinel",
+            "NVML_PRIVATE_NATIVE_ERROR_0xDEADBEEF",
+        ),
+    ] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = Command::new(binary())
+            .args([
+                "diagnose",
+                "--fixture",
+                fixture().to_str().expect("fixture path must be UTF-8"),
+                "--fixture-case",
+                case,
+                "--evidence",
+                evidence.to_str().expect("evidence path must be UTF-8"),
+                "--probe-timeout-ms",
+                "500",
+            ])
+            .env("REPLAY_HOST_DOCTOR_SECRET_SENTINEL", secret)
+            .output()
+            .expect("doctor process must launch");
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let public = String::from_utf8(output.stdout).expect("stdout must be UTF-8");
+        let diagnostics = String::from_utf8(output.stderr).expect("stderr must be UTF-8");
+        let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+        assert!(!public.contains(forbidden), "case {case}");
+        assert!(!diagnostics.contains(forbidden), "case {case}");
+        assert!(!persisted.contains(forbidden), "case {case}");
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
 fn fixture_admission_positive_is_diagnostic_and_never_passes() {
     let directory = temp_dir("positive");
     let evidence = directory.join("evidence.json");
     let output = diagnose("positive", &evidence, 500);
     assert_eq!(output.status.code(), Some(2));
     let envelope = read_envelope(&evidence);
-    assert_eq!(
-        envelope.base.provenance,
-        G0EvidenceProvenanceV1::Diagnostic
-    );
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Diagnostic);
     assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
     assert!(
         envelope
@@ -112,6 +148,26 @@ fn fixture_admission_positive_is_diagnostic_and_never_passes() {
             .all(|record| record.status == G0ExtensionStatusV1::Unproven)
     );
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn fixture_admission_empty_permuted_duplicate_and_unicode_are_bounded() {
+    for case in ["empty", "permuted", "duplicate-observations", "unicode"] {
+        let directory = temp_dir(case);
+        let evidence = directory.join("evidence.json");
+        let output = diagnose(case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Diagnostic);
+        assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+        assert!(
+            envelope
+                .extensions
+                .iter()
+                .all(|record| record.payload.get().len() < 4096)
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
 }
 
 #[test]
@@ -128,10 +184,7 @@ fn fixture_admission_rejects_identity_verdict_digest_and_cache_claims() {
         let output = diagnose(case, &evidence, 500);
         assert_eq!(output.status.code(), Some(2), "case {case}");
         let envelope = read_envelope(&evidence);
-        assert_eq!(
-            envelope.base.provenance,
-            G0EvidenceProvenanceV1::Diagnostic
-        );
+        assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Diagnostic);
         assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
         let bytes = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
         assert!(!bytes.contains("fixture-owned-run"));

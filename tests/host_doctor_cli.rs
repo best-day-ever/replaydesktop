@@ -1,13 +1,60 @@
 use replay_host_doctor::decode_g0_evidence;
 use replay_host_doctor::model::{G0EvidenceProvenanceV1, G0ExtensionStatusV1, G0GateStatusV1};
 use serde_json::{Value, json};
+use std::ffi::OsStr;
+use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command as StdCommand, Output, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// A fork during std::fs::copy can inherit another thread's writable executable
+// descriptor until exec, making that copied inode transiently fail with ETXTBSY.
+static PROCESS_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct Command(StdCommand);
+
+impl Command {
+    fn new(program: impl AsRef<OsStr>) -> Self {
+        Self(StdCommand::new(program))
+    }
+
+    fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.0.arg(arg);
+        self
+    }
+
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.0.args(args);
+        self
+    }
+
+    fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
+        self.0.env(key, value);
+        self
+    }
+
+    fn output(&mut self) -> io::Result<Output> {
+        self.0
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = {
+            let _guard = PROCESS_SPAWN_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.0.spawn()?
+        };
+        child.wait_with_output()
+    }
+}
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_replay-host-doctor")
@@ -117,6 +164,9 @@ fn verify(evidence: &Path, run_id: &str) -> Output {
 
 fn copied_executable(directory: &Path, label: &str) -> PathBuf {
     let path = directory.join(label);
+    let _guard = PROCESS_SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::fs::copy(binary(), &path).expect("doctor executable must be copyable");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
         .expect("copied executable mode must be settable");

@@ -258,6 +258,7 @@ fn decode_v1(input: &[u8]) -> Result<G0EvidenceEnvelopeV1, G0DecodeError> {
 
     validate_base(&envelope.base)?;
     validate_extensions(&envelope.extensions)?;
+    validate_gate_summary(&envelope.base, &envelope.extensions)?;
     Ok(envelope)
 }
 
@@ -415,6 +416,51 @@ fn validate_extensions(extensions: &[G0ExtensionRecordV1]) -> Result<(), G0Decod
     Ok(())
 }
 
+fn validate_gate_summary(
+    base: &G0EvidenceBaseV1,
+    extensions: &[G0ExtensionRecordV1],
+) -> Result<(), G0DecodeError> {
+    let mut expected_reasons = Vec::with_capacity(G0KnownExtensionV1::ALL.len());
+
+    for known in G0KnownExtensionV1::ALL {
+        let extension = extensions
+            .iter()
+            .find(|extension| extension.id == known.identifier())
+            .ok_or_else(|| {
+                G0DecodeError::InvalidEnvelope(format!(
+                    "missing required extension record: {}",
+                    known.identifier()
+                ))
+            })?;
+
+        if !matches!(extension.status, G0ExtensionStatusV1::Pass) {
+            expected_reasons.push(G0ReasonV1 {
+                extension: known,
+                status: extension.status,
+            });
+        }
+    }
+
+    if base.reasons != expected_reasons {
+        return Err(G0DecodeError::InvalidEnvelope(
+            "base reasons do not exactly match the ordered non-PASS known extensions".to_owned(),
+        ));
+    }
+
+    let expected_status = if expected_reasons.is_empty() {
+        G0GateStatusV1::Pass
+    } else {
+        G0GateStatusV1::Fail
+    };
+    if base.status != expected_status {
+        return Err(G0DecodeError::InvalidEnvelope(
+            "base status does not match the known extension terminal states".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn valid_extension_identifier(identifier: &str) -> bool {
     let bytes = identifier.as_bytes();
     if bytes.is_empty() || bytes.len() > MAX_G0_EXTENSION_IDENTIFIER_BYTES {
@@ -432,6 +478,22 @@ fn valid_extension_identifier(identifier: &str) -> bool {
 }
 
 impl G0KnownExtensionV1 {
+    const ALL: [Self; 4] = [
+        Self::HostFoundation,
+        Self::SelectedOutput,
+        Self::NvfbcCapture,
+        Self::NvencTuples,
+    ];
+
+    const fn identifier(self) -> &'static str {
+        match self {
+            Self::HostFoundation => HOST_FOUNDATION_EXTENSION_ID,
+            Self::SelectedOutput => SELECTED_OUTPUT_EXTENSION_ID,
+            Self::NvfbcCapture => NVFBC_CAPTURE_EXTENSION_ID,
+            Self::NvencTuples => NVENC_TUPLES_EXTENSION_ID,
+        }
+    }
+
     const fn rank(self) -> u8 {
         match self {
             Self::HostFoundation => 0,

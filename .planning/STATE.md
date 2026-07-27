@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-07-27T07:48:45.843Z"
+stopped_at: Completed 01-05-PLAN.md
+last_updated: "2026-07-27T08:26:15.526Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
 Last activity: 2026-07-27 — Phase 01 execution started
 
-Progress: [████░░░░░░] 40%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
@@ -62,6 +62,7 @@ Progress: [████░░░░░░] 40%
 | Phase 01 P02 | 29 min | 3 tasks | 9 files |
 | Phase 01-host-readiness-gate P03 | 33m 28s | 3 tasks | 9 files |
 | Phase 01-host-readiness-gate P04 | 29m 58s | 3 tasks | 11 files |
+| Phase 01-host-readiness-gate P05 | 30m 16s | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -89,6 +90,10 @@ Recent decisions affecting current work:
 - [Phase 01]: The loaded libnvidia-ml.so exact filename version is recorded before NVML initialization so initialization failure cannot hide a real kernel/userspace mismatch.
 - [Phase 01]: Archive verification is offline and never executes the archived binary or consults target/ or the current executable.
 - [Phase 01]: Plans 01-06, 01-08, and 01-10 and every base-decoder/archive-verifier change must run both permanent compatibility tests.
+- [Phase 01]: XRandR XIDs and DRM connector IDs remain typed disjoint namespaces; the mapper proves identity only through provider membership, EDID digest, connector kind, exact timing, PCI BDF, and NVML UUID.
+- [Phase 01]: Canonical output-to-GPU PCI identity uses lowercase NVML-compatible dddddddd:bb:dd.f, with sysfs domains zero-extended before exact comparison.
+- [Phase 01]: HOST-02 topology stability requires equal opening and closing RandR observation, DRM, and NVML snapshot digests plus RandR timestamps.
+- [Phase 01]: NV-CONTROL is not required; live collection and selected-output evidence integration remain Plan 01-06 scope.
 
 ### Pending Todos
 
@@ -108,6 +113,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-27T07:48:45.834Z
-Stopped at: Completed 01-04-PLAN.md
+Last session: 2026-07-27T08:26:15.518Z
+Stopped at: Completed 01-05-PLAN.md
 Resume file: None

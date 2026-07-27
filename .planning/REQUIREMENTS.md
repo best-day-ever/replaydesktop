@@ -53,7 +53,7 @@ with immersive control and working clipboard synchronization.
   blocks on a non-Xorg session, NVIDIA kernel/userspace mismatch, failed NVML,
   missing physical output, missing `/dev/uinput`, or missing DRM/render access.
 
-- [ ] **HOST-02**: An operator can select exactly one physical X11 output, and
+- [x] **HOST-02**: An operator can select exactly one physical X11 output, and
   startup reports its XRandR name, dimensions, refresh rate, GPU, and desktop
   origin.
 
@@ -330,7 +330,7 @@ requirements are intentionally excluded.
 | CONN-04 | Phase 2 | Pending |
 | CONN-05 | Phase 2 | Pending |
 | HOST-01 | Phase 1 | Complete |
-| HOST-02 | Phase 1 | Pending |
+| HOST-02 | Phase 1 | Complete |
 | HOST-03 | Phase 1 | Pending |
 | HOST-04 | Phase 1 | Pending |
 | HOST-05 | Phase 3 | Pending |

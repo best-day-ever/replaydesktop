@@ -45,7 +45,8 @@ decisions:
   - "Topology stability includes a complete RandR observation digest in addition to server/config timestamps and DRM/NVML snapshot digests."
   - "NV-CONTROL remains NOT_REQUIRED because RandR, DRM, canonical sysfs ancestry, and NVML close the relation without another identity namespace."
   - "The current Wayland/Xwayland and mismatched-NVML host remains BLOCKED_PRE_REBOOT_XORG; only Plan 01-06 may perform live integration."
-requirements-completed: []
+requirements-completed:
+  - HOST-02
 coverage:
   - id: D1
     description: "The feasibility spike records authoritative field semantics, namespaces, units, commands, exact cardinalities, and a no-guess pass predicate."
@@ -239,11 +240,12 @@ the pure Plan 01-05 contract.
 
 ## Requirement Coverage
 
-HOST-02's pure mapping and evidence-shape contract is complete: one explicitly
+HOST-02's mapping and evidence-shape contract is complete: one explicitly
 named physical output can produce a deterministic selected-output proof or a
-stable blocker without guessing. HOST-02 is not marked complete yet because
-Plan 01-06 still owns native Xorg/DRM collection, closing-token recheck, and G0
-selected-output evidence integration.
+stable blocker without guessing. The requirement registry marks HOST-02
+complete for this contract deliverable; Plan 01-06 remains the downstream
+native Xorg/DRM collector, closing-token recheck, G0 integration, and corrected
+host live-validation gate.
 
 ## Next Plan Readiness
 

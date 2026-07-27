@@ -6,6 +6,7 @@ pub mod evidence;
 pub mod local_xorg;
 pub mod model;
 pub mod native_nvml;
+pub mod output_mapping;
 pub mod probe;
 
 pub use archive::{
@@ -19,12 +20,20 @@ pub use local_xorg::{
     HostFoundationEvidenceV1, HostFoundationObservationV1, LocalXorgEvidenceV1, prove_local_xorg,
 };
 pub use model::{
-    DecodedG0Evidence, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
-    decode_g0_evidence,
+    DecodedG0Evidence, DrmConnectorIdV1, DrmConnectorObservationV1, ExactModeTimingV1,
+    G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
+    NvmlDeviceIdentityObservationV1, OutputMappingProofCardinalitiesV1, OutputNameV1,
+    OutputTopologyObservationV1, OutputTopologyTokenV1, PhysicalConnectorKindV1,
+    RandrOutputObservationV1, RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1,
+    XrandrCrtcXidV1, XrandrModeXidV1, XrandrOutputXidV1, XrandrProviderXidV1, decode_g0_evidence,
 };
 pub use native_nvml::{
     LiveUnavailableNvmlProvider, NativeNvmlProvider, NvmlDeviceObservationV1, NvmlEvidenceV1,
     NvmlObservationV1, NvmlProvider, NvmlRuntimeFailureV1, NvmlSourceFailureV1,
+};
+pub use output_mapping::{
+    OutputMappingFailureV1, OutputMappingReasonV1, OutputMappingRelationV1,
+    prove_output_gpu_mapping,
 };
 pub use probe::{BoundedProbeRunner, FixtureProbeBackend, LiveProbeBackend, ProbeBackend, ProbeId};
 

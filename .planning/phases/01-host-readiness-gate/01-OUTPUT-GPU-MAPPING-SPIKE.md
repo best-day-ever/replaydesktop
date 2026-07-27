@@ -58,6 +58,7 @@ spike result, not permission to guess.
 | XRandR mode XID | X server resource ID (`CARD32`) | opaque integer | exactly one nonzero active mode |
 | XRandR provider XID | X server resource ID (`CARD32`) | opaque integer | exactly one provider containing both selected output and CRTC |
 | RandR timestamp and config timestamp | X server time (`TIMESTAMP`, represented as `u32`) | server milliseconds modulo 2³²; compare for equality only | one before and one after token |
+| RandR snapshot digest | Digest of every identity-relevant bounded RandR observation | lowercase SHA-256 | one before and one after token |
 | CRTC origin | RandR signed coordinates | pixels; preserve negative values | one `(x,y)` pair |
 | active dimensions | RandR CRTC and mode dimensions | pixels | CRTC dimensions must equal mode display dimensions |
 | RandR dot clock | `ModeInfo.dot_clock` | Hz | one checked nonzero value |
@@ -71,8 +72,8 @@ spike result, not permission to guess.
 | DRM type instance | DRM `connector_type_id` | per-kind number, not globally stable | recorded, never treated as X identity |
 | DRM connector name | Kernel display label such as `DP-1` | bounded visible ASCII | recorded, never matched to XRandR name |
 | DRM mode clock | `drm_mode_modeinfo.clock` | kHz; checked multiply by 1000 to Hz | exact equality after normalization |
-| PCI BDF | Canonical PCI ancestor identity | lowercase `dddd:bb:dd.f` | exactly one canonical BDF |
-| NVML PCI BDF | NVML `busId` | canonical lowercase `dddd:bb:dd.f` | exactly one current device match |
+| PCI BDF | Canonical PCI ancestor identity | lowercase zero-extended `dddddddd:bb:dd.f` | exactly one canonical BDF |
+| NVML PCI BDF | NVML `busId` | canonical lowercase zero-extended `dddddddd:bb:dd.f` | exactly one current device match |
 | NVML UUID | NVML UUID byte string | bounded visible ASCII, `GPU-` prefix | exactly one UUID and no duplicate UUID observation |
 | proof cardinalities | Counts after every relation filter | unsigned bounded counts | every relation count equals one |
 
@@ -134,7 +135,8 @@ Collection rules:
   field and relevant flag exactly.
 - Resolve the connector's `device` link and its PCI ancestor; require the
   canonical `/sys/devices` target and `/sys/bus/pci/devices/<BDF>` target to
-  identify the same device.
+  identify the same device, then zero-extend the domain to the NVML-compatible
+  eight-digit canonical form.
 
 ### NVML
 
@@ -233,9 +235,10 @@ NVML library version: 610.43
 
 The connected sysfs connector was `card1-eDP-1`, with DRM
 `connector_id=836`, status `connected`, state `enabled`, and a canonical device
-ancestor ending in PCI BDF `0000:01:00.0`. Its EDID property was not readable in
-this environment. Those facts do not bridge the Xwayland-emulated output to an
-NVML device. In normalized diagnostic wording this is an
+ancestor ending in sysfs PCI BDF `0000:01:00.0` (normalized contract BDF
+`00000000:01:00.0`). Its EDID property was not readable in this environment.
+Those facts do not bridge the Xwayland-emulated output to an NVML device. In
+normalized diagnostic wording this is an
 `NVML driver/library version mismatch`.
 
 Therefore the reference-machine result is:
@@ -261,6 +264,8 @@ output/GPU evidence.
   names, UUIDs, and topology retries.
 - Normalize clocks and refresh using checked integer arithmetic. Store the
   refresh as a reduced rational, never a floating-point approximation.
+- Reject mode flags whose clock semantics are not implemented by the exact
+  rational derivation; never silently ignore a clock modifier.
 - Preserve XRandR XIDs, DRM IDs, PCI BDF, and NVML UUID in separately named
   fields so downstream consumers cannot compare unlike namespaces by accident.
 

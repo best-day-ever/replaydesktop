@@ -597,6 +597,198 @@ impl<'de> Visitor<'de> for DuplicateFreeVisitor {
     }
 }
 
+pub const SELECTED_OUTPUT_SCHEMA_V1: &str = "replaydesktop.selected-output.v1";
+pub const MAX_OUTPUT_MAPPING_ITEMS_V1: usize = 64;
+pub const MAX_OUTPUT_NAME_BYTES_V1: usize = 256;
+pub const MAX_CONNECTOR_NAME_BYTES_V1: usize = 64;
+pub const MAX_NVML_UUID_BYTES_V1: usize = 96;
+
+macro_rules! typed_xid {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(u32);
+
+        impl $name {
+            pub const fn new(value: u32) -> Self {
+                Self(value)
+            }
+
+            pub const fn get(self) -> u32 {
+                self.0
+            }
+        }
+    };
+}
+
+typed_xid!(XrandrOutputXidV1);
+typed_xid!(XrandrCrtcXidV1);
+typed_xid!(XrandrModeXidV1);
+typed_xid!(XrandrProviderXidV1);
+typed_xid!(DrmConnectorIdV1);
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputNameV1 {
+    pub hex: String,
+    pub display: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhysicalConnectorKindV1 {
+    DisplayPort,
+    HdmiA,
+    HdmiB,
+    DviD,
+    DviI,
+    DviA,
+    Edp,
+    Lvds,
+    Vga,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactModeTimingV1 {
+    pub pixel_clock_hz: u64,
+    pub hdisplay: u16,
+    pub hsync_start: u16,
+    pub hsync_end: u16,
+    pub htotal: u16,
+    pub vdisplay: u16,
+    pub vsync_start: u16,
+    pub vsync_end: u16,
+    pub vtotal: u16,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshRateV1 {
+    pub numerator: u64,
+    pub denominator: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTopologyTokenV1 {
+    pub randr_timestamp: u32,
+    pub randr_config_timestamp: u32,
+    pub randr_snapshot_sha256: Sha256DigestV1,
+    pub drm_snapshot_sha256: Sha256DigestV1,
+    pub nvml_snapshot_sha256: Sha256DigestV1,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RandrOutputObservationV1 {
+    pub output_xid: XrandrOutputXidV1,
+    pub crtc_xid: XrandrCrtcXidV1,
+    pub mode_xid: XrandrModeXidV1,
+    pub name: OutputNameV1,
+    pub connected: bool,
+    pub physical: bool,
+    pub non_desktop: bool,
+    pub clone_output_xids: Vec<XrandrOutputXidV1>,
+    pub connector_kind: PhysicalConnectorKindV1,
+    pub connector_number: Option<u32>,
+    pub width_px: u16,
+    pub height_px: u16,
+    pub origin_x: i16,
+    pub origin_y: i16,
+    pub edid_sha256: Option<Sha256DigestV1>,
+    pub timing: ExactModeTimingV1,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RandrProviderObservationV1 {
+    pub provider_xid: XrandrProviderXidV1,
+    pub name: OutputNameV1,
+    pub capabilities: u32,
+    pub crtc_xids: Vec<XrandrCrtcXidV1>,
+    pub output_xids: Vec<XrandrOutputXidV1>,
+    pub associated_provider_xids: Vec<XrandrProviderXidV1>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrmConnectorObservationV1 {
+    pub connector_id: DrmConnectorIdV1,
+    pub connector_kind: PhysicalConnectorKindV1,
+    pub connector_type_id: u32,
+    pub connector_name: String,
+    pub connected: bool,
+    pub enabled: bool,
+    pub physical: bool,
+    pub mst: bool,
+    pub leased: bool,
+    pub edid_sha256: Option<Sha256DigestV1>,
+    pub canonical_pci_bdfs: Vec<String>,
+    pub active_timing: ExactModeTimingV1,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvmlDeviceIdentityObservationV1 {
+    pub nvml_pci_bdf: String,
+    pub nvml_uuid: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTopologyObservationV1 {
+    pub requested_output_name: OutputNameV1,
+    pub token_before: OutputTopologyTokenV1,
+    pub token_after: OutputTopologyTokenV1,
+    pub randr_outputs: Vec<RandrOutputObservationV1>,
+    pub randr_providers: Vec<RandrProviderObservationV1>,
+    pub drm_connectors: Vec<DrmConnectorObservationV1>,
+    pub nvml_devices: Vec<NvmlDeviceIdentityObservationV1>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputMappingProofCardinalitiesV1 {
+    pub requested_output_matches: u32,
+    pub provider_matches: u32,
+    pub drm_connector_matches: u32,
+    pub canonical_pci_bdf_matches: u32,
+    pub nvml_device_matches: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedOutputV1 {
+    pub schema: String,
+    pub output_name: OutputNameV1,
+    pub randr_output_xid: XrandrOutputXidV1,
+    pub randr_crtc_xid: XrandrCrtcXidV1,
+    pub randr_mode_xid: XrandrModeXidV1,
+    pub randr_provider_xid: XrandrProviderXidV1,
+    pub randr_timestamp: u32,
+    pub randr_config_timestamp: u32,
+    pub width_px: u16,
+    pub height_px: u16,
+    pub origin_x: i16,
+    pub origin_y: i16,
+    pub refresh_hz: RefreshRateV1,
+    pub exact_timing: ExactModeTimingV1,
+    pub edid_sha256: Sha256DigestV1,
+    pub randr_connector_kind: PhysicalConnectorKindV1,
+    pub randr_connector_number: Option<u32>,
+    pub drm_connector_id: DrmConnectorIdV1,
+    pub drm_connector_kind: PhysicalConnectorKindV1,
+    pub drm_connector_type_id: u32,
+    pub drm_connector_name: String,
+    pub drm_canonical_pci_bdf: String,
+    pub nvml_pci_bdf: String,
+    pub nvml_uuid: String,
+    pub topology_token: OutputTopologyTokenV1,
+    pub proof: OutputMappingProofCardinalitiesV1,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

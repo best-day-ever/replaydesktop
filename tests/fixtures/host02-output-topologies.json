@@ -1,6 +1,6 @@
 {
   "schema": "replaydesktop.host02-output-topologies.v1",
-  "fixture_semantics": "Each topology_patch is an RFC 7396 JSON Merge Patch applied to base_topology.",
+  "fixture_semantics": "Each topology_patch is a recursive object overlay applied to base_topology; arrays, scalars, and null replace the base value.",
   "base_topology": {
     "requested_output_name": {
       "hex": "44502d30",
@@ -9,12 +9,14 @@
     "token_before": {
       "randr_timestamp": 1000,
       "randr_config_timestamp": 900,
+      "randr_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "drm_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
     "token_after": {
       "randr_timestamp": 1000,
       "randr_config_timestamp": 900,
+      "randr_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "drm_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
@@ -81,7 +83,7 @@
         "mst": false,
         "leased": false,
         "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "pci_bdf": "0000:01:00.0",
+        "canonical_pci_bdfs": ["00000000:01:00.0"],
         "active_timing": {
           "pixel_clock_hz": 594000000,
           "hdisplay": 3840,
@@ -98,7 +100,7 @@
     ],
     "nvml_devices": [
       {
-        "pci_bdf": "0000:01:00.0",
+        "nvml_pci_bdf": "00000000:01:00.0",
         "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
       }
     ]
@@ -126,7 +128,7 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:01:00.0",
+            "canonical_pci_bdfs": ["00000000:01:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -151,7 +153,7 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:02:00.0",
+            "canonical_pci_bdfs": ["00000000:02:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -168,11 +170,11 @@
         ],
         "nvml_devices": [
           {
-            "pci_bdf": "0000:01:00.0",
+            "nvml_pci_bdf": "00000000:01:00.0",
             "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
           },
           {
-            "pci_bdf": "0000:02:00.0",
+            "nvml_pci_bdf": "00000000:02:00.0",
             "nvml_uuid": "GPU-bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
           }
         ]
@@ -231,7 +233,7 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:01:00.0",
+            "canonical_pci_bdfs": ["00000000:01:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -256,7 +258,7 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:02:00.0",
+            "canonical_pci_bdfs": ["00000000:02:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -333,7 +335,7 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:01:00.0",
+            "canonical_pci_bdfs": ["00000000:01:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -358,7 +360,46 @@
             "mst": false,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:01:00.0",
+            "canonical_pci_bdfs": ["00000000:01:00.0"],
+            "active_timing": {
+              "pixel_clock_hz": 594000000,
+              "hdisplay": 3840,
+              "hsync_start": 4016,
+              "hsync_end": 4104,
+              "htotal": 4400,
+              "vdisplay": 2160,
+              "vsync_start": 2168,
+              "vsync_end": 2178,
+              "vtotal": 2250,
+              "flags": 5
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "multiple-pci-bdfs",
+      "topology_patch": {
+        "drm_connectors": [
+          {
+            "connector_id": 911,
+            "connector_kind": "display-port",
+            "connector_type_id": 1,
+            "connector_name": "DP-1",
+            "connected": true,
+            "enabled": true,
+            "physical": true,
+            "mst": false,
+            "leased": false,
+            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "canonical_pci_bdfs": [
+              "00000000:01:00.0",
+              "00000000:02:00.0"
+            ],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
@@ -384,11 +425,11 @@
       "topology_patch": {
         "nvml_devices": [
           {
-            "pci_bdf": "0000:01:00.0",
+            "nvml_pci_bdf": "00000000:01:00.0",
             "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
           },
           {
-            "pci_bdf": "0000:01:00.0",
+            "nvml_pci_bdf": "00000000:01:00.0",
             "nvml_uuid": "GPU-bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
           }
         ]
@@ -402,10 +443,7 @@
       "id": "topology-changed",
       "topology_patch": {
         "token_after": {
-          "randr_timestamp": 1001,
-          "randr_config_timestamp": 901,
-          "drm_snapshot_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          "randr_snapshot_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         }
       },
       "expected": {
@@ -473,7 +511,7 @@
             "mst": true,
             "leased": false,
             "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pci_bdf": "0000:01:00.0",
+            "canonical_pci_bdfs": ["00000000:01:00.0"],
             "active_timing": {
               "pixel_clock_hz": 594000000,
               "hdisplay": 3840,

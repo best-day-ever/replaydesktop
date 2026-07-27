@@ -7,8 +7,7 @@ use replay_host_doctor::{
 };
 use serde_json::Value;
 
-const SPIKE_PATH: &str =
-    ".planning/phases/01-host-readiness-gate/01-OUTPUT-GPU-MAPPING-SPIKE.md";
+const SPIKE_PATH: &str = ".planning/phases/01-host-readiness-gate/01-OUTPUT-GPU-MAPPING-SPIKE.md";
 const FIXTURE_PATH: &str = "tests/fixtures/host02-output-topologies.json";
 
 fn repository_path(relative: &str) -> PathBuf {
@@ -135,6 +134,7 @@ fn host02_mapping_spike_fixture_covers_adversarial_topologies() {
         ("duplicate-edid-missing-metadata", "blocked"),
         ("multiple-providers", "blocked"),
         ("multiple-drm-connectors", "blocked"),
+        ("multiple-pci-bdfs", "blocked"),
         ("multiple-nvml-matches", "blocked"),
         ("topology-changed", "blocked"),
         ("cloned-output", "blocked"),
@@ -219,6 +219,11 @@ fn host02_mapping_fixture_matrix_is_deterministic_and_fail_closed() {
                         .expect("expected reason"),
                     "case {case_id}"
                 );
+                assert_eq!(
+                    serde_json::to_value(&failure).expect("failure must encode")["reason"],
+                    expected_case["expected"]["reason"],
+                    "case {case_id} must persist the stable reason code"
+                );
             }
             status => panic!("unknown expected status {status:?}"),
         }
@@ -285,8 +290,17 @@ fn host02_mapping_bounds_and_exact_arithmetic_reject_invalid_observations() {
         OutputMappingReasonV1::InvalidObservation
     );
 
+    let mut unsupported_clock_flags = topology.clone();
+    unsupported_clock_flags.randr_outputs[0].timing.flags = 0x1000;
+    assert_eq!(
+        prove_output_gpu_mapping(&unsupported_clock_flags)
+            .expect_err("unimplemented clock modifiers must fail closed")
+            .reason,
+        OutputMappingReasonV1::InvalidObservation
+    );
+
     let mut malformed_bdf = topology;
-    malformed_bdf.drm_connectors[0].canonical_pci_bdf = "0000:GG:00.0".to_owned();
+    malformed_bdf.drm_connectors[0].canonical_pci_bdfs[0] = "00000000:GG:00.0".to_owned();
     assert_eq!(
         prove_output_gpu_mapping(&malformed_bdf)
             .expect_err("malformed canonical PCI BDF must fail")
@@ -310,10 +324,7 @@ fn host02_namespace_disjoint_full_relation_passes_without_id_equality() {
         Some(selected.drm_connector_type_id)
     );
     assert_ne!(selected.output_name.display.as_deref(), Some("DP-1"));
-    assert_eq!(
-        selected.drm_canonical_pci_bdf,
-        selected.nvml_pci_bdf
-    );
+    assert_eq!(selected.drm_canonical_pci_bdf, selected.nvml_pci_bdf);
 }
 
 #[test]
@@ -321,9 +332,6 @@ fn host02_topology_token_change_returns_no_selection() {
     let (topology, _) = topology_case("topology-changed");
     let failure =
         prove_output_gpu_mapping(&topology).expect_err("mixed topology generations must fail");
-    assert_eq!(
-        failure.reason,
-        OutputMappingReasonV1::TopologyChanged
-    );
+    assert_eq!(failure.reason, OutputMappingReasonV1::TopologyChanged);
     assert_eq!(failure.reason.as_code(), "BLOCKED_TOPOLOGY_CHANGED");
 }

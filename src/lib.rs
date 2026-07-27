@@ -126,7 +126,7 @@ fn g0_envelope_bounds_duplicate_extension_identifier() {
     value["extensions"]
         .as_array_mut()
         .expect("extensions array")
-        .push(duplicate);
+        .insert(1, duplicate);
     let bytes = serde_json::to_vec(&value).expect("mutated fixture");
     assert!(matches!(
         decode_g0_evidence(&bytes),

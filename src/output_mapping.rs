@@ -498,3 +498,44 @@ const fn failure(
         observed_cardinality,
     }
 }
+
+#[cfg(test)]
+mod collector_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn host02_live_collector_fixture_rechecks_topology_before_admission() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/host02-output-topologies.json");
+
+        let stable = collect_fixture_output_topology(
+            &fixture,
+            "namespace-disjoint-unique",
+            Some("DP-0"),
+        )
+        .expect("stable fixture collection must succeed");
+        let selected = stable
+            .topology
+            .as_ref()
+            .map(prove_output_gpu_mapping)
+            .expect("an explicit selection must carry a topology")
+            .expect("the full unequal-ID relation must pass");
+        assert_eq!(selected.output_name.display.as_deref(), Some("DP-0"));
+        assert_ne!(
+            selected.randr_output_xid.get(),
+            selected.drm_connector_id.get()
+        );
+
+        let raced =
+            collect_fixture_output_topology(&fixture, "topology-changed", Some("DP-0"))
+                .expect("the collector must preserve a changed closing token");
+        let failure = raced
+            .topology
+            .as_ref()
+            .map(prove_output_gpu_mapping)
+            .expect("an explicit selection must carry a topology")
+            .expect_err("a topology race must remove selection");
+        assert_eq!(failure.reason, OutputMappingReasonV1::TopologyChanged);
+    }
+}

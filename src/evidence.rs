@@ -282,6 +282,8 @@ fn errno_to_io(error: rustix::io::Errno) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{G0ExtensionStatusV1, SELECTED_OUTPUT_EXTENSION_ID};
+    use crate::output_mapping::{collect_fixture_output_topology, prove_output_gpu_mapping};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -348,5 +350,40 @@ mod tests {
         let path = directory.join("nested").join("evidence.json");
         assert!(atomic_write(&path, b"{}").is_err());
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn selected_output_extension_is_strict_and_cross_field_consistent() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/host02-output-topologies.json");
+        let collected = collect_fixture_output_topology(
+            &fixture,
+            "namespace-disjoint-unique",
+            Some("DP-0"),
+        )
+        .expect("fixture collection");
+        let mut selected = prove_output_gpu_mapping(
+            collected
+                .topology
+                .as_ref()
+                .expect("selected fixture must carry topology"),
+        )
+        .expect("fixture relation must pass");
+        let valid = crate::extension_record(
+            SELECTED_OUTPUT_EXTENSION_ID,
+            G0ExtensionStatusV1::Pass,
+            serde_json::to_value(&selected).expect("selected output JSON"),
+        )
+        .expect("extension record");
+        assert!(validate_selected_output_record(&valid));
+
+        selected.nvml_pci_bdf = "00000000:02:00.0".to_owned();
+        let inconsistent = crate::extension_record(
+            SELECTED_OUTPUT_EXTENSION_ID,
+            G0ExtensionStatusV1::Pass,
+            serde_json::to_value(&selected).expect("selected output JSON"),
+        )
+        .expect("extension record");
+        assert!(!validate_selected_output_record(&inconsistent));
     }
 }

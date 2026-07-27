@@ -365,4 +365,49 @@ mod tests {
             assert_eq!(output.exit, DoctorExit::Usage);
         }
     }
+
+    #[test]
+    fn host02_cli_output_is_optional_scalar_and_never_defaulted() {
+        let omitted = parse(vec![
+            "replay-host-doctor".to_owned(),
+            "run".to_owned(),
+            "--evidence".to_owned(),
+            "evidence.json".to_owned(),
+        ])
+        .expect("omitting --output must enter discovery mode");
+        assert!(matches!(
+            omitted.command,
+            DoctorCommand::Run { output: None, .. }
+        ));
+
+        let selected = parse(vec![
+            "replay-host-doctor".to_owned(),
+            "run".to_owned(),
+            "--output".to_owned(),
+            "DP-0".to_owned(),
+            "--evidence".to_owned(),
+            "evidence.json".to_owned(),
+        ])
+        .expect("one exact --output must be accepted");
+        assert!(matches!(
+            selected.command,
+            DoctorCommand::Run {
+                output: Some(ref output),
+                ..
+            } if output == "DP-0"
+        ));
+
+        let duplicate = dispatch(vec![
+            "replay-host-doctor".to_owned(),
+            "run".to_owned(),
+            "--output".to_owned(),
+            "DP-0".to_owned(),
+            "--output".to_owned(),
+            "DP-1".to_owned(),
+            "--evidence".to_owned(),
+            "evidence.json".to_owned(),
+        ]);
+        assert_eq!(duplicate.exit, DoctorExit::Usage);
+        assert!(duplicate.stderr.contains("--output"));
+    }
 }

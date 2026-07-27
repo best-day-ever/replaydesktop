@@ -193,3 +193,142 @@ fn g0_envelope_bounds_invalid_extension_identifier() {
         Err(G0DecodeError::InvalidExtensionIdentifier(_))
     ));
 }
+
+#[cfg(test)]
+fn plan_01_02_temp_path(label: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must follow the Unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "replay-host-doctor-{label}-{}-{timestamp}-{sequence}",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn tracer_path() {
+    use crate::cli::{DoctorExit, dispatch};
+    use crate::model::{G0EvidenceProvenanceV1, G0GateStatusV1};
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = plan_01_02_temp_path("tracer");
+    std::fs::create_dir(&directory).expect("test directory must be creatable");
+    let evidence = directory.join("g0-evidence.json");
+    let argv = vec![
+        "replay-host-doctor".to_owned(),
+        "run".to_owned(),
+        "--evidence".to_owned(),
+        evidence.display().to_string(),
+    ];
+
+    let output = dispatch(argv.clone());
+    assert_eq!(output.exit, DoctorExit::G0Fail);
+    assert!(output.stderr.is_empty());
+
+    let public: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("stdout must be one JSON object");
+    assert_eq!(public["schema"], "replaydesktop.host-doctor-result.v1");
+    assert_eq!(public["status"], "fail");
+    let run_id = public["run_id"]
+        .as_str()
+        .expect("result must expose its run identity");
+
+    let bytes = std::fs::read(&evidence).expect("live FAIL must still persist evidence");
+    let decoded = decode_g0_evidence(&bytes).expect("persisted evidence must decode as V1");
+    let envelope = decoded.as_v1();
+    assert_eq!(envelope.base.run_id, run_id);
+    assert_eq!(envelope.base.argv, argv);
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Live);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    assert_eq!(envelope.base.reasons.len(), 4);
+    assert_eq!(
+        std::fs::metadata(&evidence)
+            .expect("evidence metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    crate::currentness::verify_current_run(
+        envelope,
+        run_id,
+        &crate::currentness::CurrentnessPolicy::default(),
+    )
+    .expect("fresh exact-run evidence must verify");
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[cfg(test)]
+#[test]
+fn cli_exit_usage_does_not_write() {
+    use crate::cli::{DoctorExit, dispatch};
+
+    let directory = plan_01_02_temp_path("usage");
+    std::fs::create_dir(&directory).expect("test directory must be creatable");
+    let evidence = directory.join("must-not-exist.json");
+    let output = dispatch(vec![
+        "replay-host-doctor".to_owned(),
+        "run".to_owned(),
+        "--evidence".to_owned(),
+    ]);
+
+    assert_eq!(output.exit, DoctorExit::Usage);
+    assert!(!output.stderr.is_empty());
+    assert!(!evidence.exists());
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[cfg(test)]
+#[test]
+fn evidence_atomic_rejects_symlink_destination() {
+    use crate::cli::{DoctorExit, dispatch};
+    use std::os::unix::fs::symlink;
+
+    let directory = plan_01_02_temp_path("symlink");
+    std::fs::create_dir(&directory).expect("test directory must be creatable");
+    let target = directory.join("target");
+    let evidence = directory.join("g0-evidence.json");
+    std::fs::write(&target, b"do not replace").expect("sentinel target must be writable");
+    symlink(&target, &evidence).expect("test symlink must be creatable");
+
+    let output = dispatch(vec![
+        "replay-host-doctor".to_owned(),
+        "run".to_owned(),
+        "--evidence".to_owned(),
+        evidence.display().to_string(),
+    ]);
+    assert_eq!(output.exit, DoctorExit::Persistence);
+    assert_eq!(
+        std::fs::read(&target).expect("sentinel target must remain"),
+        b"do not replace"
+    );
+    assert!(
+        std::fs::symlink_metadata(&evidence)
+            .expect("destination symlink must remain")
+            .file_type()
+            .is_symlink()
+    );
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[cfg(test)]
+#[test]
+fn cli_exit_taxonomy_is_stable() {
+    use crate::cli::DoctorExit;
+
+    assert_eq!(DoctorExit::Success.code(), 0);
+    assert_eq!(DoctorExit::G0Fail.code(), 2);
+    assert_eq!(DoctorExit::Usage.code(), 64);
+    assert_eq!(DoctorExit::Internal.code(), 70);
+    assert_eq!(DoctorExit::Persistence.code(), 74);
+}

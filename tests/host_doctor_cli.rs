@@ -325,6 +325,22 @@ fn extension_payload(extension: &replay_host_doctor::G0ExtensionRecordV1) -> Val
     serde_json::from_str(extension.payload.get()).expect("extension payload must be JSON")
 }
 
+fn rewrite_extension_payload(
+    document: &mut Value,
+    identifier: &str,
+    mutate: impl FnOnce(&mut Value),
+) {
+    let extension = document["extensions"]
+        .as_array_mut()
+        .expect("extensions array")
+        .iter_mut()
+        .find(|extension| extension["id"] == identifier)
+        .expect("known extension");
+    mutate(&mut extension["payload"]);
+    let payload = serde_json::to_vec(&extension["payload"]).expect("payload mutation serializes");
+    extension["payload_sha256"] = json!(replay_host_doctor::sha256_bytes(&payload));
+}
+
 #[test]
 fn pre_reboot_archive_manifest_path_digest_schema() {
     let archive_root = pre_reboot_archive_root();
@@ -2285,6 +2301,177 @@ fn host03_process_fixture_tracer_forwards_selected_output_without_live_authority
         G0ExtensionStatusV1::Unproven
     );
     assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host03_process_fixture_cannot_spoof_live_provider_or_leak_native_identifiers() {
+    let source_fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host03-nvfbc-capture.json");
+    let source_mapping = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/host02-output-topologies.json");
+
+    for (case, sentinel) in [
+        (
+            "source-authenticated",
+            "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3",
+        ),
+        (
+            "runtime-path",
+            "/private/operator/libnvidia-fbc.so.610.43.03",
+        ),
+        ("surface-address", "140737488355328"),
+        ("surface-bare-hex", "7ffdeadbeef"),
+        ("surface-path", "../raw-frame"),
+    ] {
+        let directory = temp_dir(&format!("host03-worker-boundary-{case}"));
+        let fixture_path = directory.join("host03-nvfbc-capture.json");
+        std::fs::copy(
+            &source_mapping,
+            directory.join("host02-output-topologies.json"),
+        )
+        .expect("selected-output fixture must copy");
+        let mut fixture: Value =
+            serde_json::from_slice(&std::fs::read(&source_fixture).expect("fixture must read"))
+                .expect("fixture must be JSON");
+
+        match case {
+            "source-authenticated" => {
+                fixture["base_capture"]["provider"] = json!("source-authenticated");
+                fixture["base_capture"]["source"] = json!({
+                    "status": "authenticated",
+                    "identity": sentinel,
+                    "api_version": 0x109,
+                    "nvfbc_header_sha256": "1".repeat(64),
+                    "cuda_header_sha256": "2".repeat(64),
+                    "cuda_typedefs_header_sha256": "3".repeat(64)
+                });
+            }
+            "runtime-path" => {
+                fixture["base_capture"]["source"]["nvfbc_runtime_library"] = json!(sentinel);
+            }
+            "surface-address" | "surface-bare-hex" | "surface-path" => {
+                fixture["base_capture"]["frame"]["source_surface"] = json!(sentinel);
+                fixture["base_capture"]["frame"]["edges"][0]["from_surface"] = json!(sentinel);
+            }
+            _ => unreachable!("static case"),
+        }
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_vec(&fixture).expect("fixture serializes"),
+        )
+        .expect("adversarial fixture must write");
+
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_host02(
+            &fixture_path,
+            "valid-zero-copy",
+            Some("DP-0.3"),
+            &evidence,
+            500,
+        );
+        assert_eq!(output.status.code(), Some(2), "{case}");
+        assert!(output.stderr.is_empty(), "{case}");
+        let persisted =
+            std::fs::read_to_string(&evidence).expect("failed-closed evidence must persist");
+        assert!(!persisted.contains(sentinel), "{case}");
+        let envelope = read_envelope(&evidence);
+        let capture = extension(&envelope, "nvfbc-capture.v1");
+        assert_eq!(capture.status, G0ExtensionStatusV1::Unproven, "{case}");
+        assert_eq!(
+            extension_payload(capture)["admission"],
+            "unproven",
+            "{case}"
+        );
+        assert_eq!(
+            extension(&envelope, "nvenc-tuples.v1").status,
+            G0ExtensionStatusV1::Unproven,
+            "{case}"
+        );
+        std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host03_verify_rejects_record_local_pass_and_host04_cannot_pass_before_plan_01_09() {
+    let directory = temp_dir("host03-envelope-authority");
+    let fixture_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host03-nvfbc-capture.json");
+    let evidence = directory.join("diagnostic.json");
+    let output = diagnose_host02(
+        &fixture_path,
+        "valid-zero-copy",
+        Some("DP-0.3"),
+        &evidence,
+        500,
+    );
+    assert_eq!(output.status.code(), Some(2));
+
+    let require_host04_pass = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            evidence.to_str().expect("evidence path UTF-8"),
+            "--require-host04",
+            "pass",
+        ])
+        .output()
+        .expect("HOST-04 verifier launches");
+    assert_private_error(&require_host04_pass, 74, "EVIDENCE_PERSISTENCE");
+
+    let mut injected_pass = read_json(&evidence);
+    let capture = injected_pass["extensions"]
+        .as_array_mut()
+        .expect("extensions array")
+        .iter_mut()
+        .find(|extension| extension["id"] == "nvfbc-capture.v1")
+        .expect("capture extension");
+    capture["status"] = json!("pass");
+    capture["payload"]["admission"] = json!("pass");
+    let payload = serde_json::to_vec(&capture["payload"]).expect("capture payload serializes");
+    capture["payload_sha256"] = json!(replay_host_doctor::sha256_bytes(&payload));
+    injected_pass["base"]["reasons"]
+        .as_array_mut()
+        .expect("reason array")
+        .retain(|reason| reason["extension"] != "nvfbc-capture.v1");
+    std::fs::write(
+        &evidence,
+        serde_json::to_vec(&injected_pass).expect("injected envelope serializes"),
+    )
+    .expect("injected envelope writes");
+    let injected = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            evidence.to_str().expect("evidence path UTF-8"),
+        ])
+        .output()
+        .expect("injected verifier launches");
+    assert_private_error(&injected, 74, "EVIDENCE_PERSISTENCE");
+
+    let fresh = directory.join("fresh.json");
+    assert_eq!(run(&fresh, 500).status.code(), Some(2));
+    let mut host04_injected = read_json(&fresh);
+    rewrite_extension_payload(&mut host04_injected, "nvenc-tuples.v1", |payload| {
+        payload["verdict"] = json!("pass");
+    });
+    std::fs::write(
+        &fresh,
+        serde_json::to_vec(&host04_injected).expect("HOST-04 injection serializes"),
+    )
+    .expect("HOST-04 injection writes");
+    let host04 = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            fresh.to_str().expect("evidence path UTF-8"),
+            "--validate-extension",
+            "nvenc-tuples.v1",
+        ])
+        .output()
+        .expect("HOST-04 verifier launches");
+    assert_private_error(&host04, 74, "EVIDENCE_PERSISTENCE");
 
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }

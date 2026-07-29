@@ -305,26 +305,9 @@ fn execute_fresh_run(
 }
 
 fn validate_known_extensions(envelope: &G0EvidenceEnvelopeV1) -> Result<(), DoctorError> {
-    let foundation = envelope
-        .extensions
-        .iter()
-        .find(|extension| extension.id == HOST_FOUNDATION_EXTENSION_ID)
-        .ok_or(DoctorError::Persistence)?;
-    let selected_output = envelope
-        .extensions
-        .iter()
-        .find(|extension| extension.id == SELECTED_OUTPUT_EXTENSION_ID)
-        .ok_or(DoctorError::Persistence)?;
-    let capture = envelope
-        .extensions
-        .iter()
-        .find(|extension| extension.id == NVFBC_CAPTURE_EXTENSION_ID)
-        .ok_or(DoctorError::Persistence)?;
-    (local_xorg::validate_host_foundation_record(foundation)
-        && evidence::validate_selected_output_record(selected_output)
-        && evidence::validate_nvfbc_capture_record(capture))
-    .then_some(())
-    .ok_or(DoctorError::Persistence)
+    evidence::validate_persisted_envelope(envelope)
+        .then_some(())
+        .ok_or(DoctorError::Persistence)
 }
 
 fn validate_requested_extensions(
@@ -341,6 +324,7 @@ fn validate_requested_extensions(
             HOST_FOUNDATION_EXTENSION_ID => local_xorg::validate_host_foundation_record(record),
             SELECTED_OUTPUT_EXTENSION_ID => evidence::validate_selected_output_record(record),
             NVFBC_CAPTURE_EXTENSION_ID => evidence::validate_nvfbc_capture_record(record),
+            NVENC_TUPLES_EXTENSION_ID => evidence::validate_nvenc_tuples_record(record),
             _ => false,
         };
         if !valid {
@@ -354,6 +338,12 @@ fn validate_required_statuses(
     envelope: &G0EvidenceEnvelopeV1,
     required: &RequiredExtensionStatuses,
 ) -> Result<(), DoctorError> {
+    if required
+        .host04
+        .is_some_and(|status| status != G0ExtensionStatusV1::Unproven)
+    {
+        return Err(DoctorError::Persistence);
+    }
     for (identifier, expected) in [
         (HOST_FOUNDATION_EXTENSION_ID, required.host01),
         (SELECTED_OUTPUT_EXTENSION_ID, required.host02),
@@ -528,6 +518,21 @@ fn probe_extension_records(
                     NVFBC_CAPTURE_EXTENSION_ID,
                     status,
                     serde_json::to_value(evidence).map_err(|_| DoctorError::Internal)?,
+                )
+                .map_err(|_| DoctorError::Internal);
+            }
+            if outcome.probe == ProbeId::NvencTuples {
+                return extension_record(
+                    NVENC_TUPLES_EXTENSION_ID,
+                    G0ExtensionStatusV1::Unproven,
+                    serde_json::json!({
+                        "schema": "replaydesktop.nvenc-tuples-observation.v1",
+                        "probe": "nvenc-tuples",
+                        "admission": "unproven",
+                        "worker_status": "observed",
+                        "primitive_available": false,
+                        "observation_class": "primitive-unavailable"
+                    }),
                 )
                 .map_err(|_| DoctorError::Internal);
             }

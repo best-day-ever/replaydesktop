@@ -415,7 +415,8 @@ impl BoundedProbeRunner {
         if response.observation.code == "secret-inherited" {
             return Err(ProbeFailure::SecretLeak);
         }
-        validate_observation(&response.observation).map_err(|_| ProbeFailure::ProtocolMismatch)?;
+        validate_observation_for_request(request, &response.observation)
+            .map_err(|_| ProbeFailure::ProtocolMismatch)?;
         Ok(response.observation)
     }
 }
@@ -979,7 +980,7 @@ fn normal_worker_output(
     request: &ProbeRequestV1,
     observation: PrimitiveObservationV1,
 ) -> Result<WorkerOutput, WorkerRequestError> {
-    validate_observation(&observation).map_err(|_| WorkerRequestError)?;
+    validate_observation_for_request(request, &observation).map_err(|_| WorkerRequestError)?;
     Ok(WorkerOutput {
         stdout: format!("{}\n", response_json(request, observation)?),
         stderr: String::new(),
@@ -1034,6 +1035,42 @@ fn validate_observation(observation: &PrimitiveObservationV1) -> Result<(), ()> 
         return Err(());
     }
     Ok(())
+}
+
+fn validate_observation_for_request(
+    request: &ProbeRequestV1,
+    observation: &PrimitiveObservationV1,
+) -> Result<(), ()> {
+    validate_observation(observation)?;
+    if request.probe != ProbeId::NvfbcCapture {
+        return observation.capture.is_none().then_some(()).ok_or(());
+    }
+    let capture = observation.capture.as_ref().ok_or(())?;
+    if observation.host_foundation.is_some()
+        || observation.selected_output.is_some()
+        || observation.available != capture.failure.is_none()
+        || !crate::evidence::validate_capture_source_identifiers(&capture.source)
+        || capture
+            .frame
+            .as_ref()
+            .is_some_and(|frame| !crate::evidence::validate_capture_frame_identifiers(frame))
+    {
+        return Err(());
+    }
+
+    use crate::model::{CaptureProviderKindV1 as Provider, CaptureSourceStatusV1 as Source};
+    let valid_provider = match request.source {
+        ProbeSourceV1::Live => matches!(
+            (capture.provider, capture.source.status),
+            (Provider::SourceAuthenticated, Source::Authenticated)
+                | (Provider::LiveUnavailable, Source::Unavailable)
+        ),
+        ProbeSourceV1::Fixture { .. } => matches!(
+            (capture.provider, capture.source.status),
+            (Provider::Fixture, Source::Fixture) | (Provider::LiveUnavailable, Source::Unavailable)
+        ),
+    };
+    valid_provider.then_some(()).ok_or(())
 }
 
 fn valid_nonce(value: &str) -> bool {
@@ -1329,6 +1366,109 @@ mod tests {
         }"#;
         validate_duplicate_free_json(injected).expect("fixture is duplicate-free");
         assert!(serde_json::from_slice::<ProbeResponseV1>(injected).is_err());
+    }
+
+    #[test]
+    fn host03_worker_protocol_binds_capture_provider_to_request_source() {
+        let fixture: Host03FixtureDocument = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/host03-nvfbc-capture.json"
+        ))
+        .expect("HOST-03 fixture must decode");
+        let fixture_capture: crate::model::CapturePrimitiveObservationV1 =
+            serde_json::from_value(fixture.base_capture).expect("base capture must decode");
+        let output = crate::model::OutputNameV1 {
+            hex: "44502d302e33".to_owned(),
+            display: Some("DP-0.3".to_owned()),
+        };
+        let fixture_request = ProbeRequestV1 {
+            schema: REQUEST_SCHEMA.to_owned(),
+            nonce: format!("nonce-{}", "a".repeat(64)),
+            probe: ProbeId::NvfbcCapture,
+            source: ProbeSourceV1::Fixture {
+                path: PathBuf::from("fixture.json"),
+                case_id: "positive".to_owned(),
+            },
+            requested_output: Some(output.clone()),
+        };
+        let fixture_observation = PrimitiveObservationV1 {
+            available: true,
+            code: "nvfbc-fixture-observed".to_owned(),
+            host_foundation: None,
+            selected_output: None,
+            capture: Some(fixture_capture.clone()),
+        };
+        assert!(validate_observation_for_request(&fixture_request, &fixture_observation).is_ok());
+
+        let mut authenticated = fixture_capture.clone();
+        authenticated.provider = crate::model::CaptureProviderKindV1::SourceAuthenticated;
+        authenticated.source.status = crate::model::CaptureSourceStatusV1::Authenticated;
+        let spoofed_fixture = PrimitiveObservationV1 {
+            capture: Some(authenticated),
+            ..fixture_observation.clone()
+        };
+        assert!(validate_observation_for_request(&fixture_request, &spoofed_fixture).is_err());
+
+        let live_request = ProbeRequestV1 {
+            source: ProbeSourceV1::Live,
+            ..fixture_request
+        };
+        assert!(validate_observation_for_request(&live_request, &fixture_observation).is_err());
+
+        let unavailable = unavailable_capture_observation();
+        assert!(validate_observation_for_request(&live_request, &unavailable).is_ok());
+    }
+
+    #[test]
+    fn host03_worker_protocol_rejects_runtime_paths_and_address_like_surfaces() {
+        let fixture: Host03FixtureDocument = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/host03-nvfbc-capture.json"
+        ))
+        .expect("HOST-03 fixture must decode");
+        let base: crate::model::CapturePrimitiveObservationV1 =
+            serde_json::from_value(fixture.base_capture).expect("base capture must decode");
+        let request = ProbeRequestV1 {
+            schema: REQUEST_SCHEMA.to_owned(),
+            nonce: format!("nonce-{}", "b".repeat(64)),
+            probe: ProbeId::NvfbcCapture,
+            source: ProbeSourceV1::Fixture {
+                path: PathBuf::from("fixture.json"),
+                case_id: "positive".to_owned(),
+            },
+            requested_output: Some(crate::model::OutputNameV1 {
+                hex: "44502d302e33".to_owned(),
+                display: Some("DP-0.3".to_owned()),
+            }),
+        };
+
+        let observation = |capture| PrimitiveObservationV1 {
+            available: true,
+            code: "nvfbc-fixture-observed".to_owned(),
+            host_foundation: None,
+            selected_output: None,
+            capture: Some(capture),
+        };
+
+        let mut runtime_path = base.clone();
+        runtime_path.source.nvfbc_runtime_library =
+            Some("/private/operator/libnvidia-fbc.so.1".to_owned());
+        assert!(validate_observation_for_request(&request, &observation(runtime_path)).is_err());
+
+        for sentinel in [
+            "140737488355328",
+            "7ffdeadbeef",
+            "0x7ffdeadbeef",
+            "../raw-frame",
+            "device-pointer-001",
+        ] {
+            let mut injected = base.clone();
+            let frame = injected.frame.as_mut().expect("base frame");
+            frame.source_surface = sentinel.to_owned();
+            frame.edges[0].from_surface = sentinel.to_owned();
+            assert!(
+                validate_observation_for_request(&request, &observation(injected)).is_err(),
+                "{sentinel}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::digest::{Sha256DigestV1, sha256_bytes};
 use crate::model::{
-    G0EvidenceEnvelopeV1, G0ExtensionRecordV1, G0ExtensionStatusV1, MAX_G0_ENVELOPE_BYTES,
+    CaptureAdmissionV1, CapturePathEvidenceV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
+    G0ExtensionStatusV1, MAX_G0_ENVELOPE_BYTES, NVFBC_CAPTURE_EXTENSION_ID,
     SELECTED_OUTPUT_EXTENSION_ID, SelectedOutputV1, decode_g0_evidence,
 };
 use crate::output_mapping::{
@@ -8,6 +9,7 @@ use crate::output_mapping::{
     validate_selected_output_evidence, validate_selected_output_failure,
 };
 use rustix::fs::{Mode, OFlags};
+use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::File;
@@ -137,6 +139,87 @@ pub fn validate_selected_output_record(record: &G0ExtensionRecordV1) -> bool {
                 .is_ok_and(|discovery| validate_selected_output_discovery(&discovery))
         }
     }
+}
+
+pub fn validate_nvfbc_capture_record(record: &G0ExtensionRecordV1) -> bool {
+    if record.id != NVFBC_CAPTURE_EXTENSION_ID || record.version != 1 {
+        return false;
+    }
+    if let Ok(evidence) = serde_json::from_str::<CapturePathEvidenceV1>(record.payload.get()) {
+        return match record.status {
+            G0ExtensionStatusV1::Pass => false,
+            G0ExtensionStatusV1::Fail => {
+                evidence.admission == CaptureAdmissionV1::Rejected
+                    && crate::native_nvfbc::validate_capture_path_evidence(&evidence)
+            }
+            G0ExtensionStatusV1::Unproven => {
+                crate::native_nvfbc::validate_capture_path_evidence(&evidence)
+            }
+        };
+    }
+    record.status == G0ExtensionStatusV1::Unproven
+        && serde_json::from_str::<LegacyCaptureObservationV1>(record.payload.get())
+            .is_ok_and(|legacy| legacy.is_valid())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCaptureObservationV1 {
+    schema: String,
+    probe: String,
+    admission: String,
+    worker_status: String,
+    primitive_available: Option<bool>,
+    observation_class: Option<String>,
+    reason: Option<String>,
+}
+
+impl LegacyCaptureObservationV1 {
+    fn is_valid(&self) -> bool {
+        if self.schema != "replaydesktop.nvfbc-capture-observation.v1"
+            || self.probe != "nvfbc-capture"
+            || self.admission != "unproven"
+        {
+            return false;
+        }
+        match self.worker_status.as_str() {
+            "observed" => {
+                self.primitive_available.is_some()
+                    && self.reason.is_none()
+                    && self.observation_class.as_deref()
+                        == self.primitive_available.map(|available| {
+                            if available {
+                                "primitive-available"
+                            } else {
+                                "primitive-unavailable"
+                            }
+                        })
+            }
+            "rejected" => {
+                self.reason
+                    .as_deref()
+                    .is_some_and(valid_legacy_worker_reason)
+                    && self.primitive_available.is_none()
+                    && self.observation_class.is_none()
+            }
+            _ => false,
+        }
+    }
+}
+
+fn valid_legacy_worker_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "worker-spawn"
+            | "worker-timeout"
+            | "worker-stdout-limit"
+            | "worker-stderr-limit"
+            | "worker-stderr"
+            | "worker-abnormal-exit"
+            | "worker-malformed-response"
+            | "worker-protocol-mismatch"
+            | "worker-secret-leak"
+    )
 }
 
 fn verify_identity(

@@ -873,6 +873,244 @@ pub struct SelectedOutputV1 {
     pub proof: OutputMappingProofCardinalitiesV1,
 }
 
+pub const NVFBC_CAPTURE_SCHEMA_V1: &str = "replaydesktop.nvfbc-capture.v1";
+pub const NVFBC_CAPTURE_PRIMITIVES_SCHEMA_V1: &str = "replaydesktop.nvfbc-capture-primitives.v1";
+pub const MAX_CAPTURE_PLANES_V1: usize = 3;
+pub const MAX_CAPTURE_COPY_EDGES_V1: usize = 16;
+pub const MAX_CAPTURE_LIFECYCLE_EVENTS_V1: usize = 32;
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureProviderKindV1 {
+    Fixture,
+    LiveUnavailable,
+    SourceAuthenticated,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureSourceStatusV1 {
+    Fixture,
+    Unavailable,
+    Authenticated,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSourceEvidenceV1 {
+    pub status: CaptureSourceStatusV1,
+    pub api_version: Option<u32>,
+    pub nvfbc_header_sha256: Option<Sha256DigestV1>,
+    pub cuda_header_sha256: Option<Sha256DigestV1>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureGpuIdentityV1 {
+    pub pci_bdf: String,
+    pub gpu_uuid: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureOutputBindingV1 {
+    pub output_name: OutputNameV1,
+    pub randr_output_xid: XrandrOutputXidV1,
+    pub topology_token: OutputTopologyTokenV1,
+    pub gpu_pci_bdf: String,
+    pub gpu_uuid: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureGrabStatusV1 {
+    Success,
+    NoNewFrame,
+    AccessDenied,
+    ProtectedContent,
+    Busy,
+    DriverError,
+    ApiMismatch,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapturePixelFormatV1 {
+    Nv12,
+    Yuv444p,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturePlaneV1 {
+    pub index: u8,
+    pub offset_bytes: u64,
+    pub stride_bytes: u32,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureCursorModeV1 {
+    NvfbcComposited,
+    ClientComposited,
+    Excluded,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CopyEdgeKindV1 {
+    ZeroCopy,
+    SameGpuDeviceCopy,
+    PeerCopy,
+    HostStaged,
+    Conversion,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyLedgerEdgeV1 {
+    pub sequence: u16,
+    pub kind: CopyEdgeKindV1,
+    pub from_surface: String,
+    pub to_surface: String,
+    pub from_gpu: CaptureGpuIdentityV1,
+    pub to_gpu: CaptureGpuIdentityV1,
+    pub input_format: CapturePixelFormatV1,
+    pub output_format: CapturePixelFormatV1,
+    pub peer_access: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureFrameObservationV1 {
+    pub grab_status: CaptureGrabStatusV1,
+    pub frame_sequence: u64,
+    pub timestamp_us: u64,
+    pub is_new_frame: bool,
+    pub width_px: u16,
+    pub height_px: u16,
+    pub pixel_format: CapturePixelFormatV1,
+    pub pitch_bytes: u32,
+    pub planes: Vec<CapturePlaneV1>,
+    pub required_post_processing: bool,
+    pub cursor_included: bool,
+    pub cursor_mode: CaptureCursorModeV1,
+    pub source_surface: String,
+    pub lease_surface: String,
+    pub edges: Vec<CopyLedgerEdgeV1>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureLifecycleEventV1 {
+    LibraryLoaded,
+    StatusQueried,
+    ContextBound,
+    SessionCreated,
+    FrameGrabbed,
+    FrameReleased,
+    SessionDestroyed,
+    ContextReleased,
+    LibraryUnloaded,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CaptureFailureV1 {
+    SourceUnavailable,
+    SourceMismatch,
+    BindingMismatch,
+    ApiMismatch,
+    AccessDenied,
+    ProtectedContent,
+    Busy,
+    NoNewFrame,
+    StaleFrame,
+    InvalidFrame,
+    InvalidCopyLedger,
+    CleanupUncertain,
+    WorkerRejected,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturePrimitiveObservationV1 {
+    pub schema: String,
+    pub provider: CaptureProviderKindV1,
+    pub source: CaptureSourceEvidenceV1,
+    pub binding: Option<CaptureOutputBindingV1>,
+    pub frame: Option<CaptureFrameObservationV1>,
+    pub lifecycle: Vec<CaptureLifecycleEventV1>,
+    pub failure: Option<CaptureFailureV1>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureFrameLeaseV1 {
+    pub frame_sequence: u64,
+    pub timestamp_us: u64,
+    pub new_frame: bool,
+    pub width_px: u16,
+    pub height_px: u16,
+    pub pixel_format: CapturePixelFormatV1,
+    pub pitch_bytes: u32,
+    pub planes: Vec<CapturePlaneV1>,
+    pub required_post_processing: bool,
+    pub cursor_included: bool,
+    pub cursor_mode: CaptureCursorModeV1,
+    pub source_surface: String,
+    pub lease_surface: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyLedgerV1 {
+    pub edges: Vec<CopyLedgerEdgeV1>,
+    pub zero_copy_edges: u16,
+    pub device_copy_edges: u16,
+    pub peer_copy_edges: u16,
+    pub conversion_edges: u16,
+    pub host_staged_edges: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureCleanupLedgerV1 {
+    pub acquired: Vec<CaptureLifecycleEventV1>,
+    pub released: Vec<CaptureLifecycleEventV1>,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureAdmissionV1 {
+    Unproven,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureBoundaryStatusV1 {
+    Unproven,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapturePathEvidenceV1 {
+    pub schema: String,
+    pub provider: CaptureProviderKindV1,
+    pub source: CaptureSourceEvidenceV1,
+    pub admission: CaptureAdmissionV1,
+    pub binding: Option<CaptureOutputBindingV1>,
+    pub lease: Option<CaptureFrameLeaseV1>,
+    pub copy_ledger: Option<CopyLedgerV1>,
+    pub cleanup: CaptureCleanupLedgerV1,
+    pub failure: Option<CaptureFailureV1>,
+    pub nvenc_boundary: CaptureBoundaryStatusV1,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

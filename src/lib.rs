@@ -5,6 +5,7 @@ pub mod digest;
 pub mod evidence;
 pub mod local_xorg;
 pub mod model;
+pub mod native_nvfbc;
 pub mod native_nvml;
 pub mod output_mapping;
 pub mod probe;
@@ -20,14 +21,21 @@ pub use local_xorg::{
     HostFoundationEvidenceV1, HostFoundationObservationV1, LocalXorgEvidenceV1, prove_local_xorg,
 };
 pub use model::{
-    DecodedG0Evidence, DrmConnectorIdV1, DrmConnectorObservationV1, DrmDiagnosticSnapshotV1,
-    ExactModeTimingV1, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
-    NvControlDisplayTargetIdV1, NvControlDisplayTargetObservationV1, NvControlExtensionVersionV1,
-    NvControlGpuTargetIdV1, NvControlGpuTargetObservationV1, NvControlSnapshotV1,
-    NvmlDeviceIdentityObservationV1, OutputMappingProofCardinalitiesV1, OutputNameV1,
-    OutputTopologyObservationV1, OutputTopologyTokenV1, PhysicalConnectorKindV1,
-    RandrOutputObservationV1, RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1,
-    XrandrCrtcXidV1, XrandrModeXidV1, XrandrOutputXidV1, XrandrProviderXidV1, decode_g0_evidence,
+    CaptureAdmissionV1, CaptureBoundaryStatusV1, CaptureCleanupLedgerV1, CaptureFailureV1,
+    CaptureFrameLeaseV1, CaptureGpuIdentityV1, CapturePathEvidenceV1, CapturePixelFormatV1,
+    CapturePrimitiveObservationV1, CaptureProviderKindV1, CopyEdgeKindV1, CopyLedgerEdgeV1,
+    CopyLedgerV1, DecodedG0Evidence, DrmConnectorIdV1, DrmConnectorObservationV1,
+    DrmDiagnosticSnapshotV1, ExactModeTimingV1, G0DecodeError, G0EvidenceBaseV1,
+    G0EvidenceEnvelopeV1, G0ExtensionRecordV1, NvControlDisplayTargetIdV1,
+    NvControlDisplayTargetObservationV1, NvControlExtensionVersionV1, NvControlGpuTargetIdV1,
+    NvControlGpuTargetObservationV1, NvControlSnapshotV1, NvmlDeviceIdentityObservationV1,
+    OutputMappingProofCardinalitiesV1, OutputNameV1, OutputTopologyObservationV1,
+    OutputTopologyTokenV1, PhysicalConnectorKindV1, RandrOutputObservationV1,
+    RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1, XrandrCrtcXidV1, XrandrModeXidV1,
+    XrandrOutputXidV1, XrandrProviderXidV1, decode_g0_evidence,
+};
+pub use native_nvfbc::{
+    CaptureProvider, FixtureCaptureProvider, LiveUnavailableCaptureProvider, capture_one_frame,
 };
 pub use native_nvml::{
     LiveUnavailableNvmlProvider, NativeNvmlProvider, NvmlDeviceObservationV1, NvmlEvidenceV1,
@@ -255,7 +263,7 @@ fn execute_fresh_run(
         None => None,
     };
     let outcomes = probe::collect_probes(backend, identity.run_id(), requested_output.as_ref());
-    let extensions = probe_extension_records(&outcomes, requested_output.as_ref())?;
+    let extensions = probe_extension_records(&outcomes, requested_output.as_ref(), provenance)?;
     let envelope = evaluate_g0(&identity, provenance, extensions)?;
     let run_id = envelope.base.run_id.clone();
     let store = JsonFileEvidenceStore::new(evidence_path);
@@ -307,8 +315,14 @@ fn validate_known_extensions(envelope: &G0EvidenceEnvelopeV1) -> Result<(), Doct
         .iter()
         .find(|extension| extension.id == SELECTED_OUTPUT_EXTENSION_ID)
         .ok_or(DoctorError::Persistence)?;
+    let capture = envelope
+        .extensions
+        .iter()
+        .find(|extension| extension.id == NVFBC_CAPTURE_EXTENSION_ID)
+        .ok_or(DoctorError::Persistence)?;
     (local_xorg::validate_host_foundation_record(foundation)
-        && evidence::validate_selected_output_record(selected_output))
+        && evidence::validate_selected_output_record(selected_output)
+        && evidence::validate_nvfbc_capture_record(capture))
     .then_some(())
     .ok_or(DoctorError::Persistence)
 }
@@ -326,6 +340,7 @@ fn validate_requested_extensions(
         let valid = match identifier.as_str() {
             HOST_FOUNDATION_EXTENSION_ID => local_xorg::validate_host_foundation_record(record),
             SELECTED_OUTPUT_EXTENSION_ID => evidence::validate_selected_output_record(record),
+            NVFBC_CAPTURE_EXTENSION_ID => evidence::validate_nvfbc_capture_record(record),
             _ => false,
         };
         if !valid {
@@ -453,13 +468,15 @@ pub fn evaluate_g0(
 fn probe_extension_records(
     outcomes: &[probe::ProbeOutcome],
     requested_output: Option<&OutputNameV1>,
+    provenance: G0EvidenceProvenanceV1,
 ) -> Result<Vec<G0ExtensionRecordV1>, DoctorError> {
     let selected_outcome = outcomes
         .iter()
         .find(|outcome| outcome.probe == ProbeId::SelectedOutput)
         .ok_or(DoctorError::Internal)?;
-    let (selected_record, selected_output_proven) =
+    let (selected_record, selected_output) =
         selected_output_extension_record(selected_outcome, requested_output)?;
+    let selected_output_proven = selected_output.is_some();
 
     outcomes
         .iter()
@@ -487,6 +504,30 @@ fn probe_extension_records(
             }
             if outcome.probe == ProbeId::SelectedOutput {
                 return clone_extension_record(&selected_record);
+            }
+            if outcome.probe == ProbeId::NvfbcCapture
+                && let Some(capture) = outcome
+                    .observation
+                    .as_ref()
+                    .and_then(|observation| observation.capture.clone())
+            {
+                let provider = native_nvfbc::FixtureCaptureProvider::new(capture);
+                let evidence = native_nvfbc::capture_one_frame(&provider, selected_output.as_ref());
+                let status = if provenance == G0EvidenceProvenanceV1::Diagnostic
+                    || evidence.failure == Some(model::CaptureFailureV1::SourceUnavailable)
+                {
+                    G0ExtensionStatusV1::Unproven
+                } else if evidence.failure.is_some() {
+                    G0ExtensionStatusV1::Fail
+                } else {
+                    G0ExtensionStatusV1::Unproven
+                };
+                return extension_record(
+                    NVFBC_CAPTURE_EXTENSION_ID,
+                    status,
+                    serde_json::to_value(evidence).map_err(|_| DoctorError::Internal)?,
+                )
+                .map_err(|_| DoctorError::Internal);
             }
             let (id, schema) = match outcome.probe {
                 ProbeId::HostFoundation => (
@@ -540,7 +581,7 @@ fn probe_extension_records(
 fn selected_output_extension_record(
     outcome: &probe::ProbeOutcome,
     requested_output: Option<&OutputNameV1>,
-) -> Result<(G0ExtensionRecordV1, bool), DoctorError> {
+) -> Result<(G0ExtensionRecordV1, Option<SelectedOutputV1>), DoctorError> {
     let Some(observation) = outcome
         .observation
         .as_ref()
@@ -562,7 +603,7 @@ fn selected_output_extension_record(
                 G0ExtensionStatusV1::Fail,
                 serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
             )
-            .map(|record| (record, false))
+            .map(|record| (record, None))
             .map_err(|_| DoctorError::Internal);
         }
         let discovery = output_mapping::SelectedOutputDiscoveryV1 {
@@ -575,7 +616,7 @@ fn selected_output_extension_record(
             G0ExtensionStatusV1::Unproven,
             serde_json::to_value(discovery).map_err(|_| DoctorError::Internal)?,
         )
-        .map(|record| (record, false))
+        .map(|record| (record, None))
         .map_err(|_| DoctorError::Internal);
     };
 
@@ -588,7 +629,7 @@ fn selected_output_extension_record(
             serde_json::to_value(discovery).map_err(|_| DoctorError::Internal)?,
         )
         .map_err(|_| DoctorError::Internal)?;
-        return Ok((record, false));
+        return Ok((record, None));
     }
 
     if let Some(topology) = &observation.topology {
@@ -597,10 +638,10 @@ fn selected_output_extension_record(
                 let record = extension_record(
                     SELECTED_OUTPUT_EXTENSION_ID,
                     G0ExtensionStatusV1::Pass,
-                    serde_json::to_value(selected).map_err(|_| DoctorError::Internal)?,
+                    serde_json::to_value(&selected).map_err(|_| DoctorError::Internal)?,
                 )
                 .map_err(|_| DoctorError::Internal)?;
-                return Ok((record, true));
+                return Ok((record, Some(selected)));
             }
             Err(mapping_failure) => {
                 let failure =
@@ -612,7 +653,7 @@ fn selected_output_extension_record(
                     serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
                 )
                 .map_err(|_| DoctorError::Internal)?;
-                return Ok((record, false));
+                return Ok((record, None));
             }
         }
     }
@@ -625,7 +666,7 @@ fn selected_output_extension_record(
         serde_json::to_value(failure).map_err(|_| DoctorError::Internal)?,
     )
     .map_err(|_| DoctorError::Internal)?;
-    Ok((record, false))
+    Ok((record, None))
 }
 
 fn clone_extension_record(

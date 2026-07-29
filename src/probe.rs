@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 const REQUEST_SCHEMA: &str = "replaydesktop.host-probe-request.v1";
 const RESPONSE_SCHEMA: &str = "replaydesktop.host-probe-response.v1";
 const FIXTURE_SCHEMA: &str = "replaydesktop.host01-diagnostic-fixtures.v1";
+const HOST03_FIXTURE_SCHEMA: &str = "replaydesktop.host03-nvfbc-capture-fixtures.v1";
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 8 * 1024;
@@ -54,6 +55,8 @@ pub struct PrimitiveObservationV1 {
     pub host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_output: Option<crate::output_mapping::OutputCollectorObservationV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<crate::model::CapturePrimitiveObservationV1>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -355,6 +358,7 @@ impl BoundedProbeRunner {
                 && request.probe != ProbeId::HostFoundation)
             || (response.observation.selected_output.is_some()
                 && request.probe != ProbeId::SelectedOutput)
+            || (response.observation.capture.is_some() && request.probe != ProbeId::NvfbcCapture)
         {
             return Err(ProbeFailure::ProtocolMismatch);
         }
@@ -486,6 +490,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                 code: "host-foundation-observed".to_owned(),
                 host_foundation: Some(crate::local_xorg::observe_live_host_foundation()),
                 selected_output: None,
+                capture: None,
             },
         ),
         ProbeSourceV1::Live if request.probe == ProbeId::SelectedOutput => {
@@ -502,6 +507,20 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                     ),
                     host_foundation: None,
                     selected_output: Some(selected_output),
+                    capture: None,
+                },
+            )
+        }
+        ProbeSourceV1::Live if request.probe == ProbeId::NvfbcCapture => {
+            let provider = crate::native_nvfbc::LiveUnavailableCaptureProvider;
+            normal_worker_output(
+                &request,
+                PrimitiveObservationV1 {
+                    available: false,
+                    code: "nvfbc-source-unavailable".to_owned(),
+                    host_foundation: None,
+                    selected_output: None,
+                    capture: Some(crate::native_nvfbc::CaptureProvider::observe(&provider)),
                 },
             )
         }
@@ -512,6 +531,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                 code: "native-probe-not-implemented".to_owned(),
                 host_foundation: None,
                 selected_output: None,
+                capture: None,
             },
         ),
         ProbeSourceV1::Fixture { path, case_id } => fixture_worker_output(&request, path, case_id),
@@ -536,6 +556,9 @@ fn fixture_worker_output(
         .ok_or(WorkerRequestError)?;
     if schema == "replaydesktop.host02-output-topologies.v1" {
         return fixture_output_mapping_worker(request, path, case_id);
+    }
+    if schema == HOST03_FIXTURE_SCHEMA {
+        return fixture_nvfbc_worker(request, path, case_id);
     }
     let fixture: FixtureDocument =
         serde_json::from_slice(&bytes).map_err(|_| WorkerRequestError)?;
@@ -570,6 +593,7 @@ fn fixture_worker_output(
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
+                    capture: None,
                 })
                 .map_err(|_| WorkerRequestError)?;
             }
@@ -582,12 +606,14 @@ fn fixture_worker_output(
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
+                    capture: None,
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 });
             normal_worker_output(request, observation)
         }
@@ -600,6 +626,7 @@ fn fixture_worker_output(
                     code: "fixture-timeout-returned".to_owned(),
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 },
             )
         }
@@ -631,6 +658,7 @@ fn fixture_worker_output(
                     code: "fixture-duplicate-response".to_owned(),
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -649,12 +677,14 @@ fn fixture_worker_output(
                     code: observation.code.clone(),
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
+                    capture: None,
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
                     code: "fixture-observation-missing".to_owned(),
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 });
             let response = ProbeResponseV1 {
                 schema: RESPONSE_SCHEMA.to_owned(),
@@ -694,6 +724,7 @@ fn fixture_worker_output(
                     },
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 },
             )
         }
@@ -709,6 +740,7 @@ fn fixture_worker_output(
                     code: "fixture-stderr-rejected".to_owned(),
                     host_foundation: None,
                     selected_output: None,
+                    capture: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -733,6 +765,7 @@ fn fixture_output_mapping_worker(
                 code: "fixture-observation-missing".to_owned(),
                 host_foundation: None,
                 selected_output: None,
+                capture: None,
             },
         );
     }
@@ -750,8 +783,115 @@ fn fixture_output_mapping_worker(
             code: "selected-output-fixture-observed".to_owned(),
             host_foundation: None,
             selected_output: Some(selected_output),
+            capture: None,
         },
     )
+}
+
+fn fixture_nvfbc_worker(
+    request: &ProbeRequestV1,
+    path: &Path,
+    case_id: &str,
+) -> Result<WorkerOutput, WorkerRequestError> {
+    let bytes = read_bounded_file(path, MAX_FIXTURE_BYTES)?;
+    let fixture: Host03FixtureDocument =
+        serde_json::from_slice(&bytes).map_err(|_| WorkerRequestError)?;
+    if fixture.schema != HOST03_FIXTURE_SCHEMA
+        || fixture.selected_output_fixture.contains('/')
+        || fixture.selected_output_fixture.contains('\\')
+        || fixture.selected_output_fixture.is_empty()
+        || fixture.selected_output_case.is_empty()
+    {
+        return Err(WorkerRequestError);
+    }
+    let mut identifiers = HashSet::with_capacity(fixture.cases.len());
+    if fixture
+        .cases
+        .iter()
+        .any(|case| case.id.is_empty() || !identifiers.insert(case.id.as_str()))
+    {
+        return Err(WorkerRequestError);
+    }
+    let case = fixture
+        .cases
+        .iter()
+        .find(|case| case.id == case_id)
+        .ok_or(WorkerRequestError)?;
+
+    if request.probe == ProbeId::SelectedOutput {
+        let output_fixture = path
+            .parent()
+            .ok_or(WorkerRequestError)?
+            .join(&fixture.selected_output_fixture);
+        let requested = request
+            .requested_output
+            .as_ref()
+            .and_then(|output| output.display.as_deref());
+        let selected_output = crate::output_mapping::collect_fixture_output_topology(
+            &output_fixture,
+            &fixture.selected_output_case,
+            requested,
+        )
+        .map_err(|_| WorkerRequestError)?;
+        return normal_worker_output(
+            request,
+            PrimitiveObservationV1 {
+                available: selected_output.collection_failure.is_none(),
+                code: "selected-output-fixture-observed".to_owned(),
+                host_foundation: None,
+                selected_output: Some(selected_output),
+                capture: None,
+            },
+        );
+    }
+    if request.probe != ProbeId::NvfbcCapture {
+        return normal_worker_output(
+            request,
+            PrimitiveObservationV1 {
+                available: false,
+                code: "fixture-observation-missing".to_owned(),
+                host_foundation: None,
+                selected_output: None,
+                capture: None,
+            },
+        );
+    }
+
+    match case.behavior {
+        Host03FixtureBehavior::Normal => {
+            let capture = case.capture.clone().ok_or(WorkerRequestError)?;
+            let provider = crate::native_nvfbc::FixtureCaptureProvider::new(capture);
+            let capture = crate::native_nvfbc::CaptureProvider::observe(&provider);
+            normal_worker_output(
+                request,
+                PrimitiveObservationV1 {
+                    available: capture.failure.is_none(),
+                    code: if capture.failure.is_none() {
+                        "nvfbc-fixture-observed".to_owned()
+                    } else {
+                        "nvfbc-fixture-terminal".to_owned()
+                    },
+                    host_foundation: None,
+                    selected_output: None,
+                    capture: Some(capture),
+                },
+            )
+        }
+        Host03FixtureBehavior::Timeout => {
+            thread::sleep(Duration::from_secs(120));
+            Err(WorkerRequestError)
+        }
+        Host03FixtureBehavior::ChildCrash => Ok(WorkerOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 70,
+        }),
+        Host03FixtureBehavior::MalformedResponse => Ok(WorkerOutput {
+            stdout: "{\"schema\":".to_owned(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+    }
 }
 
 fn normal_worker_output(
@@ -799,7 +939,17 @@ fn validate_observation(observation: &PrimitiveObservationV1) -> Result<(), ()> 
     {
         return Err(());
     }
-    if observation.host_foundation.is_some() && observation.selected_output.is_some() {
+    if let Some(capture) = &observation.capture
+        && (capture.schema != crate::model::NVFBC_CAPTURE_PRIMITIVES_SCHEMA_V1
+            || capture.lifecycle.len() > crate::model::MAX_CAPTURE_LIFECYCLE_EVENTS_V1)
+    {
+        return Err(());
+    }
+    if usize::from(observation.host_foundation.is_some())
+        + usize::from(observation.selected_output.is_some())
+        + usize::from(observation.capture.is_some())
+        > 1
+    {
         return Err(());
     }
     Ok(())
@@ -869,6 +1019,32 @@ struct FixtureObservation {
     host_foundation: Option<crate::local_xorg::HostFoundationObservationV1>,
     #[serde(default)]
     selected_output: Option<crate::output_mapping::OutputCollectorObservationV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Host03FixtureDocument {
+    schema: String,
+    selected_output_fixture: String,
+    selected_output_case: String,
+    cases: Vec<Host03FixtureCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Host03FixtureCase {
+    id: String,
+    behavior: Host03FixtureBehavior,
+    capture: Option<crate::model::CapturePrimitiveObservationV1>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Host03FixtureBehavior {
+    Normal,
+    Timeout,
+    ChildCrash,
+    MalformedResponse,
 }
 
 #[derive(Debug)]

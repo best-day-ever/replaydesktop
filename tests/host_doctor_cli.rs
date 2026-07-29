@@ -2343,8 +2343,7 @@ fn nvfbc_extension_rejects_injected_verdict_after_digest_rewrite() {
         .find(|extension| extension["id"] == "nvfbc-capture.v1")
         .expect("capture extension");
     capture["payload"]["verdict"] = json!("pass");
-    let encoded =
-        serde_json::to_vec(&capture["payload"]).expect("mutated payload must serialize");
+    let encoded = serde_json::to_vec(&capture["payload"]).expect("mutated payload must serialize");
     capture["payload_sha256"] = json!(replay_host_doctor::sha256_bytes(&encoded));
     std::fs::write(
         &evidence,

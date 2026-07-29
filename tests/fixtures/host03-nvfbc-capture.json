@@ -29,10 +29,8 @@
             "nvcontrol_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
           },
-          "cuda_context": {
-            "pci_bdf": "00000000:01:00.0",
-            "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
-          }
+          "gpu_pci_bdf": "00000000:01:00.0",
+          "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
         },
         "frame": {
           "grab_status": "success",

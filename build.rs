@@ -1,6 +1,12 @@
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const NVML_SOURCE_ROOT_ENV: &str = "REPLAY_NVML_SDK_ROOT";
 const NVFBC_SOURCE_ROOT_ENV: &str = "REPLAY_NVFBC_SDK_ROOT";
@@ -14,11 +20,41 @@ const NVFBC_SOURCE_IDENTITY: &str = "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3";
 const CUDA_SOURCE_IDENTITY: &str = "nvidia-cuda-driver-api-13.3";
 const MAX_HEADER_BYTES: u64 = 4 * 1024 * 1024;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    len: u64,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileIdentity {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        }
+    }
+}
+
 struct AuthenticatedHeader {
+    asserted_root: PathBuf,
     canonical_root: PathBuf,
+    root_identity: FileIdentity,
     canonical_path: PathBuf,
+    file_identity: FileIdentity,
+    name: &'static str,
+    bytes: Vec<u8>,
     digest: String,
+}
+
+struct HeaderSnapshot {
+    root: PathBuf,
+    files: Vec<(PathBuf, String)>,
 }
 
 fn main() {
@@ -37,25 +73,29 @@ fn configure_nvml_source() {
     let Some(root) = std::env::var_os(NVML_SOURCE_ROOT_ENV).map(PathBuf::from) else {
         return;
     };
+    emit_asserted_source_reruns(&root, &[NVML_HEADER_NAME]);
     let header = authenticate_header(&root, NVML_HEADER_NAME, "NVML");
     require_header_markers(
-        &header.canonical_path,
+        &header.bytes,
         &[
             "#define NVML_API_VERSION            13",
             "Copyright 1993-2026 NVIDIA Corporation.",
         ],
         "NVML",
     );
-    emit_header_rerun(&header);
 
     let out_dir = required_out_dir();
+    let snapshot = create_header_snapshot(&out_dir, "nvml", &[&header]);
+    verify_header_snapshot(&snapshot, "NVML");
     compile_oracle(
         "native/nvml_abi_oracle.c",
-        &[header.canonical_root.as_path()],
+        &[snapshot.root.as_path()],
         &out_dir,
         "nvml_abi_oracle",
     );
-    require_unchanged_header(&root, NVML_HEADER_NAME, &header, "NVML");
+    verify_header_snapshot(&snapshot, "NVML");
+    require_unchanged_header(&header, "NVML");
+    unseal_header_snapshot(&snapshot);
 
     println!("cargo:rustc-cfg=replay_nvml_source");
     println!("cargo:rustc-env=REPLAY_NVML_SOURCE_IDENTITY={NVML_SOURCE_IDENTITY}");
@@ -81,12 +121,15 @@ fn configure_nvfbc_source() {
         (Some(nvfbc_root), Some(cuda_root)) => (nvfbc_root, cuda_root),
     };
 
+    emit_asserted_source_reruns(&nvfbc_root, &[NVFBC_HEADER_NAME]);
+    emit_asserted_source_reruns(&cuda_root, &[CUDA_HEADER_NAME, CUDA_TYPEDEFS_HEADER_NAME]);
+
     let nvfbc_header = authenticate_header(&nvfbc_root, NVFBC_HEADER_NAME, "NvFBC");
     let cuda_header = authenticate_header(&cuda_root, CUDA_HEADER_NAME, "CUDA");
     let cuda_typedefs = authenticate_header(&cuda_root, CUDA_TYPEDEFS_HEADER_NAME, "CUDA typedefs");
 
     require_header_markers(
-        &nvfbc_header.canonical_path,
+        &nvfbc_header.bytes,
         &[
             "#define NVFBC_VERSION_MAJOR 1",
             "#define NVFBC_VERSION_MINOR 9",
@@ -96,7 +139,7 @@ fn configure_nvfbc_source() {
         "NvFBC",
     );
     require_header_markers(
-        &cuda_header.canonical_path,
+        &cuda_header.bytes,
         &[
             "#define CUDA_VERSION 13030",
             "typedef unsigned long long CUdeviceptr_v2;",
@@ -105,7 +148,7 @@ fn configure_nvfbc_source() {
         "CUDA",
     );
     require_header_markers(
-        &cuda_typedefs.canonical_path,
+        &cuda_typedefs.bytes,
         &[
             "PFN_cuGetProcAddress_v12000",
             "PFN_cuCtxCreate_v3020",
@@ -114,29 +157,24 @@ fn configure_nvfbc_source() {
         "CUDA typedefs",
     );
 
-    emit_header_rerun(&nvfbc_header);
-    emit_header_rerun(&cuda_header);
-    emit_header_rerun(&cuda_typedefs);
-
     let out_dir = required_out_dir();
+    let snapshot = create_header_snapshot(
+        &out_dir,
+        "nvfbc-cuda",
+        &[&nvfbc_header, &cuda_header, &cuda_typedefs],
+    );
+    verify_header_snapshot(&snapshot, "NvFBC/CUDA");
     compile_oracle(
         "native/nvfbc_abi_oracle.c",
-        &[
-            nvfbc_header.canonical_root.as_path(),
-            cuda_header.canonical_root.as_path(),
-        ],
+        &[snapshot.root.as_path()],
         &out_dir,
         "nvfbc_abi_oracle",
     );
-
-    require_unchanged_header(&nvfbc_root, NVFBC_HEADER_NAME, &nvfbc_header, "NvFBC");
-    require_unchanged_header(&cuda_root, CUDA_HEADER_NAME, &cuda_header, "CUDA");
-    require_unchanged_header(
-        &cuda_root,
-        CUDA_TYPEDEFS_HEADER_NAME,
-        &cuda_typedefs,
-        "CUDA typedefs",
-    );
+    verify_header_snapshot(&snapshot, "NvFBC/CUDA");
+    require_unchanged_header(&nvfbc_header, "NvFBC");
+    require_unchanged_header(&cuda_header, "CUDA");
+    require_unchanged_header(&cuda_typedefs, "CUDA typedefs");
+    unseal_header_snapshot(&snapshot);
 
     println!("cargo:rustc-cfg=replay_nvfbc_source");
     println!("cargo:rustc-env=REPLAY_NVFBC_SOURCE_IDENTITY={NVFBC_SOURCE_IDENTITY}");
@@ -163,81 +201,346 @@ fn required_out_dir() -> PathBuf {
         .unwrap_or_else(|| panic!("Cargo did not provide OUT_DIR"))
 }
 
-fn authenticate_header(root: &Path, name: &str, label: &str) -> AuthenticatedHeader {
-    if !root.is_absolute() {
+fn emit_asserted_source_reruns(root: &Path, header_names: &[&str]) {
+    println!("cargo:rerun-if-changed={}", root.display());
+    for name in header_names {
+        println!("cargo:rerun-if-changed={}", root.join(name).display());
+    }
+}
+
+fn authenticate_header(
+    asserted_root: &Path,
+    name: &'static str,
+    label: &str,
+) -> AuthenticatedHeader {
+    if !asserted_root.is_absolute() {
         panic!("{label} source root must be absolute");
     }
-    let canonical_root =
-        std::fs::canonicalize(root).unwrap_or_else(|_| panic!("{label} source root is unreadable"));
-    if !canonical_root.is_dir() {
+    reject_symlink_components(asserted_root, label);
+    let canonical_root = std::fs::canonicalize(asserted_root)
+        .unwrap_or_else(|_| panic!("{label} source root is unreadable"));
+    if canonical_root != asserted_root {
+        panic!("{label} source root must use one canonical, symlink-free spelling");
+    }
+    let root_metadata = std::fs::symlink_metadata(asserted_root)
+        .unwrap_or_else(|_| panic!("{label} source root metadata is unreadable"));
+    if !root_metadata.is_dir() {
         panic!("{label} source root is not a directory");
     }
+    let root_identity = FileIdentity::from_metadata(&root_metadata);
 
-    let candidate = canonical_root.join(name);
-    let link_metadata = std::fs::symlink_metadata(&candidate)
+    let candidate = asserted_root.join(name);
+    reject_symlink_components(&candidate, label);
+    let path_metadata = std::fs::symlink_metadata(&candidate)
         .unwrap_or_else(|_| panic!("{label} header is missing"));
-    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
+    if !path_metadata.is_file() || path_metadata.file_type().is_symlink() {
         panic!("{label} header must be a regular non-symlink file");
     }
 
     let canonical_path = std::fs::canonicalize(&candidate)
         .unwrap_or_else(|_| panic!("{label} header is unreadable"));
-    if !canonical_path.starts_with(&canonical_root) {
-        panic!("{label} header escapes its asserted source root");
+    if canonical_path != candidate || !canonical_path.starts_with(&canonical_root) {
+        panic!("{label} header path identity is ambiguous");
     }
-    let metadata = std::fs::metadata(&canonical_path)
+
+    let mut file =
+        File::open(&candidate).unwrap_or_else(|_| panic!("{label} header is unreadable"));
+    let opened_metadata = file
+        .metadata()
         .unwrap_or_else(|_| panic!("{label} header metadata is unreadable"));
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_HEADER_BYTES {
-        panic!("{label} header size is outside the accepted range");
+    let file_identity = FileIdentity::from_metadata(&opened_metadata);
+    if file_identity != FileIdentity::from_metadata(&path_metadata)
+        || !opened_metadata.is_file()
+        || opened_metadata.len() == 0
+        || opened_metadata.len() > MAX_HEADER_BYTES
+    {
+        panic!("{label} header changed while it was being opened");
     }
-    let digest =
-        sha256sum(&canonical_path).unwrap_or_else(|| panic!("{label} header hashing failed"));
+
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(opened_metadata.len())
+            .unwrap_or_else(|_| panic!("{label} header size does not fit memory")),
+    );
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_HEADER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .unwrap_or_else(|_| panic!("{label} header read failed"));
+    let finished_metadata = file
+        .metadata()
+        .unwrap_or_else(|_| panic!("{label} header metadata became unreadable"));
+    if FileIdentity::from_metadata(&finished_metadata) != file_identity
+        || u64::try_from(bytes.len()).ok() != Some(file_identity.len)
+    {
+        panic!("{label} header changed while it was being read");
+    }
+
+    let final_path_metadata = std::fs::symlink_metadata(&candidate)
+        .unwrap_or_else(|_| panic!("{label} header path disappeared"));
+    if FileIdentity::from_metadata(&final_path_metadata) != file_identity
+        || final_path_metadata.file_type().is_symlink()
+    {
+        panic!("{label} header path changed while it was being authenticated");
+    }
+    let digest = sha256_bytes(&bytes).unwrap_or_else(|| panic!("{label} header hashing failed"));
 
     AuthenticatedHeader {
+        asserted_root: asserted_root.to_path_buf(),
         canonical_root,
+        root_identity,
         canonical_path,
+        file_identity,
+        name,
+        bytes,
         digest,
     }
 }
 
-fn require_header_markers(header: &Path, markers: &[&str], label: &str) {
-    let bytes =
-        std::fs::read(header).unwrap_or_else(|_| panic!("{label} header became unreadable"));
-    let text =
-        std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{label} header is not UTF-8"));
+fn reject_symlink_components(path: &Path, label: &str) {
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        match component {
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                current.push(component.as_os_str());
+            }
+            Component::CurDir | Component::ParentDir => {
+                panic!("{label} source path must not contain dot components");
+            }
+        }
+        let metadata = std::fs::symlink_metadata(&current)
+            .unwrap_or_else(|_| panic!("{label} source path component is missing"));
+        if metadata.file_type().is_symlink() {
+            panic!("{label} source path must not contain symlinks");
+        }
+        if index + 1 != components.len() && !metadata.is_dir() {
+            panic!("{label} source path has a non-directory component");
+        }
+    }
+}
+
+fn require_header_markers(bytes: &[u8], markers: &[&str], label: &str) {
+    let text = std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{label} header is not UTF-8"));
     if markers.iter().any(|marker| !text.contains(marker)) {
         panic!("{label} header identity does not match the supported API");
     }
 }
 
-fn emit_header_rerun(header: &AuthenticatedHeader) {
-    println!("cargo:rerun-if-changed={}", header.canonical_path.display());
-}
-
-fn require_unchanged_header(
-    asserted_root: &Path,
-    name: &str,
-    before: &AuthenticatedHeader,
-    label: &str,
-) {
-    let after = authenticate_header(asserted_root, name, label);
+fn require_unchanged_header(before: &AuthenticatedHeader, label: &str) {
+    let after = authenticate_header(&before.asserted_root, before.name, label);
     if after.canonical_root != before.canonical_root
+        || after.root_identity != before.root_identity
         || after.canonical_path != before.canonical_path
+        || after.file_identity != before.file_identity
         || after.digest != before.digest
     {
-        panic!("{label} header changed while the ABI oracle was compiling");
+        panic!("{label} source identity changed while the ABI oracle was compiling");
     }
 }
 
-fn sha256sum(header: &Path) -> Option<String> {
+fn create_header_snapshot(
+    out_dir: &Path,
+    namespace: &str,
+    headers: &[&AuthenticatedHeader],
+) -> HeaderSnapshot {
+    let fingerprint = headers
+        .iter()
+        .map(|header| &header.digest[..16])
+        .collect::<Vec<_>>()
+        .join("-");
+    let snapshot_root = out_dir.join(format!(
+        "replay-authenticated-{namespace}-headers-{fingerprint}"
+    ));
+    create_or_validate_private_directory(&snapshot_root);
+
+    let mut expected_names = BTreeSet::new();
+    let mut files = Vec::with_capacity(headers.len());
+    for header in headers {
+        let name = OsString::from(header.name);
+        if !expected_names.insert(name) {
+            panic!("authenticated header snapshot contains a duplicate name");
+        }
+        let snapshot_path = snapshot_root.join(header.name);
+        create_or_validate_snapshot_file(&snapshot_path, &header.bytes, &header.digest);
+        files.push((snapshot_path, header.digest.clone()));
+    }
+    require_exact_snapshot_entries(&snapshot_root, &expected_names);
+    seal_snapshot_directory(&snapshot_root);
+
+    HeaderSnapshot {
+        root: snapshot_root,
+        files,
+    }
+}
+
+fn create_or_validate_private_directory(path: &Path) {
+    let created = {
+        #[cfg(unix)]
+        {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            match builder.create(path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(_) => panic!("could not create private authenticated-header snapshot"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match std::fs::create_dir(path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(_) => panic!("could not create private authenticated-header snapshot"),
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let _ = created;
+
+    let metadata = std::fs::symlink_metadata(path)
+        .unwrap_or_else(|_| panic!("authenticated-header snapshot metadata is unreadable"));
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        panic!("authenticated-header snapshot must be a real directory");
+    }
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode() & 0o777;
+        if (created && mode != 0o700) || (!created && mode != 0o700 && mode != 0o500) {
+            panic!("authenticated-header snapshot is not private");
+        }
+    }
+}
+
+fn seal_snapshot_directory(path: &Path) {
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o500))
+            .unwrap_or_else(|_| panic!("authenticated-header snapshot sealing failed"));
+    }
+    verify_sealed_snapshot_directory(path);
+}
+
+fn verify_sealed_snapshot_directory(path: &Path) {
+    let metadata = std::fs::symlink_metadata(path)
+        .unwrap_or_else(|_| panic!("authenticated-header snapshot directory is missing"));
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        panic!("authenticated-header snapshot directory is invalid");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o777 != 0o500 {
+        panic!("authenticated-header snapshot directory is not sealed");
+    }
+}
+
+fn unseal_header_snapshot(snapshot: &HeaderSnapshot) {
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(&snapshot.root, std::fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|_| panic!("authenticated-header snapshot cleanup failed"));
+    }
+    #[cfg(not(unix))]
+    let _ = snapshot;
+}
+
+fn create_or_validate_snapshot_file(path: &Path, bytes: &[u8], digest: &str) {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o400);
+    match options.open(path) {
+        Ok(mut file) => {
+            file.write_all(bytes)
+                .unwrap_or_else(|_| panic!("authenticated-header snapshot write failed"));
+            file.sync_all()
+                .unwrap_or_else(|_| panic!("authenticated-header snapshot sync failed"));
+            drop(file);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => panic!("authenticated-header snapshot creation failed"),
+    }
+    verify_snapshot_file(path, digest);
+}
+
+fn require_exact_snapshot_entries(root: &Path, expected: &BTreeSet<OsString>) {
+    let observed: BTreeSet<_> = std::fs::read_dir(root)
+        .unwrap_or_else(|_| panic!("authenticated-header snapshot is unreadable"))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|_| panic!("authenticated-header snapshot entry is unreadable"))
+                .file_name()
+        })
+        .collect();
+    if observed != *expected {
+        panic!("authenticated-header snapshot contains unexpected files");
+    }
+}
+
+fn verify_header_snapshot(snapshot: &HeaderSnapshot, label: &str) {
+    verify_sealed_snapshot_directory(&snapshot.root);
+    let expected_names: BTreeSet<_> = snapshot
+        .files
+        .iter()
+        .map(|(path, _)| {
+            path.file_name()
+                .unwrap_or_else(|| panic!("{label} snapshot file has no name"))
+                .to_os_string()
+        })
+        .collect();
+    require_exact_snapshot_entries(&snapshot.root, &expected_names);
+    for (path, digest) in &snapshot.files {
+        verify_snapshot_file(path, digest);
+    }
+}
+
+fn verify_snapshot_file(path: &Path, digest: &str) {
+    let metadata = std::fs::symlink_metadata(path)
+        .unwrap_or_else(|_| panic!("authenticated-header snapshot file is missing"));
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_HEADER_BYTES
+    {
+        panic!("authenticated-header snapshot file is invalid");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o777 != 0o400 {
+        panic!("authenticated-header snapshot file must be read-only and private");
+    }
+    let observed =
+        sha256sum(path).unwrap_or_else(|| panic!("authenticated-header snapshot hashing failed"));
+    if observed != digest {
+        panic!("authenticated-header snapshot digest mismatch");
+    }
+}
+
+fn sha256_bytes(bytes: &[u8]) -> Option<String> {
+    let mut child = Command::new("/usr/bin/sha256sum")
+        .arg("-")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(bytes).ok()?;
+    let output = child.wait_with_output().ok()?;
+    parse_sha256_output(&output)
+}
+
+fn sha256sum(path: &Path) -> Option<String> {
     let output = Command::new("/usr/bin/sha256sum")
         .arg("--")
-        .arg(header)
+        .arg(path)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LC_ALL", "C")
         .output()
         .ok()?;
+    parse_sha256_output(&output)
+}
+
+fn parse_sha256_output(output: &std::process::Output) -> Option<String> {
     if !output.status.success() || !output.stderr.is_empty() {
         return None;
     }

@@ -23,10 +23,16 @@
 #define REPLAY_CUDA_U32(name, value)                                         \
     unsigned int replay_cuda_##name(void) { return (unsigned int)(value); }
 
-#define REPLAY_ASSERT_FUNCTION_MEMBER(field)                                 \
+#define REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(field, pfn_type)                 \
     _Static_assert(                                                          \
-        sizeof(((NVFBC_API_FUNCTION_LIST *)0)->field) == sizeof(void *),     \
-        "NvFBC function pointer representation changed")
+        __builtin_types_compatible_p(                                        \
+            __typeof__(((NVFBC_API_FUNCTION_LIST *)0)->field), pfn_type),    \
+        "NvFBC function member signature changed: " #field)
+
+#define REPLAY_ASSERT_NVFBC_ENTRY_POINT(pfn_type, expression)                \
+    _Static_assert(                                                          \
+        __builtin_types_compatible_p(pfn_type, __typeof__(expression)),      \
+        "NvFBC entry-point signature changed")
 
 #define REPLAY_ASSERT_CUDA_SIGNATURE(pfn_type, expression)                    \
     _Static_assert(                                                          \
@@ -218,21 +224,30 @@ _Static_assert(offsetof(NVFBC_API_FUNCTION_LIST, nvFBCToGLGrabFrame) == 168u,
 _Static_assert(offsetof(NVFBC_API_FUNCTION_LIST, nvFBCCompositeCursor) == 176u,
                "NvFBC function-list composite-cursor offset changed");
 
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCGetLastErrorStr);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCCreateHandle);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCDestroyHandle);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCGetStatus);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCCreateCaptureSession);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCDestroyCaptureSession);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToSysSetUp);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToSysGrabFrame);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToCudaSetUp);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToCudaGrabFrame);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCBindContext);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCReleaseContext);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToGLSetUp);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCToGLGrabFrame);
-REPLAY_ASSERT_FUNCTION_MEMBER(nvFBCCompositeCursor);
+REPLAY_ASSERT_NVFBC_ENTRY_POINT(PNVFBCCREATEINSTANCE, &NvFBCCreateInstance);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCGetLastErrorStr,
+                                    PNVFBCGETLASTERRORSTR);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCCreateHandle, PNVFBCCREATEHANDLE);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCDestroyHandle, PNVFBCDESTROYHANDLE);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCGetStatus, PNVFBCGETSTATUS);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCCreateCaptureSession,
+                                    PNVFBCCREATECAPTURESESSION);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCDestroyCaptureSession,
+                                    PNVFBCDESTROYCAPTURESESSION);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToSysSetUp, PNVFBCTOSYSSETUP);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToSysGrabFrame,
+                                    PNVFBCTOSYSGRABFRAME);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToCudaSetUp, PNVFBCTOCUDASETUP);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToCudaGrabFrame,
+                                    PNVFBCTOCUDAGRABFRAME);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCBindContext, PNVFBCBINDCONTEXT);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCReleaseContext,
+                                    PNVFBCRELEASECONTEXT);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToGLSetUp, PNVFBCTOGLSETUP);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCToGLGrabFrame,
+                                    PNVFBCTOGLGRABFRAME);
+REPLAY_ASSERT_NVFBC_FUNCTION_MEMBER(nvFBCCompositeCursor,
+                                    PNVFBCCOMPOSITECURSOR);
 
 _Static_assert(sizeof(CUcontext) == 8u, "CUDA context representation changed");
 _Static_assert(_Alignof(CUcontext) == 8u, "CUDA context alignment changed");
@@ -245,6 +260,8 @@ _Static_assert(_Alignof(CUdevice) == 4u, "CUDA device alignment changed");
 _Static_assert(sizeof(CUuuid) == 16u, "CUDA UUID representation changed");
 _Static_assert(CUDA_VERSION == 13030, "unsupported CUDA header version");
 _Static_assert(CUDA_SUCCESS == 0, "CUDA success constant changed");
+_Static_assert(CU_GET_PROC_ADDRESS_LEGACY_STREAM == 1,
+               "CUDA legacy-stream lookup flag changed");
 _Static_assert(CU_POINTER_ATTRIBUTE_CONTEXT == 1 &&
                    CU_POINTER_ATTRIBUTE_MEMORY_TYPE == 2 &&
                    CU_POINTER_ATTRIBUTE_DEVICE_POINTER == 3 &&
@@ -597,6 +614,8 @@ REPLAY_NVFBC_U32(direct_max_capture_targets,
 
 REPLAY_CUDA_U32(header_version, CUDA_VERSION)
 REPLAY_CUDA_U32(result_success, CUDA_SUCCESS)
+REPLAY_CUDA_U32(get_proc_address_legacy_stream,
+                CU_GET_PROC_ADDRESS_LEGACY_STREAM)
 REPLAY_CUDA_U32(pointer_attribute_context, CU_POINTER_ATTRIBUTE_CONTEXT)
 REPLAY_CUDA_U32(pointer_attribute_memory_type,
                 CU_POINTER_ATTRIBUTE_MEMORY_TYPE)

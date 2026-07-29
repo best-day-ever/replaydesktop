@@ -497,4 +497,23 @@ mod tests {
         .expect("extension record");
         assert!(!validate_selected_output_record(&inconsistent));
     }
+
+    #[test]
+    fn nvfbc_extension_rejects_injected_verdict_with_matching_payload_digest() {
+        let injected = crate::extension_record(
+            NVFBC_CAPTURE_EXTENSION_ID,
+            G0ExtensionStatusV1::Unproven,
+            serde_json::json!({
+                "schema": "replaydesktop.nvfbc-capture-observation.v1",
+                "probe": "nvfbc-capture",
+                "admission": "unproven",
+                "worker_status": "observed",
+                "primitive_available": false,
+                "observation_class": "primitive-unavailable",
+                "verdict": "pass"
+            }),
+        )
+        .expect("extension record");
+        assert!(!validate_nvfbc_capture_record(&injected));
+    }
 }

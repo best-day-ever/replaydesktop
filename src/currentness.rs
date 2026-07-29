@@ -2,11 +2,13 @@ use crate::digest::{Sha256DigestV1, sha256_bytes, sha256_file};
 use crate::model::G0EvidenceEnvelopeV1;
 use std::fmt;
 use std::io;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_AGE_NS: u64 = 5 * 60 * 1_000_000_000;
 const DEFAULT_MAX_FUTURE_SKEW_NS: u64 = 5 * 1_000_000_000;
 const DEFAULT_MAX_RUN_DURATION_NS: u64 = 5 * 60 * 1_000_000_000;
+static CURRENT_EXECUTABLE_DIGEST: OnceLock<Sha256DigestV1> = OnceLock::new();
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RunIdentityV1 {
@@ -237,10 +239,15 @@ fn current_session_id() -> Result<String, CurrentnessError> {
 }
 
 fn current_executable_digest() -> Result<Sha256DigestV1, CurrentnessError> {
-    sha256_file("/proc/self/exe").map_err(|source| CurrentnessError::Io {
+    if let Some(digest) = CURRENT_EXECUTABLE_DIGEST.get() {
+        return Ok(*digest);
+    }
+    let digest = sha256_file("/proc/self/exe").map_err(|source| CurrentnessError::Io {
         fact: "executable identity",
         source,
-    })
+    })?;
+    let _ = CURRENT_EXECUTABLE_DIGEST.set(digest);
+    Ok(*CURRENT_EXECUTABLE_DIGEST.get().unwrap_or(&digest))
 }
 
 fn wall_unix_ns() -> Result<u64, CurrentnessError> {

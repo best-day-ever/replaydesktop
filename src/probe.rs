@@ -140,6 +140,9 @@ impl ProbeBackend for LiveProbeBackend {
         parent_nonce: &str,
         requested_output: Option<&crate::model::OutputNameV1>,
     ) -> ProbeOutcome {
+        if probe == ProbeId::NvfbcCapture {
+            return ProbeOutcome::observed(probe, unavailable_capture_observation());
+        }
         let request = ProbeRequestV1 {
             schema: REQUEST_SCHEMA.to_owned(),
             nonce: parent_nonce.to_owned(),
@@ -182,6 +185,9 @@ impl ProbeBackend for FixtureProbeBackend {
         parent_nonce: &str,
         requested_output: Option<&crate::model::OutputNameV1>,
     ) -> ProbeOutcome {
+        if probe == ProbeId::NvfbcCapture && !fixture_uses_host03_contract(&self.fixture) {
+            return ProbeOutcome::observed(probe, unavailable_capture_observation());
+        }
         let request = ProbeRequestV1 {
             schema: REQUEST_SCHEMA.to_owned(),
             nonce: parent_nonce.to_owned(),
@@ -197,6 +203,31 @@ impl ProbeBackend for FixtureProbeBackend {
             Err(failure) => ProbeOutcome::failed(probe, failure),
         }
     }
+}
+
+fn unavailable_capture_observation() -> PrimitiveObservationV1 {
+    let provider = crate::native_nvfbc::LiveUnavailableCaptureProvider;
+    PrimitiveObservationV1 {
+        available: false,
+        code: "nvfbc-source-unavailable".to_owned(),
+        host_foundation: None,
+        selected_output: None,
+        capture: Some(crate::native_nvfbc::CaptureProvider::observe(&provider)),
+    }
+}
+
+fn fixture_uses_host03_contract(path: &Path) -> bool {
+    read_bounded_file(path, MAX_FIXTURE_BYTES)
+        .ok()
+        .filter(|bytes| validate_duplicate_free_json(bytes).is_ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| {
+            value
+                .get("schema")
+                .and_then(serde_json::Value::as_str)
+                .map(|schema| schema == HOST03_FIXTURE_SCHEMA)
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -525,17 +556,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
             )
         }
         ProbeSourceV1::Live if request.probe == ProbeId::NvfbcCapture => {
-            let provider = crate::native_nvfbc::LiveUnavailableCaptureProvider;
-            normal_worker_output(
-                &request,
-                PrimitiveObservationV1 {
-                    available: false,
-                    code: "nvfbc-source-unavailable".to_owned(),
-                    host_foundation: None,
-                    selected_output: None,
-                    capture: Some(crate::native_nvfbc::CaptureProvider::observe(&provider)),
-                },
-            )
+            normal_worker_output(&request, unavailable_capture_observation())
         }
         ProbeSourceV1::Live => normal_worker_output(
             &request,
@@ -1200,6 +1221,7 @@ pub fn collect_probes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::CaptureFailureV1;
 
     #[test]
     fn bounded_probe_duplicate_keys_are_rejected() {
@@ -1219,5 +1241,157 @@ mod tests {
         }"#;
         validate_duplicate_free_json(injected).expect("fixture is duplicate-free");
         assert!(serde_json::from_slice::<ProbeResponseV1>(injected).is_err());
+    }
+
+    #[test]
+    fn host03_contract_legacy_fixtures_do_not_add_a_worker_deadline() {
+        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let missing_worker =
+            BoundedProbeRunner::with_executable("/definitely/not/a/worker", Duration::from_secs(1));
+        let legacy = FixtureProbeBackend::new(
+            missing_worker.clone(),
+            fixture_root.join("host01-edge-cases.json"),
+            "normal",
+        );
+        let outcome = legacy.observe(ProbeId::NvfbcCapture, "nonce-test", None);
+        assert_eq!(outcome.failure, None);
+        assert_eq!(
+            outcome
+                .observation
+                .and_then(|observation| observation.capture)
+                .and_then(|capture| capture.failure),
+            Some(CaptureFailureV1::SourceUnavailable)
+        );
+
+        let host03 = FixtureProbeBackend::new(
+            missing_worker,
+            fixture_root.join("host03-nvfbc-capture.json"),
+            "valid-zero-copy",
+        );
+        assert_eq!(
+            host03
+                .observe(ProbeId::NvfbcCapture, "nonce-test", None)
+                .failure,
+            Some(ProbeFailure::Spawn)
+        );
+    }
+
+    #[test]
+    fn host03_contract_and_host03_fixture_matrix_exhaust_boundaries() {
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/host03-nvfbc-capture.json");
+        let fixture: Host03FixtureDocument = serde_json::from_slice(
+            &std::fs::read(&fixture_path).expect("HOST-03 fixture must be readable"),
+        )
+        .expect("HOST-03 fixture must be structurally valid");
+        let selected_observation = crate::output_mapping::collect_fixture_output_topology(
+            &fixture_path
+                .parent()
+                .expect("fixture has a parent")
+                .join(&fixture.selected_output_fixture),
+            &fixture.selected_output_case,
+            Some("DP-0.3"),
+        )
+        .expect("selected-output fixture must load");
+        let selected = crate::output_mapping::prove_output_gpu_mapping(
+            selected_observation
+                .topology
+                .as_ref()
+                .expect("selected topology"),
+        )
+        .expect("selected output must be proven");
+
+        for (case_id, expected) in [
+            ("source-mismatch", CaptureFailureV1::SourceMismatch),
+            ("api-mismatch", CaptureFailureV1::SourceMismatch),
+            ("alternate-output", CaptureFailureV1::BindingMismatch),
+            ("alternate-gpu", CaptureFailureV1::BindingMismatch),
+            ("false-alias", CaptureFailureV1::InvalidCopyLedger),
+            ("peer-without-access", CaptureFailureV1::InvalidCopyLedger),
+            ("host-staged", CaptureFailureV1::InvalidCopyLedger),
+            ("unknown-edge", CaptureFailureV1::InvalidCopyLedger),
+            ("disconnected-edge", CaptureFailureV1::InvalidCopyLedger),
+            ("malformed-frame", CaptureFailureV1::InvalidFrame),
+            ("stale-frame", CaptureFailureV1::StaleFrame),
+            ("cursor-mismatch", CaptureFailureV1::InvalidFrame),
+            ("cleanup-missing", CaptureFailureV1::CleanupUncertain),
+            ("cleanup-duplicate", CaptureFailureV1::CleanupUncertain),
+            ("cleanup-out-of-order", CaptureFailureV1::CleanupUncertain),
+            ("pointer-sentinel", CaptureFailureV1::InvalidFrame),
+        ] {
+            let capture = host03_fixture_capture(&fixture, case_id)
+                .expect("semantic fixture case must decode");
+            let evidence =
+                crate::native_nvfbc::evaluate_capture_observation(capture, Some(&selected));
+            assert_eq!(evidence.failure, Some(expected), "case {case_id}");
+            assert!(evidence.lease.is_none(), "case {case_id}");
+            assert!(evidence.copy_ledger.is_none(), "case {case_id}");
+        }
+
+        for case_id in [
+            "injected-verdict",
+            "injected-ledger",
+            "injected-cleanup-result",
+            "source-path-sentinel",
+            "fallback-xcb",
+            "fallback-pipewire",
+            "fallback-software",
+        ] {
+            assert!(
+                host03_fixture_capture(&fixture, case_id).is_err(),
+                "authority/fallback case must fail strict primitive decoding: {case_id}"
+            );
+        }
+
+        for (case_id, zero_copy, device_copy, conversion, post_processing) in [
+            ("valid-zero-copy", 1, 0, 0, false),
+            ("valid-device-copy", 0, 1, 0, false),
+            ("valid-conversion", 0, 0, 1, false),
+            ("required-post-processing", 1, 0, 0, true),
+        ] {
+            let capture =
+                host03_fixture_capture(&fixture, case_id).expect("valid fixture case must decode");
+            let evidence =
+                crate::native_nvfbc::evaluate_capture_observation(capture, Some(&selected));
+            assert_eq!(evidence.failure, None, "case {case_id}");
+            let lease = evidence.lease.expect("valid case has a lease");
+            let ledger = evidence.copy_ledger.expect("valid case has a ledger");
+            assert_eq!(
+                lease.required_post_processing, post_processing,
+                "case {case_id}"
+            );
+            assert_eq!(ledger.zero_copy_edges, zero_copy, "case {case_id}");
+            assert_eq!(ledger.device_copy_edges, device_copy, "case {case_id}");
+            assert_eq!(ledger.conversion_edges, conversion, "case {case_id}");
+        }
+
+        for case_id in [
+            "fail-after-library",
+            "fail-after-status",
+            "fail-after-context",
+            "fail-after-session",
+            "fail-after-frame",
+        ] {
+            let capture =
+                host03_fixture_capture(&fixture, case_id).expect("partial fixture must decode");
+            let evidence =
+                crate::native_nvfbc::evaluate_capture_observation(capture, Some(&selected));
+            assert_eq!(evidence.failure, Some(CaptureFailureV1::Busy));
+            assert!(evidence.cleanup.complete, "case {case_id}");
+        }
+    }
+
+    fn host03_fixture_capture(
+        fixture: &Host03FixtureDocument,
+        case_id: &str,
+    ) -> Result<crate::model::CapturePrimitiveObservationV1, serde_json::Error> {
+        let case = fixture
+            .cases
+            .iter()
+            .find(|case| case.id == case_id)
+            .expect("fixture case must exist");
+        let mut capture = fixture.base_capture.clone();
+        overlay_fixture_json(&mut capture, &case.capture_patch);
+        serde_json::from_value(capture)
     }
 }

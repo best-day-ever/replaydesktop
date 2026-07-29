@@ -77,6 +77,10 @@ fn host02_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host02-output-topologies.json")
 }
 
+fn host04_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host04-nvenc-tuples.json")
+}
+
 fn pre_reboot_archive_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/validation/g0/pre-reboot")
 }
@@ -2254,6 +2258,175 @@ fn host03_diagnostic_no_source_provider_cannot_claim_capture() {
     );
     assert!(evidence.lease.is_none());
     assert!(evidence.copy_ledger.is_none());
+}
+
+#[test]
+fn host04_diagnostic_process_persists_seven_terminal_unproven_attempts() {
+    let directory = temp_dir("host04-diagnostic-policy");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_with_fixture(&host04_fixture(), "sdk-13-1-ada", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stderr.is_empty());
+
+    let envelope = read_envelope(&evidence);
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Diagnostic);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    let record = extension(&envelope, "nvenc-tuples.v1");
+    assert_eq!(record.status, G0ExtensionStatusV1::Unproven);
+    assert!(replay_host_doctor::evidence::validate_nvenc_tuples_record(
+        record
+    ));
+    let payload = extension_payload(record);
+    assert_eq!(payload["provider"], "diagnostic-fixture");
+    assert_eq!(payload["admission"], "unproven");
+    assert_eq!(
+        payload["attempts"]
+            .as_array()
+            .expect("attempts array")
+            .len(),
+        7
+    );
+    assert!(
+        payload["attempts"]
+            .as_array()
+            .expect("attempts array")
+            .iter()
+            .all(|attempt| attempt["terminal"] == true)
+    );
+    assert_eq!(
+        payload["advertised"]
+            .as_array()
+            .expect("advertisements array")
+            .len(),
+        0
+    );
+
+    std::fs::remove_dir_all(directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host04_diagnostic_api_and_generation_cases_never_advertise() {
+    for case in [
+        "sdk-12-2-ampere",
+        "sdk-13-0-ada",
+        "sdk-13-1-ada",
+        "sdk-14-0-ada",
+    ] {
+        let directory = temp_dir(&format!("host04-diagnostic-{case}"));
+        let evidence = directory.join("evidence.json");
+        let output = diagnose_with_fixture(&host04_fixture(), case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "{case}");
+        assert!(output.stderr.is_empty(), "{case}");
+
+        let envelope = read_envelope(&evidence);
+        let record = extension(&envelope, "nvenc-tuples.v1");
+        assert_eq!(record.status, G0ExtensionStatusV1::Unproven, "{case}");
+        assert!(replay_host_doctor::evidence::validate_nvenc_tuples_record(
+            record
+        ));
+        let payload = extension_payload(record);
+        assert_eq!(payload["provider"], "diagnostic-fixture", "{case}");
+        assert_eq!(payload["admission"], "unproven", "{case}");
+        assert_eq!(
+            payload["advertised"]
+                .as_array()
+                .expect("advertisements array")
+                .len(),
+            0,
+            "{case}"
+        );
+        if case.ends_with("ampere") {
+            assert_eq!(payload["attempts"][5]["outcome"], "generation-ineligible");
+            assert_eq!(payload["attempts"][6]["outcome"], "generation-ineligible");
+        }
+
+        std::fs::remove_dir_all(directory).expect("test directory must be removable");
+    }
+}
+
+#[test]
+fn host04_diagnostic_injected_advertisement_copy_cleanup_and_version_are_rejected() {
+    let directory = temp_dir("host04-diagnostic-injection");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_with_fixture(&host04_fixture(), "sdk-13-1-ada", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+    let original = read_json(&evidence);
+    let fixture = read_json(&host04_fixture());
+
+    for (label, mutation) in [
+        ("advertisement", 0_u8),
+        ("copy", 1_u8),
+        ("cleanup", 2_u8),
+        ("version", 3_u8),
+    ] {
+        let path = directory.join(format!("{label}.json"));
+        let mut injected = original.clone();
+        rewrite_extension_payload(&mut injected, "nvenc-tuples.v1", |payload| match mutation {
+            0 => {
+                payload["advertised"] = json!([{
+                    "position": payload["attempts"][0]["position"].clone(),
+                    "tuple": payload["attempts"][0]["tuple"].clone(),
+                    "bitstream_sha256":
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }]);
+            }
+            1 => {
+                payload["attempts"][0]["copy_proof"] =
+                    fixture["complete_attempt"]["copy_proof"].clone();
+            }
+            2 => payload["attempts"][0]["cleanup"]["complete"] = json!(false),
+            3 => payload["source"]["api_version"] = json!({"major": 14, "minor": 0}),
+            _ => unreachable!("bounded static mutation"),
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&injected).expect("injected evidence serializes"),
+        )
+        .expect("injected evidence writes");
+        let verify = Command::new(binary())
+            .args([
+                "verify-evidence",
+                "--evidence",
+                path.to_str().expect("evidence path UTF-8"),
+                "--validate-extension",
+                "nvenc-tuples.v1",
+            ])
+            .output()
+            .expect("injected verifier launches");
+        assert_private_error(&verify, 74, "EVIDENCE_PERSISTENCE");
+    }
+
+    std::fs::remove_dir_all(directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host04_diagnostic_timeout_and_invalid_fixture_fail_closed() {
+    let directory = temp_dir("host04-diagnostic-fail-closed");
+    let timeout_evidence = directory.join("timeout.json");
+    let timeout = diagnose_with_fixture(&host04_fixture(), "worker-timeout", &timeout_evidence, 20);
+    assert_eq!(timeout.status.code(), Some(2));
+    assert!(timeout.stderr.is_empty());
+    let timeout_envelope = read_envelope(&timeout_evidence);
+    assert_eq!(
+        extension(&timeout_envelope, "nvenc-tuples.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+
+    let invalid_fixture = directory.join("invalid.json");
+    std::fs::write(&invalid_fixture, b"{\"schema\":")
+        .expect("invalid diagnostic fixture must write");
+    let invalid_evidence = directory.join("invalid-evidence.json");
+    let invalid = diagnose_with_fixture(&invalid_fixture, "missing", &invalid_evidence, 100);
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(invalid.stderr.is_empty());
+    let invalid_envelope = read_envelope(&invalid_evidence);
+    assert_eq!(
+        extension(&invalid_envelope, "nvenc-tuples.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+    assert_eq!(invalid_envelope.base.status, G0GateStatusV1::Fail);
+
+    std::fs::remove_dir_all(directory).expect("test directory must be removable");
 }
 
 #[test]

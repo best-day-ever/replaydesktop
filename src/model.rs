@@ -899,6 +899,7 @@ pub enum CaptureSourceStatusV1 {
 #[serde(deny_unknown_fields)]
 pub struct CaptureSourceEvidenceV1 {
     pub status: CaptureSourceStatusV1,
+    pub identity: Option<String>,
     pub api_version: Option<u32>,
     pub nvfbc_header_sha256: Option<Sha256DigestV1>,
     pub cuda_header_sha256: Option<Sha256DigestV1>,

@@ -9,6 +9,7 @@ use crate::model::{
 };
 use std::collections::HashSet;
 
+#[cfg(test)]
 const FULL_LIFECYCLE: [CaptureLifecycleEventV1; 9] = [
     CaptureLifecycleEventV1::LibraryLoaded,
     CaptureLifecycleEventV1::StatusQueried,
@@ -20,6 +21,56 @@ const FULL_LIFECYCLE: [CaptureLifecycleEventV1; 9] = [
     CaptureLifecycleEventV1::ContextReleased,
     CaptureLifecycleEventV1::LibraryUnloaded,
 ];
+
+const NVFBC_ABI_CONTRACT_NAMES: [&str; 13] = [
+    "NVFBC_API_FUNCTION_LIST",
+    "NVFBC_CREATE_HANDLE_PARAMS",
+    "NVFBC_GET_STATUS_PARAMS",
+    "NVFBC_BIND_CONTEXT_PARAMS",
+    "NVFBC_CREATE_CAPTURE_SESSION_PARAMS",
+    "NVFBC_TOCUDA_SETUP_PARAMS",
+    "NVFBC_TOCUDA_GRAB_FRAME_PARAMS",
+    "NVFBC_FRAME_GRAB_INFO",
+    "NVFBC_DESTROY_CAPTURE_SESSION_PARAMS",
+    "NVFBC_RELEASE_CONTEXT_PARAMS",
+    "NVFBC_DESTROY_HANDLE_PARAMS",
+    "CUcontext",
+    "CUdeviceptr",
+];
+
+pub const fn nvfbc_abi_contract_names() -> &'static [&'static str] {
+    &NVFBC_ABI_CONTRACT_NAMES
+}
+
+#[cfg(not(replay_nvfbc_source))]
+pub fn compiled_capture_source() -> CaptureSourceEvidenceV1 {
+    CaptureSourceEvidenceV1 {
+        status: CaptureSourceStatusV1::Unavailable,
+        identity: None,
+        api_version: None,
+        nvfbc_header_sha256: None,
+        cuda_header_sha256: None,
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+pub fn compiled_capture_source() -> CaptureSourceEvidenceV1 {
+    CaptureSourceEvidenceV1 {
+        status: CaptureSourceStatusV1::Authenticated,
+        identity: Some(env!("REPLAY_NVFBC_SOURCE_IDENTITY").to_owned()),
+        api_version: Some(18),
+        nvfbc_header_sha256: Some(
+            env!("REPLAY_NVFBC_SOURCE_SHA256")
+                .parse()
+                .expect("build script emits a checked NvFBC SHA-256"),
+        ),
+        cuda_header_sha256: Some(
+            env!("REPLAY_CUDA_SOURCE_SHA256")
+                .parse()
+                .expect("build script emits a checked CUDA SHA-256"),
+        ),
+    }
+}
 
 pub trait CaptureProvider {
     fn observe(&self) -> CapturePrimitiveObservationV1;
@@ -52,6 +103,7 @@ impl CaptureProvider for LiveUnavailableCaptureProvider {
             provider: CaptureProviderKindV1::LiveUnavailable,
             source: CaptureSourceEvidenceV1 {
                 status: CaptureSourceStatusV1::Unavailable,
+                identity: None,
                 api_version: None,
                 nvfbc_header_sha256: None,
                 cuda_header_sha256: None,
@@ -164,6 +216,7 @@ pub fn evaluate_capture_observation(
 pub fn validate_capture_path_evidence(evidence: &CapturePathEvidenceV1) -> bool {
     if evidence.schema != NVFBC_CAPTURE_SCHEMA_V1
         || !valid_source(&evidence.source)
+        || !provider_matches_source(evidence.provider, evidence.source.status)
         || !valid_cleanup_ledger(&evidence.cleanup)
     {
         return false;
@@ -195,12 +248,14 @@ pub fn validate_capture_path_evidence(evidence: &CapturePathEvidenceV1) -> bool 
 fn valid_provider_source(observation: &CapturePrimitiveObservationV1) -> bool {
     match (observation.provider, observation.source.status) {
         (CaptureProviderKindV1::Fixture, CaptureSourceStatusV1::Fixture) => {
-            observation.source.api_version == Some(18)
+            observation.source.identity.as_deref() == Some("fixture-nvfbc-api-1.8")
+                && observation.source.api_version == Some(18)
                 && observation.source.nvfbc_header_sha256.is_none()
                 && observation.source.cuda_header_sha256.is_none()
         }
         (CaptureProviderKindV1::LiveUnavailable, CaptureSourceStatusV1::Unavailable) => {
-            observation.source.api_version.is_none()
+            observation.source.identity.is_none()
+                && observation.source.api_version.is_none()
                 && observation.source.nvfbc_header_sha256.is_none()
                 && observation.source.cuda_header_sha256.is_none()
                 && observation.binding.is_none()
@@ -209,7 +264,8 @@ fn valid_provider_source(observation: &CapturePrimitiveObservationV1) -> bool {
                 && observation.failure == Some(CaptureFailureV1::SourceUnavailable)
         }
         (CaptureProviderKindV1::SourceAuthenticated, CaptureSourceStatusV1::Authenticated) => {
-            observation.source.api_version == Some(18)
+            observation.source.identity.as_deref() == Some("nvidia-nvfbc-api-1.8-cuda-driver-api")
+                && observation.source.api_version == Some(18)
                 && observation.source.nvfbc_header_sha256.is_some()
                 && observation.source.cuda_header_sha256.is_some()
         }
@@ -220,21 +276,40 @@ fn valid_provider_source(observation: &CapturePrimitiveObservationV1) -> bool {
 fn valid_source(source: &CaptureSourceEvidenceV1) -> bool {
     match source.status {
         CaptureSourceStatusV1::Fixture => {
-            source.api_version == Some(18)
+            source.identity.as_deref() == Some("fixture-nvfbc-api-1.8")
+                && source.api_version == Some(18)
                 && source.nvfbc_header_sha256.is_none()
                 && source.cuda_header_sha256.is_none()
         }
         CaptureSourceStatusV1::Unavailable => {
-            source.api_version.is_none()
+            source.identity.is_none()
+                && source.api_version.is_none()
                 && source.nvfbc_header_sha256.is_none()
                 && source.cuda_header_sha256.is_none()
         }
         CaptureSourceStatusV1::Authenticated => {
-            source.api_version == Some(18)
+            source.identity.as_deref() == Some("nvidia-nvfbc-api-1.8-cuda-driver-api")
+                && source.api_version == Some(18)
                 && source.nvfbc_header_sha256.is_some()
                 && source.cuda_header_sha256.is_some()
         }
     }
+}
+
+fn provider_matches_source(provider: CaptureProviderKindV1, source: CaptureSourceStatusV1) -> bool {
+    matches!(
+        (provider, source),
+        (
+            CaptureProviderKindV1::Fixture,
+            CaptureSourceStatusV1::Fixture
+        ) | (
+            CaptureProviderKindV1::LiveUnavailable,
+            CaptureSourceStatusV1::Unavailable
+        ) | (
+            CaptureProviderKindV1::SourceAuthenticated,
+            CaptureSourceStatusV1::Authenticated
+        )
+    )
 }
 
 fn binding_matches_selected(
@@ -467,20 +542,80 @@ fn validate_persisted_ledger(lease: &CaptureFrameLeaseV1, ledger: &CopyLedgerV1)
 fn derive_cleanup(events: &[CaptureLifecycleEventV1]) -> CaptureCleanupLedgerV1 {
     let split = events
         .iter()
-        .position(|event| *event == CaptureLifecycleEventV1::FrameReleased)
+        .position(|event| {
+            matches!(
+                event,
+                CaptureLifecycleEventV1::FrameReleased
+                    | CaptureLifecycleEventV1::SessionDestroyed
+                    | CaptureLifecycleEventV1::ContextReleased
+                    | CaptureLifecycleEventV1::LibraryUnloaded
+            )
+        })
         .unwrap_or(events.len());
     CaptureCleanupLedgerV1 {
         acquired: events[..split].to_vec(),
         released: events[split..].to_vec(),
-        complete: events == FULL_LIFECYCLE,
+        complete: cleanup_sequence_complete(events),
     }
 }
 
 fn valid_cleanup_ledger(cleanup: &CaptureCleanupLedgerV1) -> bool {
     let mut combined = cleanup.acquired.clone();
     combined.extend_from_slice(&cleanup.released);
-    cleanup.complete == (combined == FULL_LIFECYCLE)
-        && combined.len() <= MAX_CAPTURE_LIFECYCLE_EVENTS_V1
+    combined.len() <= MAX_CAPTURE_LIFECYCLE_EVENTS_V1 && derive_cleanup(&combined) == *cleanup
+}
+
+fn cleanup_sequence_complete(events: &[CaptureLifecycleEventV1]) -> bool {
+    use CaptureLifecycleEventV1::{
+        ContextBound, ContextReleased, FrameGrabbed, FrameReleased, LibraryLoaded, LibraryUnloaded,
+        SessionCreated, SessionDestroyed, StatusQueried,
+    };
+
+    let mut resources = Vec::new();
+    let mut status_queried = false;
+    let mut cleanup_started = false;
+    for event in events {
+        match event {
+            LibraryLoaded if resources.is_empty() && !cleanup_started => {
+                resources.push(LibraryLoaded);
+            }
+            StatusQueried
+                if resources == [LibraryLoaded] && !status_queried && !cleanup_started =>
+            {
+                status_queried = true;
+            }
+            ContextBound if resources == [LibraryLoaded] && status_queried && !cleanup_started => {
+                resources.push(ContextBound);
+            }
+            SessionCreated if resources == [LibraryLoaded, ContextBound] && !cleanup_started => {
+                resources.push(SessionCreated);
+            }
+            FrameGrabbed
+                if resources == [LibraryLoaded, ContextBound, SessionCreated]
+                    && !cleanup_started =>
+            {
+                resources.push(FrameGrabbed);
+            }
+            FrameReleased if resources.last() == Some(&FrameGrabbed) => {
+                cleanup_started = true;
+                resources.pop();
+            }
+            SessionDestroyed if resources.last() == Some(&SessionCreated) => {
+                cleanup_started = true;
+                resources.pop();
+            }
+            ContextReleased if resources.last() == Some(&ContextBound) => {
+                cleanup_started = true;
+                resources.pop();
+            }
+            LibraryUnloaded if resources == [LibraryLoaded] => {
+                cleanup_started = true;
+                resources.pop();
+            }
+            _ => return false,
+        }
+    }
+    cleanup_started && resources.is_empty()
 }
 
 fn grab_failure(status: crate::model::CaptureGrabStatusV1) -> CaptureFailureV1 {
@@ -503,6 +638,7 @@ mod tests {
     fn host03_no_source_provider_reports_compiled_gate_unavailable() {
         let source = compiled_capture_source();
         assert_eq!(source.status, CaptureSourceStatusV1::Unavailable);
+        assert_eq!(source.identity, None);
         assert_eq!(source.api_version, None);
         assert_eq!(source.nvfbc_header_sha256, None);
         assert_eq!(source.cuda_header_sha256, None);
@@ -532,6 +668,24 @@ mod tests {
                 "CUdeviceptr",
             ]
         );
+        let oracle = include_str!("../native/nvfbc_abi_oracle.c");
+        for declaration in nvfbc_abi_contract_names() {
+            assert!(
+                oracle.contains(declaration),
+                "ABI oracle missing {declaration}"
+            );
+        }
+        for export in [
+            "replay_nvfbc_sizeof_api_function_list",
+            "replay_nvfbc_sizeof_tocuda_grab_frame_params",
+            "replay_nvfbc_sizeof_frame_grab_info",
+            "replay_nvfbc_sizeof_cuda_context",
+            "replay_nvfbc_sizeof_cuda_device_pointer",
+            "replay_nvfbc_api_version",
+            "replay_nvfbc_contract_mask",
+        ] {
+            assert!(oracle.contains(export), "ABI oracle missing {export}");
+        }
     }
 
     #[test]

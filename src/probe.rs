@@ -252,6 +252,19 @@ impl BoundedProbeRunner {
             command.env("REPLAY_NVML_SDK_ROOT", root);
         }
         if matches!(request.source, ProbeSourceV1::Live)
+            && request.probe == ProbeId::NvfbcCapture
+            && let (Some(nvfbc_root), Some(cuda_root)) = (
+                std::env::var_os("REPLAY_NVFBC_SDK_ROOT"),
+                std::env::var_os("REPLAY_CUDA_SDK_ROOT"),
+            )
+            && Path::new(&nvfbc_root).is_absolute()
+            && Path::new(&cuda_root).is_absolute()
+        {
+            command
+                .env("REPLAY_NVFBC_SDK_ROOT", nvfbc_root)
+                .env("REPLAY_CUDA_SDK_ROOT", cuda_root);
+        }
+        if matches!(request.source, ProbeSourceV1::Live)
             && matches!(
                 request.probe,
                 ProbeId::HostFoundation | ProbeId::SelectedOutput

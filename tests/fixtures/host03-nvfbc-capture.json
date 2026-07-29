@@ -11,6 +11,7 @@
         "provider": "fixture",
         "source": {
           "status": "fixture",
+          "identity": "fixture-nvfbc-api-1.8",
           "api_version": 18,
           "nvfbc_header_sha256": null,
           "cuda_header_sha256": null

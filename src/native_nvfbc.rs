@@ -2793,14 +2793,22 @@ fn valid_provider_source(observation: &CapturePrimitiveObservationV1) -> bool {
                 && observation.nvfbc_status_raw.is_none()
         }
         (CaptureProviderKindV1::SourceAuthenticated, CaptureSourceStatusV1::Authenticated) => {
-            observation.source.identity.as_deref() == Some(LIVE_SOURCE_IDENTITY)
-                && observation.source.api_version == Some(LIVE_NVFBC_API_VERSION)
-                && observation.source.nvfbc_header_sha256.is_some()
-                && observation.source.cuda_header_sha256.is_some()
-                && observation.source.cuda_typedefs_header_sha256.is_some()
+            source_matches_compiled_headers(&observation.source)
         }
         _ => false,
     }
+}
+
+fn source_matches_compiled_headers(source: &CaptureSourceEvidenceV1) -> bool {
+    let compiled = compiled_capture_source();
+    compiled.status == CaptureSourceStatusV1::Authenticated
+        && source.status == compiled.status
+        && source.identity.as_deref() == Some(LIVE_SOURCE_IDENTITY)
+        && source.identity.as_deref() == compiled.identity.as_deref()
+        && source.api_version == compiled.api_version
+        && source.nvfbc_header_sha256 == compiled.nvfbc_header_sha256
+        && source.cuda_header_sha256 == compiled.cuda_header_sha256
+        && source.cuda_typedefs_header_sha256 == compiled.cuda_typedefs_header_sha256
 }
 
 fn valid_source(source: &CaptureSourceEvidenceV1) -> bool {
@@ -2825,13 +2833,7 @@ fn valid_source(source: &CaptureSourceEvidenceV1) -> bool {
                 && source.cuda_runtime_library.is_none()
                 && source.cuda_driver_version.is_none()
         }
-        CaptureSourceStatusV1::Authenticated => {
-            source.identity.as_deref() == Some(LIVE_SOURCE_IDENTITY)
-                && source.api_version == Some(LIVE_NVFBC_API_VERSION)
-                && source.nvfbc_header_sha256.is_some()
-                && source.cuda_header_sha256.is_some()
-                && source.cuda_typedefs_header_sha256.is_some()
-        }
+        CaptureSourceStatusV1::Authenticated => source_matches_compiled_headers(source),
     }
 }
 
@@ -2943,11 +2945,7 @@ fn valid_lease(lease: &CaptureFrameLeaseV1) -> bool {
 }
 
 fn valid_live_source(source: &CaptureSourceEvidenceV1) -> bool {
-    source.identity.as_deref() == Some(LIVE_SOURCE_IDENTITY)
-        && source.api_version == Some(LIVE_NVFBC_API_VERSION)
-        && source.nvfbc_header_sha256.is_some()
-        && source.cuda_header_sha256.is_some()
-        && source.cuda_typedefs_header_sha256.is_some()
+    source_matches_compiled_headers(source)
         && source
             .nvfbc_runtime_library
             .as_deref()
@@ -3496,6 +3494,39 @@ mod tests {
             "CU_GET_PROC_ADDRESS_LEGACY_STREAM",
         ] {
             assert!(oracle.contains(contract), "oracle missing {contract}");
+        }
+    }
+
+    #[cfg(replay_nvfbc_source)]
+    #[test]
+    fn host03_source_abi_persisted_digests_match_the_current_executable() {
+        let mut source = compiled_capture_source();
+        source.nvfbc_runtime_library = Some("libnvidia-fbc.so.610.43.03".to_owned());
+        source.cuda_runtime_library = Some("libcuda.so.610.43.03".to_owned());
+        source.cuda_driver_version = Some(13_030);
+        assert!(valid_source(&source));
+        assert!(valid_live_source(&source));
+
+        let wrong: crate::Sha256DigestV1 =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .expect("test digest");
+        for mutated in [
+            CaptureSourceEvidenceV1 {
+                nvfbc_header_sha256: Some(wrong),
+                ..source.clone()
+            },
+            CaptureSourceEvidenceV1 {
+                cuda_header_sha256: Some(wrong),
+                ..source.clone()
+            },
+            CaptureSourceEvidenceV1 {
+                cuda_typedefs_header_sha256: Some(wrong),
+                ..source.clone()
+            },
+        ] {
+            assert!(!valid_source(&mutated));
+            assert!(!valid_live_source(&mutated));
         }
     }
 

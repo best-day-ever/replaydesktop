@@ -16,3 +16,15 @@
   passed 10 consecutive runs, the parallel archive cluster passed 20 runs, and
   the default-parallel 86-test suite passed three times total (two worker runs
   plus the independent post-wave gate).
+
+## Broken-windows ledger count mismatch
+
+- **Status:** open
+- **Discovered during:** Plan 01-09 summary closeout
+- **Scope:** Pre-existing `.planning/WINDOWS.md` metadata; Plan 01-09 did not
+  create or resolve the conflicting entries.
+- **Observation:** Best-effort deviation appends were rejected because the
+  ledger frontmatter reports `3/0/7/10` open/waived/fixed/total while its JSON
+  entries resolve to `2/0/8/10`.
+- **Next action:** Reconcile the table, JSON block, and frontmatter counts with
+  `$gsd-health` before the next ship gate.

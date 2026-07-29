@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-08-PLAN.md
-last_updated: "2026-07-29T22:06:21Z"
-last_activity: 2026-07-29
-last_activity_desc: Completed Plan 01-08 live selected-output NvFBC proof
+stopped_at: Completed 01-09-PLAN.md
+last_updated: "2026-07-29T23:09:26.487Z"
+last_activity: 2026-07-30
+last_activity_desc: Completed 01-09-PLAN.md
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 8
+  completed_plans: 9
 ---
 
 # Project State
@@ -28,29 +28,29 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
-Last activity: 2026-07-29 — Completed Plan 01-08 live selected-output NvFBC proof
+Last activity: 2026-07-30 — Completed 01-09-PLAN.md
 
-Progress: [████████░░] 80%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 44m
-- Total execution time: 5h 52m
+- Total execution time: 6h 32m
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| Phase 01 | 8 | 5h 52m | 44m |
+| Phase 01 | 9 | 6h 32m | 44m |
 
 **Recent Trend:**
 
-- Last 5 plans: 29m 58s, 30m 16s, 46m 23s, 50m 30s, 1h 39m 25s
+- Last 5 plans: 30m 16s, 46m 23s, 50m 30s, 1h 39m 25s, 40m
 - Trend: Longer recent plans reflect increasingly hardware-bound proof, authenticated native ABI work, and adversarial evidence review.
 
 *Updated after each plan completion*
@@ -66,6 +66,7 @@ Progress: [████████░░] 80%
 | Phase 01-host-readiness-gate P06 | 46m 23s | 3 tasks | 23 files |
 | Phase 01-host-readiness-gate P07 | 50m 30s | 3 tasks | 11 files |
 | Phase 01-host-readiness-gate P08 | 1h 39m 25s | 3 tasks | 10 files |
+| Phase 01 P09 | 40m | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,10 @@ Recent decisions affecting current work:
 - [Phase 01]: Admit HOST-03 only after one fresh selected-output NV12 frame, one same-GPU device copy, zero host staging, and complete truthful cleanup.
 - [Phase 01]: Treat NvFBC cursor visibility and composition as independent facts; hidden-but-composited is valid.
 - [Phase 01]: HOST-03 ends at the proven application-owned capture surface; HOST-04 owns NVENC registration, mapping, input, internal-copy, and tuple proof.
+- [Phase 01]: Treat the documented same-GPU pitch-linear to block-linear NVENC preprocessing copy as known; host, peer, or unknown edges block admission.
+- [Phase 01]: Keep NVENC policy closed to seven 4K60 positions and prefilter AV1 before provider invocation on pre-Ada or unknown generations.
+- [Phase 01]: Codec bytes prove codec/profile/chroma/depth/dimensions/keyframe only; buffer format and exact 60/1 require native resource/config evidence.
+- [Phase 01]: Diagnostic SDK versions never authorize tuple advertisement; live NVENC stays unavailable until Plan 01-10.
 
 ### Pending Todos
 
@@ -125,6 +130,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-29T22:03:36Z
-Stopped at: Completed 01-08-PLAN.md
+Last session: 2026-07-29T23:08:00.657Z
+Stopped at: Completed 01-09-PLAN.md
 Resume file: None

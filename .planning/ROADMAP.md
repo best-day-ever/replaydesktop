@@ -46,7 +46,7 @@ tuple, or weakened platform claim.
 
 **Gate:** G0 — Host readiness. Failure stops all media implementation and invalidates capture/encode evidence.
 **Research flag:** Live NvFBC surface ownership, copy boundaries, cursor behavior, and driver-specific capture behavior require host investigation during planning.
-**Plans:** 8/10 plans executed
+**Plans:** 9/10 plans executed
 
 Plans:
 **Wave 1**
@@ -83,7 +83,7 @@ Plans:
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
-- [ ] 01-09-PLAN.md — NVENC copy-boundary spike, closed policy, and bounded parsers
+- [x] 01-09-PLAN.md — NVENC copy-boundary spike, closed policy, and bounded parsers
 
 **Wave 10** *(blocked on Wave 9 completion)*
 
@@ -235,7 +235,7 @@ phases.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Host Readiness Gate | 8/10 | In Progress |  |
+| 1. Host Readiness Gate | 9/10 | In Progress |  |
 | 2. Pinned Secure Kyber Baseline | 0/TBD | Not started | - |
 | 3. Instrumented NVIDIA 4K60 Baseline | 0/TBD | Not started | - |
 | 4. Evidence-Backed Media Contract | 0/TBD | Not started | - |

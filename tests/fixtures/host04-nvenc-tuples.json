@@ -1,0 +1,98 @@
+{
+  "schema": "replaydesktop.host04-nvenc-fixtures.v1",
+  "provenance": "diagnostic",
+  "sdk_contract": {
+    "standalone_api": { "major": 13, "minor": 1 },
+    "kyber_headers": "n12.1.14.0",
+    "live_provider": "unavailable"
+  },
+  "copy_boundary_cases": [
+    {
+      "id": "closed-device-pointer-path",
+      "application_edges": [
+        "register-no-copy",
+        "map-no-copy",
+        "submit-no-copy"
+      ],
+      "encoder_internal_edges": [
+        "same-gpu-pitch-linear-to-block-linear-copy"
+      ],
+      "host_staging_edges": 0,
+      "cross_gpu_edges": 0,
+      "unknown_application_edges": 0,
+      "unknown_encoder_internal_edges": 0,
+      "cleanup_complete": true,
+      "expected_copy_status": "pass"
+    },
+    {
+      "id": "host-staging-blocked",
+      "application_edges": [
+        "register-no-copy",
+        "map-no-copy",
+        "submit-no-copy",
+        "device-to-host",
+        "host-to-device"
+      ],
+      "encoder_internal_edges": [
+        "same-gpu-pitch-linear-to-block-linear-copy"
+      ],
+      "host_staging_edges": 2,
+      "cross_gpu_edges": 0,
+      "unknown_application_edges": 0,
+      "unknown_encoder_internal_edges": 0,
+      "cleanup_complete": true,
+      "expected_copy_status": "blocked-unknown"
+    },
+    {
+      "id": "mismatched-resource-blocked",
+      "application_edges": [
+        "register-mismatched-allocation",
+        "map-no-copy",
+        "submit-no-copy"
+      ],
+      "encoder_internal_edges": [
+        "same-gpu-pitch-linear-to-block-linear-copy"
+      ],
+      "host_staging_edges": 0,
+      "cross_gpu_edges": 1,
+      "unknown_application_edges": 0,
+      "unknown_encoder_internal_edges": 0,
+      "cleanup_complete": true,
+      "expected_copy_status": "blocked-unknown"
+    },
+    {
+      "id": "unknown-application-edge-blocked",
+      "application_edges": [
+        "register-no-copy",
+        "map-no-copy"
+      ],
+      "encoder_internal_edges": [
+        "same-gpu-pitch-linear-to-block-linear-copy"
+      ],
+      "host_staging_edges": 0,
+      "cross_gpu_edges": 0,
+      "unknown_application_edges": 1,
+      "unknown_encoder_internal_edges": 0,
+      "cleanup_complete": true,
+      "expected_copy_status": "blocked-unknown"
+    },
+    {
+      "id": "unknown-encoder-internal-edge-blocked",
+      "application_edges": [
+        "register-no-copy",
+        "map-no-copy",
+        "submit-no-copy"
+      ],
+      "encoder_internal_edges": [],
+      "host_staging_edges": 0,
+      "cross_gpu_edges": 0,
+      "unknown_application_edges": 0,
+      "unknown_encoder_internal_edges": 1,
+      "cleanup_complete": true,
+      "expected_copy_status": "blocked-unknown"
+    }
+  ],
+  "tuple_cases": [],
+  "bitstream_cases": [],
+  "process_cases": []
+}

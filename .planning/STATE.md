@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-06-PLAN.md
-last_updated: "2026-07-29T15:53:54.709Z"
+stopped_at: Completed 01-07-PLAN.md
+last_updated: "2026-07-29T16:54:11.685Z"
 last_activity: 2026-07-29
-last_activity_desc: Completed Plan 01-06 live HOST-01/HOST-02 proof
+last_activity_desc: Completed Plan 01-07 NvFBC capture contracts
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 6
+  completed_plans: 7
 ---
 
 # Project State
@@ -28,30 +28,30 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 7 of 10
+Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-07-29 — Completed Plan 01-06 live HOST-01/HOST-02 proof
+Last activity: 2026-07-29 — Completed Plan 01-07 NvFBC capture contracts
 
-Progress: [██████░░░░] 60%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6
-- Average duration: 33m 41s
-- Total execution time: 3h 22m 5s
+- Total plans completed: 7
+- Average duration: 36m 5s
+- Total execution time: 4h 12m 35s
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| Phase 01 | 6 | 3h 22m 5s | 33m 41s |
+| Phase 01 | 7 | 4h 12m 35s | 36m 5s |
 
 **Recent Trend:**
 
-- Last 5 plans: 29m, 33m 28s, 29m 58s, 30m 16s, 46m 23s
-- Trend: Stable implementation pace; Plan 01-06 includes the resumed live-contract correction.
+- Last 5 plans: 33m 28s, 29m 58s, 30m 16s, 46m 23s, 50m 30s
+- Trend: Longer recent plans reflect live-contract correction followed by the source/ABI and adversarial capture boundary.
 
 *Updated after each plan completion*
 **Per-Plan Metrics:**
@@ -64,6 +64,7 @@ Progress: [██████░░░░] 60%
 | Phase 01-host-readiness-gate P04 | 29m 58s | 3 tasks | 11 files |
 | Phase 01-host-readiness-gate P05 | 30m 16s | 2 tasks | 8 files |
 | Phase 01-host-readiness-gate P06 | 46m 23s | 3 tasks | 23 files |
+| Phase 01-host-readiness-gate P07 | 50m 30s | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,10 @@ Recent decisions affecting current work:
 - [Phase 01]: NV-CONTROL display and GPU target ID zero are valid and must not be rejected by XID-style validators.
 - [Phase 01]: MST is accepted when the direct source relation is unique; DRM connector state is optional diagnostic data and never enters HOST-01/HOST-02 admission or the authoritative token.
 - [Phase 01]: Display targets are enumerated through binary attribute 14; XNVCTRLQueryTargetCount is used for GPU targets only because display-target count raises BadValue on the live driver.
+- [Phase 01]: Retain ProbeId::NvfbcCapture as the single HOST-03 probe identifier.
+- [Phase 01]: Require both authenticated NvFBC and CUDA roots before enabling the conditional ABI oracle.
+- [Phase 01]: Derive capture leases, copy totals, cleanup, and verdicts in the parent; workers supply primitives only.
+- [Phase 01]: Diagnostic capture fixtures remain UNPROVEN; Plan 01-08 owns live HOST-03 proof.
 
 ### Pending Todos
 
@@ -114,6 +119,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-29T15:53:54.702Z
-Stopped at: Completed 01-06-PLAN.md
+Last session: 2026-07-29T16:53:26.809Z
+Stopped at: Completed 01-07-PLAN.md
 Resume file: None

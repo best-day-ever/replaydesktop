@@ -1504,6 +1504,7 @@ fn cast_function_pointer<T: Copy>(pointer: *mut c_void) -> Result<T, NativeCaptu
 struct NativeCaptureError {
     failure: CaptureFailureV1,
     nvfbc_status: Option<i32>,
+    containment_required: bool,
 }
 
 #[cfg(replay_nvfbc_source)]
@@ -1512,6 +1513,7 @@ impl NativeCaptureError {
         Self {
             failure,
             nvfbc_status: None,
+            containment_required: false,
         }
     }
 
@@ -1519,22 +1521,66 @@ impl NativeCaptureError {
         Self {
             failure,
             nvfbc_status: Some(status),
+            containment_required: false,
+        }
+    }
+
+    const fn cuda_containment(failure: CaptureFailureV1) -> Self {
+        Self {
+            failure,
+            nvfbc_status: None,
+            containment_required: true,
+        }
+    }
+
+    const fn nvfbc_containment(failure: CaptureFailureV1, status: i32) -> Self {
+        Self {
+            failure,
+            nvfbc_status: Some(status),
+            containment_required: true,
         }
     }
 }
 
 #[cfg(replay_nvfbc_source)]
-fn timed_nvfbc_call(call: impl FnOnce() -> c_int) -> Result<c_int, NativeCaptureError> {
+#[derive(Debug, Clone, Copy)]
+struct NativeCallOutcome<T> {
+    status: T,
+    elapsed_ns: u128,
+}
+
+#[cfg(replay_nvfbc_source)]
+impl<T> NativeCallOutcome<T> {
+    fn exceeded_elapsed_policy(&self) -> bool {
+        self.elapsed_ns > MAX_NATIVE_CALL_ELAPSED_NS
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+fn observe_nvfbc_call(call: impl FnOnce() -> c_int) -> NativeCallOutcome<c_int> {
     let started = Instant::now();
     let status = call();
-    if started.elapsed().as_nanos() > MAX_NATIVE_CALL_ELAPSED_NS {
+    NativeCallOutcome {
+        status,
+        elapsed_ns: started.elapsed().as_nanos(),
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+fn enforce_nvfbc_elapsed(outcome: NativeCallOutcome<c_int>) -> Result<c_int, NativeCaptureError> {
+    if outcome.exceeded_elapsed_policy() {
         Err(NativeCaptureError::nvfbc(
             CaptureFailureV1::WorkerRejected,
-            status,
+            outcome.status,
         ))
     } else {
-        Ok(status)
+        Ok(outcome.status)
     }
+}
+
+#[cfg(replay_nvfbc_source)]
+fn timed_nvfbc_call(call: impl FnOnce() -> c_int) -> Result<c_int, NativeCaptureError> {
+    enforce_nvfbc_elapsed(observe_nvfbc_call(call))
 }
 
 #[cfg(replay_nvfbc_source)]
@@ -1567,13 +1613,118 @@ fn map_nvfbc_failure(status: i32) -> CaptureFailureV1 {
 }
 
 #[cfg(replay_nvfbc_source)]
-fn timed_cuda_call(call: impl FnOnce() -> CuResult) -> Result<(), NativeCaptureError> {
+fn observe_cuda_call(call: impl FnOnce() -> CuResult) -> NativeCallOutcome<CuResult> {
     let started = Instant::now();
     let status = call();
-    if status != CUDA_SUCCESS || started.elapsed().as_nanos() > MAX_NATIVE_CALL_ELAPSED_NS {
+    NativeCallOutcome {
+        status,
+        elapsed_ns: started.elapsed().as_nanos(),
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+fn enforce_cuda_outcome(outcome: NativeCallOutcome<CuResult>) -> Result<(), NativeCaptureError> {
+    if outcome.status != CUDA_SUCCESS {
         Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame))
+    } else if outcome.exceeded_elapsed_policy() {
+        Err(NativeCaptureError::cuda(CaptureFailureV1::WorkerRejected))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+fn timed_cuda_call(call: impl FnOnce() -> CuResult) -> Result<(), NativeCaptureError> {
+    enforce_cuda_outcome(observe_cuda_call(call))
+}
+
+#[cfg(replay_nvfbc_source)]
+fn record_cuda_acquisition(
+    outcome: NativeCallOutcome<CuResult>,
+    owned: &mut bool,
+    lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+    event: CaptureLifecycleEventV1,
+) -> Result<(), NativeCaptureError> {
+    if outcome.status != CUDA_SUCCESS {
+        return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
+    }
+    *owned = true;
+    lifecycle.push(event);
+    enforce_cuda_outcome(outcome)
+}
+
+#[cfg(replay_nvfbc_source)]
+fn record_nvfbc_acquisition(
+    outcome: NativeCallOutcome<c_int>,
+    owned: &mut bool,
+    lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+    event: CaptureLifecycleEventV1,
+) -> Result<(), NativeCaptureError> {
+    require_nvfbc_success(outcome.status)?;
+    *owned = true;
+    lifecycle.push(event);
+    enforce_nvfbc_elapsed(outcome).map(|_| ())
+}
+
+#[cfg(replay_nvfbc_source)]
+fn record_cuda_release(
+    outcome: NativeCallOutcome<CuResult>,
+    lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+    event: CaptureLifecycleEventV1,
+) -> Result<(), NativeCaptureError> {
+    if outcome.status != CUDA_SUCCESS {
+        return Err(NativeCaptureError::cuda(CaptureFailureV1::CleanupUncertain));
+    }
+    lifecycle.push(event);
+    enforce_cuda_outcome(outcome)
+}
+
+#[cfg(replay_nvfbc_source)]
+fn record_nvfbc_release(
+    outcome: NativeCallOutcome<c_int>,
+    lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+    event: CaptureLifecycleEventV1,
+) -> Result<(), NativeCaptureError> {
+    if outcome.status != NVFBC_SUCCESS {
+        return Err(NativeCaptureError::nvfbc(
+            CaptureFailureV1::CleanupUncertain,
+            outcome.status,
+        ));
+    }
+    lifecycle.push(event);
+    enforce_nvfbc_elapsed(outcome).map(|_| ())
+}
+
+#[cfg(replay_nvfbc_source)]
+fn record_frame_sync(
+    outcome: NativeCallOutcome<CuResult>,
+    frame_borrowed: &mut bool,
+    copy_pending: &mut bool,
+    lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+) -> Result<(), NativeCaptureError> {
+    if outcome.status != CUDA_SUCCESS {
+        return Err(NativeCaptureError::cuda_containment(
+            CaptureFailureV1::CleanupUncertain,
+        ));
+    }
+    *copy_pending = false;
+    *frame_borrowed = false;
+    lifecycle.push(CaptureLifecycleEventV1::FrameReleased);
+    enforce_cuda_outcome(outcome)
+}
+
+#[cfg(replay_nvfbc_source)]
+fn validate_created_handle_backend(
+    backend: c_int,
+    status: c_int,
+) -> Result<(), NativeCaptureError> {
+    if backend == NVFBC_BACKEND_X11 {
+        Ok(())
+    } else {
+        Err(NativeCaptureError::nvfbc(
+            CaptureFailureV1::BindingMismatch,
+            status,
+        ))
     }
 }
 
@@ -1644,15 +1795,22 @@ fn capture_native_one_frame(
         if !prior_context.is_null() {
             return Err(NativeCaptureError::cuda(CaptureFailureV1::BindingMismatch));
         }
-        timed_cuda_call(|| unsafe {
+        let context_outcome = observe_cuda_call(|| unsafe {
             // SAFETY: context is writable and device was selected by exact PCI BDF.
             (cuda.context_create)(&mut context, 0, device)
-        })?;
+        });
+        if context_outcome.status != CUDA_SUCCESS {
+            return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
+        }
         if context.is_null() {
             return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
         }
-        context_created = true;
-        lifecycle.push(CaptureLifecycleEventV1::CudaContextCreated);
+        record_cuda_acquisition(
+            context_outcome,
+            &mut context_created,
+            &mut lifecycle,
+            CaptureLifecycleEventV1::CudaContextCreated,
+        )?;
         verify_current_cuda_context(&cuda, context, device)?;
         capture_with_nvfbc(
             &cuda,
@@ -1665,21 +1823,39 @@ fn capture_native_one_frame(
         )
     })();
 
-    let mut cleanup_failed = false;
-    if context_created {
-        cleanup_failed |= timed_cuda_call(|| unsafe {
+    let containment_required = body
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.containment_required);
+    let mut cleanup_error = None;
+    if context_created && !containment_required {
+        let outcome = observe_cuda_call(|| unsafe {
             // SAFETY: context was created exactly once by this worker and all
             // application allocations were released by capture_with_nvfbc.
             (cuda.context_destroy)(context)
-        })
-        .is_err();
-        lifecycle.push(CaptureLifecycleEventV1::CudaContextDestroyed);
+        });
+        if outcome.status == CUDA_SUCCESS {
+            context_created = false;
+        }
+        if let Err(error) = record_cuda_release(
+            outcome,
+            &mut lifecycle,
+            CaptureLifecycleEventV1::CudaContextDestroyed,
+        ) {
+            cleanup_error = Some(error);
+        }
     }
-    drop(cuda);
-    lifecycle.push(CaptureLifecycleEventV1::CudaLibraryUnloaded);
+    if context_created {
+        // A live/uncertain context must remain loaded until the bounded worker
+        // process exits; unloading the driver underneath it would invent cleanup.
+        std::mem::forget(cuda);
+    } else {
+        drop(cuda);
+        lifecycle.push(CaptureLifecycleEventV1::CudaLibraryUnloaded);
+    }
 
-    match body {
-        Ok((frame, nvfbc_status_raw)) if !cleanup_failed => CapturePrimitiveObservationV1 {
+    match (body, cleanup_error) {
+        (Ok((frame, nvfbc_status_raw)), None) => CapturePrimitiveObservationV1 {
             schema: NVFBC_CAPTURE_PRIMITIVES_SCHEMA_V1.to_owned(),
             provider: CaptureProviderKindV1::SourceAuthenticated,
             source,
@@ -1689,20 +1865,16 @@ fn capture_native_one_frame(
             failure: None,
             nvfbc_status_raw: Some(nvfbc_status_raw),
         },
-        Ok((_, nvfbc_status_raw)) => rejected_live_observation(
+        (Ok((_, nvfbc_status_raw)), Some(error)) => rejected_live_observation(
             source,
-            CaptureFailureV1::CleanupUncertain,
+            error.failure,
             Some(binding),
             lifecycle,
             Some(nvfbc_status_raw),
         ),
-        Err(error) => rejected_live_observation(
+        (Err(error), cleanup_error) => rejected_live_observation(
             source,
-            if cleanup_failed {
-                CaptureFailureV1::CleanupUncertain
-            } else {
-                error.failure
-            },
+            cleanup_error.map_or(error.failure, |cleanup| cleanup.failure),
             Some(binding),
             lifecycle,
             error.nvfbc_status,
@@ -1730,27 +1902,27 @@ fn capture_with_nvfbc(
     let mut application_buffer = 0;
     let mut buffer_allocated = false;
     let mut frame_borrowed = false;
+    let mut copy_pending = false;
     let mut body_status = NVFBC_SUCCESS;
     let body = (|| {
         let mut params = NvFbcCreateHandleParams {
             version: NVFBC_CREATE_HANDLE_PARAMS_VERSION,
             ..NvFbcCreateHandleParams::default()
         };
-        body_status = timed_nvfbc_call(|| unsafe {
+        let handle_outcome = observe_nvfbc_call(|| unsafe {
             // SAFETY: handle and params use the exact source-oracle checked layout.
             (nvfbc.create_handle)(&mut handle, &mut params)
-        })?;
-        require_nvfbc_success(body_status)?;
+        });
+        body_status = handle_outcome.status;
+        record_nvfbc_acquisition(
+            handle_outcome,
+            &mut handle_created,
+            lifecycle,
+            CaptureLifecycleEventV1::HandleCreated,
+        )?;
         // NvFBC defines no invalid numeric sentinel for its opaque u64 handle;
         // successful creation is authoritative even when the returned bits are zero.
-        if params.backend != NVFBC_BACKEND_X11 {
-            return Err(NativeCaptureError::nvfbc(
-                CaptureFailureV1::BindingMismatch,
-                body_status,
-            ));
-        }
-        handle_created = true;
-        lifecycle.push(CaptureLifecycleEventV1::HandleCreated);
+        validate_created_handle_backend(params.backend, body_status)?;
 
         let mut status = NvFbcGetStatusParams {
             version: NVFBC_GET_STATUS_PARAMS_VERSION,
@@ -1778,24 +1950,30 @@ fn capture_with_nvfbc(
             dbus_timeout_ms: 500,
             ..NvFbcCreateCaptureSessionParams::default()
         };
-        body_status = timed_nvfbc_call(|| unsafe {
+        let session_outcome = observe_nvfbc_call(|| unsafe {
             // SAFETY: The session is bound to the exact status-proven RandR XID.
             (nvfbc.create_capture_session)(handle, &mut session)
-        })?;
-        require_nvfbc_success(body_status)?;
-        session_created = true;
-        lifecycle.push(CaptureLifecycleEventV1::SessionCreated);
+        });
+        body_status = session_outcome.status;
+        record_nvfbc_acquisition(
+            session_outcome,
+            &mut session_created,
+            lifecycle,
+            CaptureLifecycleEventV1::SessionCreated,
+        )?;
 
         let mut setup = NvFbcToCudaSetupParams {
             version: NVFBC_TOCUDA_SETUP_PARAMS_VERSION,
             buffer_format: NVFBC_BUFFER_FORMAT_NV12,
         };
-        body_status = timed_nvfbc_call(|| unsafe {
+        let setup_outcome = observe_nvfbc_call(|| unsafe {
             // SAFETY: The live session requested SHARED_CUDA and setup is API checked.
             (nvfbc.to_cuda_setup)(handle, &mut setup)
-        })?;
+        });
+        body_status = setup_outcome.status;
         require_nvfbc_success(body_status)?;
         lifecycle.push(CaptureLifecycleEventV1::ToCudaSetup);
+        enforce_nvfbc_elapsed(setup_outcome)?;
 
         let byte_size = exact_frame_byte_size(
             selected.width_px,
@@ -1803,18 +1981,25 @@ fn capture_with_nvfbc(
             CapturePixelFormatV1::Nv12,
         )
         .ok_or_else(|| NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame))?;
-        timed_cuda_call(|| unsafe {
+        let allocation_outcome = observe_cuda_call(|| unsafe {
             // SAFETY: application_buffer is a writable CUdeviceptr and byte_size is bounded.
             (cuda.memory_allocate)(
                 &mut application_buffer,
                 usize::try_from(byte_size).unwrap_or(usize::MAX),
             )
-        })?;
+        });
+        if allocation_outcome.status != CUDA_SUCCESS {
+            return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
+        }
         if application_buffer == 0 {
             return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
         }
-        buffer_allocated = true;
-        lifecycle.push(CaptureLifecycleEventV1::ApplicationBufferAllocated);
+        record_cuda_acquisition(
+            allocation_outcome,
+            &mut buffer_allocated,
+            lifecycle,
+            CaptureLifecycleEventV1::ApplicationBufferAllocated,
+        )?;
         verify_cuda_pointer(cuda, application_buffer, context, device)?;
 
         let mut nvfbc_buffer: CuDevicePtr = 0;
@@ -1833,18 +2018,24 @@ fn capture_with_nvfbc(
         };
         let grab_elapsed_ns = u64::try_from(grab_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         require_nvfbc_success(body_status)?;
-        if grab_elapsed_ns > 2_000_000_000 || nvfbc_buffer == 0 {
+        if nvfbc_buffer == 0 {
             return Err(NativeCaptureError::nvfbc(
-                CaptureFailureV1::WorkerRejected,
+                CaptureFailureV1::InvalidFrame,
                 body_status,
             ));
         }
         frame_borrowed = true;
         lifecycle.push(CaptureLifecycleEventV1::FrameGrabbed);
+        if grab_elapsed_ns > 2_000_000_000 {
+            return Err(NativeCaptureError::nvfbc(
+                CaptureFailureV1::WorkerRejected,
+                body_status,
+            ));
+        }
         validate_frame_info(&frame_info, selected, byte_size)?;
         verify_current_cuda_context(cuda, context, device)?;
         verify_cuda_pointer(cuda, nvfbc_buffer, context, device)?;
-        timed_cuda_call(|| unsafe {
+        let copy_outcome = observe_cuda_call(|| unsafe {
             // SAFETY: Both pointers belong to this exact context/device and byte_size
             // is the status-validated tightly packed NV12 allocation length.
             (cuda.memory_copy_device_to_device)(
@@ -1852,14 +2043,23 @@ fn capture_with_nvfbc(
                 nvfbc_buffer,
                 usize::try_from(byte_size).unwrap_or(usize::MAX),
             )
-        })?;
-        timed_cuda_call(|| unsafe {
+        });
+        if copy_outcome.status != CUDA_SUCCESS {
+            return Err(NativeCaptureError::cuda(CaptureFailureV1::InvalidFrame));
+        }
+        copy_pending = true;
+        let sync_outcome = observe_cuda_call(|| unsafe {
             // SAFETY: Synchronizes the current isolated context before the borrowed
             // NvFBC buffer is logically released or reused.
             (cuda.context_synchronize)()
-        })?;
-        frame_borrowed = false;
-        lifecycle.push(CaptureLifecycleEventV1::FrameReleased);
+        });
+        record_frame_sync(
+            sync_outcome,
+            &mut frame_borrowed,
+            &mut copy_pending,
+            lifecycle,
+        )?;
+        enforce_cuda_outcome(copy_outcome)?;
 
         let gpu = CaptureGpuIdentityV1 {
             pci_bdf: binding.gpu_pci_bdf.clone(),
@@ -1922,63 +2122,82 @@ fn capture_with_nvfbc(
         })
     })();
 
-    if frame_borrowed {
+    if frame_borrowed && !copy_pending {
         frame_borrowed = false;
         lifecycle.push(CaptureLifecycleEventV1::FrameReleased);
     }
+    if copy_pending {
+        // A failed synchronization leaves ownership of both GPU buffers
+        // uncertain. Keep the native library loaded and let worker-process
+        // termination contain the resources without claiming a release.
+        std::mem::forget(nvfbc);
+        return Err(NativeCaptureError::cuda_containment(
+            CaptureFailureV1::CleanupUncertain,
+        ));
+    }
     let mut cleanup_error = None;
     if buffer_allocated {
-        if timed_cuda_call(|| unsafe {
+        let outcome = observe_cuda_call(|| unsafe {
             // SAFETY: application_buffer was allocated once by this CUDA context.
             (cuda.memory_free)(application_buffer)
-        })
-        .is_err()
-        {
-            cleanup_error = Some(NativeCaptureError::cuda(CaptureFailureV1::CleanupUncertain));
+        });
+        if outcome.status == CUDA_SUCCESS {
+            buffer_allocated = false;
         }
-        lifecycle.push(CaptureLifecycleEventV1::ApplicationBufferFreed);
+        if let Err(error) = record_cuda_release(
+            outcome,
+            lifecycle,
+            CaptureLifecycleEventV1::ApplicationBufferFreed,
+        ) {
+            cleanup_error = Some(error);
+        }
     }
     if session_created {
         let mut destroy = NvFbcVersionOnlyParams {
             version: NVFBC_DESTROY_CAPTURE_SESSION_PARAMS_VERSION,
         };
-        match timed_nvfbc_call(|| unsafe {
+        let outcome = observe_nvfbc_call(|| unsafe {
             // SAFETY: This destroys the one live capture session exactly once.
             (nvfbc.destroy_capture_session)(handle, &mut destroy)
-        }) {
-            Ok(status) if status == NVFBC_SUCCESS => {}
-            Ok(status) => {
-                cleanup_error = Some(NativeCaptureError::nvfbc(
-                    CaptureFailureV1::CleanupUncertain,
-                    status,
-                ));
-            }
-            Err(error) => cleanup_error = Some(error),
+        });
+        if outcome.status == NVFBC_SUCCESS {
+            session_created = false;
         }
-        lifecycle.push(CaptureLifecycleEventV1::SessionDestroyed);
+        if let Err(error) = record_nvfbc_release(
+            outcome,
+            lifecycle,
+            CaptureLifecycleEventV1::SessionDestroyed,
+        ) {
+            cleanup_error = Some(error);
+        }
     }
     if handle_created {
         let mut destroy = NvFbcVersionOnlyParams {
             version: NVFBC_DESTROY_HANDLE_PARAMS_VERSION,
         };
-        match timed_nvfbc_call(|| unsafe {
+        let outcome = observe_nvfbc_call(|| unsafe {
             // SAFETY: DestroyHandle implicitly releases NvFBC's same-thread context.
             (nvfbc.destroy_handle)(handle, &mut destroy)
-        }) {
-            Ok(status) if status == NVFBC_SUCCESS => {}
-            Ok(status) => {
-                cleanup_error = Some(NativeCaptureError::nvfbc(
-                    CaptureFailureV1::CleanupUncertain,
-                    status,
-                ));
-            }
-            Err(error) => cleanup_error = Some(error),
+        });
+        if outcome.status == NVFBC_SUCCESS {
+            handle_created = false;
         }
-        lifecycle.push(CaptureLifecycleEventV1::HandleDestroyed);
+        if let Err(error) =
+            record_nvfbc_release(outcome, lifecycle, CaptureLifecycleEventV1::HandleDestroyed)
+        {
+            cleanup_error = Some(error);
+        }
+    }
+    if handle_created {
+        std::mem::forget(nvfbc);
+        return Err(NativeCaptureError::nvfbc_containment(
+            CaptureFailureV1::CleanupUncertain,
+            body_status,
+        ));
     }
     drop(nvfbc);
     lifecycle.push(CaptureLifecycleEventV1::LibraryUnloaded);
-    let _ = frame_borrowed;
+    let _ = (frame_borrowed, buffer_allocated, session_created);
 
     if let Some(error) = cleanup_error {
         return Err(error);
@@ -3592,6 +3811,222 @@ mod tests {
             assert!(cleanup.complete, "proper live reverse cleanup: {events:?}");
             assert!(valid_cleanup_ledger(&cleanup));
         }
+    }
+
+    #[cfg(replay_nvfbc_source)]
+    #[test]
+    fn host03_cleanup_slow_success_records_context_and_handle_before_unwind() {
+        use CaptureLifecycleEventV1::*;
+        let slow_cuda = NativeCallOutcome {
+            status: CUDA_SUCCESS,
+            elapsed_ns: MAX_NATIVE_CALL_ELAPSED_NS + 1,
+        };
+        let mut context_owned = false;
+        let mut context_events = vec![CudaLibraryLoaded];
+        let error = record_cuda_acquisition(
+            slow_cuda,
+            &mut context_owned,
+            &mut context_events,
+            CudaContextCreated,
+        )
+        .expect_err("slow successful context creation must reject after ownership");
+        assert_eq!(error.failure, CaptureFailureV1::WorkerRejected);
+        assert!(context_owned);
+        assert_eq!(context_events, [CudaLibraryLoaded, CudaContextCreated]);
+        record_cuda_release(
+            NativeCallOutcome {
+                status: CUDA_SUCCESS,
+                elapsed_ns: 0,
+            },
+            &mut context_events,
+            CudaContextDestroyed,
+        )
+        .expect("owned context must unwind");
+        context_events.push(CudaLibraryUnloaded);
+        assert!(derive_cleanup(&context_events).complete);
+
+        let slow_nvfbc = NativeCallOutcome {
+            status: NVFBC_SUCCESS,
+            elapsed_ns: MAX_NATIVE_CALL_ELAPSED_NS + 1,
+        };
+        let mut handle_owned = false;
+        let mut handle_events = vec![CudaLibraryLoaded, CudaContextCreated, LibraryLoaded];
+        let error = record_nvfbc_acquisition(
+            slow_nvfbc,
+            &mut handle_owned,
+            &mut handle_events,
+            HandleCreated,
+        )
+        .expect_err("slow successful handle creation must reject after ownership");
+        assert_eq!(error.failure, CaptureFailureV1::WorkerRejected);
+        assert!(handle_owned);
+        record_nvfbc_release(
+            NativeCallOutcome {
+                status: NVFBC_SUCCESS,
+                elapsed_ns: 0,
+            },
+            &mut handle_events,
+            HandleDestroyed,
+        )
+        .expect("owned handle must unwind");
+        handle_events.extend([LibraryUnloaded, CudaContextDestroyed, CudaLibraryUnloaded]);
+        assert!(derive_cleanup(&handle_events).complete);
+    }
+
+    #[cfg(replay_nvfbc_source)]
+    #[test]
+    fn host03_cleanup_backend_mismatch_preserves_handle_for_destroy() {
+        use CaptureLifecycleEventV1::*;
+        let mut handle_owned = false;
+        let mut events = vec![CudaLibraryLoaded, CudaContextCreated, LibraryLoaded];
+        record_nvfbc_acquisition(
+            NativeCallOutcome {
+                status: NVFBC_SUCCESS,
+                elapsed_ns: 0,
+            },
+            &mut handle_owned,
+            &mut events,
+            HandleCreated,
+        )
+        .expect("successful create must establish ownership");
+        let error = validate_created_handle_backend(2, NVFBC_SUCCESS)
+            .expect_err("non-X11 backend postcondition must reject");
+        assert_eq!(error.failure, CaptureFailureV1::BindingMismatch);
+        assert!(handle_owned);
+        record_nvfbc_release(
+            NativeCallOutcome {
+                status: NVFBC_SUCCESS,
+                elapsed_ns: 0,
+            },
+            &mut events,
+            HandleDestroyed,
+        )
+        .expect("backend mismatch must still destroy the owned handle");
+        handle_owned = false;
+        events.extend([LibraryUnloaded, CudaContextDestroyed, CudaLibraryUnloaded]);
+        assert!(!handle_owned);
+        assert!(derive_cleanup(&events).complete);
+    }
+
+    #[cfg(replay_nvfbc_source)]
+    #[test]
+    fn host03_cleanup_failed_sync_never_releases_borrowed_frame() {
+        use CaptureLifecycleEventV1::*;
+        let mut events = vec![
+            CudaLibraryLoaded,
+            CudaContextCreated,
+            LibraryLoaded,
+            HandleCreated,
+            StatusQueried,
+            SessionCreated,
+            ToCudaSetup,
+            ApplicationBufferAllocated,
+            FrameGrabbed,
+        ];
+        let mut frame_borrowed = true;
+        let mut copy_pending = true;
+        let error = record_frame_sync(
+            NativeCallOutcome {
+                status: 1,
+                elapsed_ns: 0,
+            },
+            &mut frame_borrowed,
+            &mut copy_pending,
+            &mut events,
+        )
+        .expect_err("failed synchronization must require process containment");
+        assert_eq!(error.failure, CaptureFailureV1::CleanupUncertain);
+        assert!(error.containment_required);
+        assert!(frame_borrowed);
+        assert!(copy_pending);
+        assert!(!events.contains(&FrameReleased));
+        assert!(!derive_cleanup(&events).complete);
+    }
+
+    #[cfg(replay_nvfbc_source)]
+    #[test]
+    fn host03_cleanup_failed_releases_never_emit_success_events() {
+        use CaptureLifecycleEventV1::*;
+        let acquired = vec![
+            CudaLibraryLoaded,
+            CudaContextCreated,
+            LibraryLoaded,
+            HandleCreated,
+            StatusQueried,
+            SessionCreated,
+            ToCudaSetup,
+            ApplicationBufferAllocated,
+            FrameGrabbed,
+            FrameReleased,
+        ];
+
+        let mut failed_free = acquired.clone();
+        assert!(
+            record_cuda_release(
+                NativeCallOutcome {
+                    status: 1,
+                    elapsed_ns: 0,
+                },
+                &mut failed_free,
+                ApplicationBufferFreed,
+            )
+            .is_err()
+        );
+        assert!(!failed_free.contains(&ApplicationBufferFreed));
+        assert!(!derive_cleanup(&failed_free).complete);
+
+        let mut failed_session = acquired.clone();
+        failed_session.push(ApplicationBufferFreed);
+        assert!(
+            record_nvfbc_release(
+                NativeCallOutcome {
+                    status: 2,
+                    elapsed_ns: 0,
+                },
+                &mut failed_session,
+                SessionDestroyed,
+            )
+            .is_err()
+        );
+        assert!(!failed_session.contains(&SessionDestroyed));
+        assert!(!derive_cleanup(&failed_session).complete);
+
+        let mut failed_handle = acquired.clone();
+        failed_handle.extend([ApplicationBufferFreed, SessionDestroyed]);
+        assert!(
+            record_nvfbc_release(
+                NativeCallOutcome {
+                    status: 2,
+                    elapsed_ns: 0,
+                },
+                &mut failed_handle,
+                HandleDestroyed,
+            )
+            .is_err()
+        );
+        assert!(!failed_handle.contains(&HandleDestroyed));
+        assert!(!derive_cleanup(&failed_handle).complete);
+
+        let mut failed_context = acquired;
+        failed_context.extend([
+            ApplicationBufferFreed,
+            SessionDestroyed,
+            HandleDestroyed,
+            LibraryUnloaded,
+        ]);
+        assert!(
+            record_cuda_release(
+                NativeCallOutcome {
+                    status: 1,
+                    elapsed_ns: 0,
+                },
+                &mut failed_context,
+                CudaContextDestroyed,
+            )
+            .is_err()
+        );
+        assert!(!failed_context.contains(&CudaContextDestroyed));
+        assert!(!derive_cleanup(&failed_context).complete);
     }
 
     #[test]

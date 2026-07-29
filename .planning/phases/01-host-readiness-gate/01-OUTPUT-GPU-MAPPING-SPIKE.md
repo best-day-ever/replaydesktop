@@ -184,7 +184,7 @@ available at the required version. Malformed or oversized observations return
 ## Live Reference Result
 
 The corrected reference host ran Linux
-`6.18.7-2-cachyos-lto` with NVIDIA kernel/userspace `610.43.03`, one real local
+`7.1.4-1-cachyos` with NVIDIA kernel/userspace `610.43.03`, one real local
 Xorg session on `:0.0`, NV-CONTROL 1.29, and one current NVML device. The exact
 operator selection `DP-0.3` passed HOST-02. Public DRM returned zero active
 connectors in both optional diagnostic snapshots; that observation neither

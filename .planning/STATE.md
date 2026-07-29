@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-05-PLAN.md
-last_updated: "2026-07-27T08:26:15.526Z"
-last_activity: 2026-07-27
-last_activity_desc: Phase 01 execution started
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-07-29T15:53:54.709Z"
+last_activity: 2026-07-29
+last_activity_desc: Completed Plan 01-06 live HOST-01/HOST-02 proof
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -28,30 +28,30 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
-Last activity: 2026-07-27 — Phase 01 execution started
+Last activity: 2026-07-29 — Completed Plan 01-06 live HOST-01/HOST-02 proof
 
-Progress: [█████░░░░░] 50%
+Progress: [██████░░░░] 60%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
-- Average duration: —
-- Total execution time: 0.0 hours
+- Total plans completed: 6
+- Average duration: 33m 41s
+- Total execution time: 3h 22m 5s
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| Phase 01 | 6 | 3h 22m 5s | 33m 41s |
 
 **Recent Trend:**
 
-- Last 5 plans: —
-- Trend: No execution data
+- Last 5 plans: 29m, 33m 28s, 29m 58s, 30m 16s, 46m 23s
+- Trend: Stable implementation pace; Plan 01-06 includes the resumed live-contract correction.
 
 *Updated after each plan completion*
 **Per-Plan Metrics:**
@@ -63,6 +63,7 @@ Progress: [█████░░░░░] 50%
 | Phase 01-host-readiness-gate P03 | 33m 28s | 3 tasks | 9 files |
 | Phase 01-host-readiness-gate P04 | 29m 58s | 3 tasks | 11 files |
 | Phase 01-host-readiness-gate P05 | 30m 16s | 2 tasks | 8 files |
+| Phase 01-host-readiness-gate P06 | 46m 23s | 3 tasks | 23 files |
 
 ## Accumulated Context
 
@@ -71,7 +72,7 @@ Progress: [█████░░░░░] 50%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Phase 1]: G0 host readiness is an executable stop/go prerequisite; no media result from the current Wayland or mismatched NVIDIA state is admissible.
+- [Phase 1]: G0 host readiness is an executable stop/go prerequisite; no media result from the preserved pre-reboot Wayland/NVIDIA-mismatch state is admissible.
 - [Phase 2]: Reproducibility and authenticated direct transport precede all performance evidence.
 - [Phase 5]: Keep pinned libVLC unless exact decoder/copy/queue/presentation evidence requires the narrow native adapter.
 - [Phase 6]: Hardware 4:2:0 latency proof and HEVC 4:4:4 fidelity proof remain distinct; AV1 4:4:4 is always invalid.
@@ -90,10 +91,10 @@ Recent decisions affecting current work:
 - [Phase 01]: The loaded libnvidia-ml.so exact filename version is recorded before NVML initialization so initialization failure cannot hide a real kernel/userspace mismatch.
 - [Phase 01]: Archive verification is offline and never executes the archived binary or consults target/ or the current executable.
 - [Phase 01]: Plans 01-06, 01-08, and 01-10 and every base-decoder/archive-verifier change must run both permanent compatibility tests.
-- [Phase 01]: HOST-02 ownership is the direct source-defined chain XRandR output XID → NV-CONTROL display target → enabled X screen → owning NV-CONTROL GPU target → one NVML device matching both PCI BDF and UUID.
-- [Phase 01]: Canonical output-to-GPU PCI identity uses lowercase NVML-compatible dddddddd:bb:dd.f derived from NV-CONTROL GPU PCI components; NV-CONTROL target ID zero is valid.
-- [Phase 01]: HOST-02 topology stability requires equal opening and closing RandR, NV-CONTROL, and NVML snapshot digests plus RandR timestamps and zero queued RandR topology events.
-- [Phase 01]: DRM connector state is optional diagnostic data only; it does not affect HOST-01/HOST-02 or the authoritative token, and source-proven MST is accepted.
+- [Phase 01]: HOST-02 ownership follows XRandR output XID to an NV-CONTROL display target, enabled X-screen membership, one owning NV-CONTROL GPU, then one NVML device matching both BDF and UUID.
+- [Phase 01]: NV-CONTROL display and GPU target ID zero are valid and must not be rejected by XID-style validators.
+- [Phase 01]: MST is accepted when the direct source relation is unique; DRM connector state is optional diagnostic data and never enters HOST-01/HOST-02 admission or the authoritative token.
+- [Phase 01]: Display targets are enumerated through binary attribute 14; XNVCTRLQueryTargetCount is used for GPU targets only because display-target count raises BadValue on the live driver.
 
 ### Pending Todos
 
@@ -113,6 +114,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-27T21:35:54.859Z
-Stopped at: Session resumed, proceeding to Plan 01-06 Task 3 live output discovery
-Resume file: .planning/phases/01-host-readiness-gate/.continue-here.md
+Last session: 2026-07-29T15:53:54.702Z
+Stopped at: Completed 01-06-PLAN.md
+Resume file: None

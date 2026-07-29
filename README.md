@@ -201,15 +201,12 @@ sources, accept licenses, capture frames, invoke encoders, or contact a
 network. The requested evidence file and its owned same-directory temporary
 sibling are the only writes.
 
-## Open native blockers
+## Remaining native blockers
 
 This skeleton reports rather than hides the remaining work:
 
-- remediate the rejected Wayland session and exact NVIDIA
-  `610.43.02`/`610.43.03` kernel/userspace mismatch, then prove the repaired
-  local physical Xorg/NVML foundation;
-- on that corrected host, explicitly select and prove the physical output to
-  clear HOST-02;
+- retain the now-proven real Xorg/NVML HOST-01 foundation and exact
+  `DP-0.3` NV-CONTROL/NVML HOST-02 identity;
 - prove one NvFBC shared-CUDA capture with the required format and cleanup for
   HOST-03;
 - open the required NVENC codec/chroma tuples for HOST-04 and record their exact

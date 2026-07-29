@@ -404,7 +404,7 @@ fn create_or_validate_private_directory(path: &Path) {
     #[cfg(unix)]
     {
         let mode = metadata.permissions().mode() & 0o777;
-        if (created && mode != 0o700) || (!created && mode != 0o700 && mode != 0o500) {
+        if mode != 0o700 && (created || mode != 0o500) {
             panic!("authenticated-header snapshot is not private");
         }
     }

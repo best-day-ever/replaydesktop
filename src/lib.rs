@@ -20,8 +20,10 @@ pub use local_xorg::{
     HostFoundationEvidenceV1, HostFoundationObservationV1, LocalXorgEvidenceV1, prove_local_xorg,
 };
 pub use model::{
-    DecodedG0Evidence, DrmConnectorIdV1, DrmConnectorObservationV1, ExactModeTimingV1,
-    G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
+    DecodedG0Evidence, DrmConnectorIdV1, DrmConnectorObservationV1, DrmDiagnosticSnapshotV1,
+    ExactModeTimingV1, G0DecodeError, G0EvidenceBaseV1, G0EvidenceEnvelopeV1, G0ExtensionRecordV1,
+    NvControlDisplayTargetIdV1, NvControlDisplayTargetObservationV1, NvControlExtensionVersionV1,
+    NvControlGpuTargetIdV1, NvControlGpuTargetObservationV1, NvControlSnapshotV1,
     NvmlDeviceIdentityObservationV1, OutputMappingProofCardinalitiesV1, OutputNameV1,
     OutputTopologyObservationV1, OutputTopologyTokenV1, PhysicalConnectorKindV1,
     RandrOutputObservationV1, RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1,
@@ -32,9 +34,10 @@ pub use native_nvml::{
     NvmlObservationV1, NvmlProvider, NvmlRuntimeFailureV1, NvmlSourceFailureV1,
 };
 pub use output_mapping::{
-    OutputCollectionFailureV1, OutputCollectorObservationV1, OutputMappingFailureV1,
-    OutputMappingReasonV1, OutputMappingRelationV1, SelectedOutputDiscoveryV1,
-    SelectedOutputFailureEvidenceV1, collect_fixture_output_topology, prove_output_gpu_mapping,
+    NvControlTargetListErrorV1, OutputCollectionFailureV1, OutputCollectorObservationV1,
+    OutputMappingFailureV1, OutputMappingReasonV1, OutputMappingRelationV1,
+    SelectedOutputDiscoveryV1, SelectedOutputFailureEvidenceV1, collect_fixture_output_topology,
+    decode_nvcontrol_target_list, prove_output_gpu_mapping,
 };
 pub use probe::{BoundedProbeRunner, FixtureProbeBackend, LiveProbeBackend, ProbeBackend, ProbeId};
 

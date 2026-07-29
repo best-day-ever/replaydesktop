@@ -388,7 +388,7 @@ mod tests {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/host02-output-topologies.json");
         let collected =
-            collect_fixture_output_topology(&fixture, "namespace-disjoint-unique", Some("DP-0"))
+            collect_fixture_output_topology(&fixture, "nvcontrol-mst-dp-0-3", Some("DP-0.3"))
                 .expect("fixture collection");
         let mut selected = prove_output_gpu_mapping(
             collected

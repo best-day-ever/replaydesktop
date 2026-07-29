@@ -601,6 +601,7 @@ pub const SELECTED_OUTPUT_SCHEMA_V1: &str = "replaydesktop.selected-output.v1";
 pub const MAX_OUTPUT_MAPPING_ITEMS_V1: usize = 64;
 pub const MAX_OUTPUT_NAME_BYTES_V1: usize = 256;
 pub const MAX_CONNECTOR_NAME_BYTES_V1: usize = 64;
+pub const MAX_NVCONTROL_STRING_BYTES_V1: usize = 256;
 pub const MAX_NVML_UUID_BYTES_V1: usize = 96;
 
 macro_rules! typed_xid {
@@ -626,6 +627,8 @@ typed_xid!(XrandrCrtcXidV1);
 typed_xid!(XrandrModeXidV1);
 typed_xid!(XrandrProviderXidV1);
 typed_xid!(DrmConnectorIdV1);
+typed_xid!(NvControlDisplayTargetIdV1);
+typed_xid!(NvControlGpuTargetIdV1);
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -675,8 +678,9 @@ pub struct RefreshRateV1 {
 pub struct OutputTopologyTokenV1 {
     pub randr_timestamp: u32,
     pub randr_config_timestamp: u32,
+    pub randr_event_count: u32,
     pub randr_snapshot_sha256: Sha256DigestV1,
-    pub drm_snapshot_sha256: Sha256DigestV1,
+    pub nvcontrol_snapshot_sha256: Sha256DigestV1,
     pub nvml_snapshot_sha256: Sha256DigestV1,
 }
 
@@ -690,7 +694,9 @@ pub struct RandrOutputObservationV1 {
     pub connected: bool,
     pub physical: bool,
     pub non_desktop: bool,
+    pub primary: bool,
     pub clone_output_xids: Vec<XrandrOutputXidV1>,
+    pub crtc_output_xids: Vec<XrandrOutputXidV1>,
     pub connector_kind: PhysicalConnectorKindV1,
     pub connector_number: Option<u32>,
     pub width_px: u16,
@@ -736,6 +742,62 @@ pub struct NvmlDeviceIdentityObservationV1 {
     pub nvml_uuid: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvControlExtensionVersionV1 {
+    pub major: u32,
+    pub minor: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvControlDisplayTargetObservationV1 {
+    pub target_id: NvControlDisplayTargetIdV1,
+    pub randr_output_xid: XrandrOutputXidV1,
+    pub randr_name: Option<OutputNameV1>,
+    pub enabled: Option<bool>,
+    pub target_index_name: Option<String>,
+    pub type_id_name: Option<String>,
+    pub dp_guid: Option<String>,
+    pub edid_hash: Option<String>,
+    pub displayport_is_multistream: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvControlGpuTargetObservationV1 {
+    pub target_id: NvControlGpuTargetIdV1,
+    pub connected_display_target_ids: Vec<NvControlDisplayTargetIdV1>,
+    pub pci_domain: u32,
+    pub pci_bus: u32,
+    pub pci_device: u32,
+    pub pci_function: u32,
+    pub canonical_pci_bdf: String,
+    pub uuid: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvControlSnapshotV1 {
+    pub x11_library: String,
+    pub xnvctrl_library: String,
+    pub extension_present: bool,
+    pub extension_version: Option<NvControlExtensionVersionV1>,
+    pub x_screen: u32,
+    pub x_screen_is_nvidia: bool,
+    pub display_targets: Vec<NvControlDisplayTargetObservationV1>,
+    pub enabled_display_target_ids: Vec<NvControlDisplayTargetIdV1>,
+    pub gpu_targets: Vec<NvControlGpuTargetObservationV1>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrmDiagnosticSnapshotV1 {
+    pub snapshot_sha256: Sha256DigestV1,
+    pub connector_count: u32,
+    pub active_connector_count: u32,
+}
+
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputTopologyObservationV1 {
@@ -744,7 +806,9 @@ pub struct OutputTopologyObservationV1 {
     pub token_after: OutputTopologyTokenV1,
     pub randr_outputs: Vec<RandrOutputObservationV1>,
     pub randr_providers: Vec<RandrProviderObservationV1>,
-    pub drm_connectors: Vec<DrmConnectorObservationV1>,
+    pub nvcontrol: NvControlSnapshotV1,
+    pub drm_diagnostic_before: Option<DrmDiagnosticSnapshotV1>,
+    pub drm_diagnostic_after: Option<DrmDiagnosticSnapshotV1>,
     pub nvml_devices: Vec<NvmlDeviceIdentityObservationV1>,
 }
 
@@ -753,8 +817,9 @@ pub struct OutputTopologyObservationV1 {
 pub struct OutputMappingProofCardinalitiesV1 {
     pub requested_output_matches: u32,
     pub provider_matches: u32,
-    pub drm_connector_matches: u32,
-    pub canonical_pci_bdf_matches: u32,
+    pub nvcontrol_display_target_matches: u32,
+    pub enabled_on_xscreen_matches: u32,
+    pub nvcontrol_gpu_owner_matches: u32,
     pub nvml_device_matches: u32,
 }
 
@@ -773,18 +838,37 @@ pub struct SelectedOutputV1 {
     pub height_px: u16,
     pub origin_x: i16,
     pub origin_y: i16,
+    pub randr_primary: bool,
     pub refresh_hz: RefreshRateV1,
     pub exact_timing: ExactModeTimingV1,
-    pub edid_sha256: Sha256DigestV1,
+    pub edid_sha256: Option<Sha256DigestV1>,
     pub randr_connector_kind: PhysicalConnectorKindV1,
     pub randr_connector_number: Option<u32>,
-    pub drm_connector_id: DrmConnectorIdV1,
-    pub drm_connector_kind: PhysicalConnectorKindV1,
-    pub drm_connector_type_id: u32,
-    pub drm_connector_name: String,
-    pub drm_canonical_pci_bdf: String,
+    pub randr_provider_name: OutputNameV1,
+    pub randr_provider_capabilities: u32,
+    pub x11_library: String,
+    pub xnvctrl_library: String,
+    pub nvcontrol_extension_version: NvControlExtensionVersionV1,
+    pub nvcontrol_x_screen: u32,
+    pub nvcontrol_display_target_id: NvControlDisplayTargetIdV1,
+    pub nvcontrol_display_randr_name: OutputNameV1,
+    pub nvcontrol_display_target_index_name: String,
+    pub nvcontrol_display_type_id_name: String,
+    pub nvcontrol_display_dp_guid: Option<String>,
+    pub nvcontrol_display_edid_hash: Option<String>,
+    pub nvcontrol_display_enabled: bool,
+    pub nvcontrol_displayport_is_multistream: bool,
+    pub nvcontrol_gpu_target_id: NvControlGpuTargetIdV1,
+    pub nvcontrol_gpu_pci_domain: u32,
+    pub nvcontrol_gpu_pci_bus: u32,
+    pub nvcontrol_gpu_pci_device: u32,
+    pub nvcontrol_gpu_pci_function: u32,
+    pub nvcontrol_gpu_pci_bdf: String,
+    pub nvcontrol_gpu_uuid: String,
     pub nvml_pci_bdf: String,
     pub nvml_uuid: String,
+    pub drm_diagnostic_before: Option<DrmDiagnosticSnapshotV1>,
+    pub drm_diagnostic_after: Option<DrmDiagnosticSnapshotV1>,
     pub topology_token: OutputTopologyTokenV1,
     pub proof: OutputMappingProofCardinalitiesV1,
 }

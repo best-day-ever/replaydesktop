@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use x11rb::connection::{Connection, RequestConnection};
-use x11rb::protocol::randr::ConnectionExt as _;
+use x11rb::protocol::randr::{Connection as RandrConnection, ConnectionExt as _, SetConfig};
 use x11rb::rust_connection::{DefaultStream, RustConnection};
 
 pub const HOST_FOUNDATION_EVIDENCE_SCHEMA_V1: &str = "replaydesktop.host-foundation.v1";
@@ -411,10 +411,10 @@ pub fn evaluate_host_foundation(
             "Grant the invoking user access to at least one DRM render node, then rerun the doctor.",
         ));
     }
-    if observation.connected_drm_connector_count == 0 {
+    if !observation.randr_succeeded || observation.randr_output_count == 0 {
         reasons.push(reason(
             "PHYSICAL_OUTPUT_REQUIRED",
-            "Connect and enable a physical DRM output before rerunning the doctor.",
+            "Connect and enable a physical XRandR output before rerunning the doctor.",
         ));
     }
     let nvml = crate::native_nvml::evaluate_nvml(
@@ -443,8 +443,8 @@ pub fn evaluate_host_foundation(
             observation.accessible_render_node_count,
         ),
         physical_output: check(
-            observation.connected_drm_connector_count > 0,
-            observation.connected_drm_connector_count,
+            observation.randr_succeeded && observation.randr_output_count > 0,
+            observation.randr_output_count,
         ),
         nvidia_kernel_version: observation.nvidia_kernel_version.clone(),
         nvml,
@@ -637,15 +637,37 @@ pub fn observe_live_host_foundation() -> HostFoundationObservationV1 {
     let Ok(resources) = resource_cookie.reply() else {
         return observation;
     };
+    if resources.outputs.len() > usize::try_from(MAX_COUNT).unwrap_or(usize::MAX) {
+        return observation;
+    }
+    let mut connected_outputs = 0_u32;
+    for output in resources.outputs {
+        let Ok(cookie) = connection.randr_get_output_info(output, resources.config_timestamp)
+        else {
+            return observation;
+        };
+        let Ok(info) = cookie.reply() else {
+            return observation;
+        };
+        if info.status == SetConfig::SUCCESS
+            && info.connection == RandrConnection::CONNECTED
+            && info.crtc != 0
+            && !info.modes.is_empty()
+        {
+            connected_outputs = connected_outputs.saturating_add(1);
+        }
+    }
     observation.randr_succeeded = true;
     observation.randr_provider_count = u32::try_from(providers.providers.len()).unwrap_or(u32::MAX);
-    observation.randr_output_count = u32::try_from(resources.outputs.len()).unwrap_or(u32::MAX);
+    observation.randr_output_count = connected_outputs;
     observation
 }
 
 pub(crate) struct AuthenticatedLocalXorg {
     pub connection: RustConnection<DefaultStream>,
     pub root: u32,
+    pub display: u16,
+    pub screen: u16,
 }
 
 pub(crate) fn connect_authenticated_local_xorg() -> Option<AuthenticatedLocalXorg> {
@@ -683,7 +705,12 @@ pub(crate) fn connect_authenticated_local_xorg() -> Option<AuthenticatedLocalXor
     .ok()?;
     let setup = connection.setup();
     let root = setup.roots.get(usize::from(screen))?.root;
-    Some(AuthenticatedLocalXorg { connection, root })
+    Some(AuthenticatedLocalXorg {
+        connection,
+        root,
+        display,
+        screen,
+    })
 }
 
 fn empty_observation() -> HostFoundationObservationV1 {

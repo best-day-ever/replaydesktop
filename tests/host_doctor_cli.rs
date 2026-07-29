@@ -2047,8 +2047,7 @@ fn host02_nvcontrol_cardinality_and_topology_relations_fail_closed_in_process() 
     ] {
         let directory = temp_dir(case);
         let evidence = directory.join("evidence.json");
-        let output =
-            diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
+        let output = diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
         assert_eq!(output.status.code(), Some(2), "case {case}");
         let envelope = read_envelope(&evidence);
         let selected = extension(&envelope, "selected-output.v1");
@@ -2084,8 +2083,7 @@ fn host02_duplicate_native_membership_invalid_pci_and_timing_fail_closed() {
         "invalid-timing",
     ] {
         let evidence = directory.join(format!("{case}.json"));
-        let output =
-            diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
+        let output = diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
         assert_eq!(output.status.code(), Some(2), "case {case}");
         let envelope = read_envelope(&evidence);
         let selected = extension(&envelope, "selected-output.v1");

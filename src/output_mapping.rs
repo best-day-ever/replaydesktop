@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -8,29 +8,56 @@ use std::path::Path;
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use x11rb::connection::RequestConnection as _;
-use x11rb::protocol::randr::{Connection as RandrConnection, ConnectionExt as _, SetConfig};
+use x11rb::connection::{Connection as _, RequestConnection as _};
+use x11rb::protocol::Event;
+use x11rb::protocol::randr::{
+    Connection as RandrConnection, ConnectionExt as _, NotifyMask, SetConfig,
+};
 use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _};
 
 use crate::digest::sha256_bytes;
 use crate::model::{
-    DrmConnectorObservationV1, ExactModeTimingV1, MAX_CONNECTOR_NAME_BYTES_V1,
-    MAX_NVML_UUID_BYTES_V1, MAX_OUTPUT_MAPPING_ITEMS_V1, MAX_OUTPUT_NAME_BYTES_V1,
-    OutputMappingProofCardinalitiesV1, OutputNameV1, OutputTopologyObservationV1,
-    OutputTopologyTokenV1, PhysicalConnectorKindV1, RandrOutputObservationV1, RefreshRateV1,
-    SELECTED_OUTPUT_SCHEMA_V1, SelectedOutputV1,
+    DrmConnectorObservationV1, DrmDiagnosticSnapshotV1, ExactModeTimingV1,
+    MAX_CONNECTOR_NAME_BYTES_V1, MAX_NVCONTROL_STRING_BYTES_V1, MAX_NVML_UUID_BYTES_V1,
+    MAX_OUTPUT_MAPPING_ITEMS_V1, MAX_OUTPUT_NAME_BYTES_V1, NvControlDisplayTargetIdV1,
+    NvControlDisplayTargetObservationV1, NvControlExtensionVersionV1, NvControlGpuTargetIdV1,
+    NvControlGpuTargetObservationV1, NvControlSnapshotV1, OutputMappingProofCardinalitiesV1,
+    OutputNameV1, OutputTopologyObservationV1, OutputTopologyTokenV1, PhysicalConnectorKindV1,
+    RandrOutputObservationV1, RefreshRateV1, SELECTED_OUTPUT_SCHEMA_V1, SelectedOutputV1,
 };
 
 pub const SELECTED_OUTPUT_DISCOVERY_SCHEMA_V1: &str = "replaydesktop.selected-output-discovery.v1";
 pub const SELECTED_OUTPUT_FAILURE_SCHEMA_V1: &str = "replaydesktop.selected-output-failure.v1";
 
-const RANDR_PROVIDER_SOURCE_OUTPUT: u32 = 1;
 const RANDR_PROVIDER_KNOWN_CAPABILITIES: u32 = 0x0f;
 const RANDR_MODE_INTERLACE: u32 = 1 << 4;
 const RANDR_MODE_DOUBLE_SCAN: u32 = 1 << 5;
 const RANDR_MODE_EXACT_REFRESH_FLAGS: u32 = 0x07ff;
 const HOST02_FIXTURE_SCHEMA_V1: &str = "replaydesktop.host02-output-topologies.v1";
 const MAX_HOST02_FIXTURE_BYTES: usize = 1024 * 1024;
+const MIN_NVCONTROL_VERSION: (u32, u32) = (1, 27);
+const X11_LIBRARY_NAME: &str = "libX11.so.6";
+const XNVCTRL_LIBRARY_NAME: &str = "libXNVCtrl.so.0";
+const NV_CTRL_TARGET_TYPE_X_SCREEN: c_int = 0;
+const NV_CTRL_TARGET_TYPE_GPU: c_int = 1;
+const NV_CTRL_TARGET_TYPE_DISPLAY: c_int = 8;
+const NV_CTRL_BINARY_DATA_DISPLAY_TARGETS: c_uint = 14;
+const NV_CTRL_BINARY_DATA_DISPLAYS_CONNECTED_TO_GPU: c_uint = 15;
+const NV_CTRL_BINARY_DATA_DISPLAYS_ENABLED_ON_XSCREEN: c_uint = 17;
+const NV_CTRL_PCI_BUS: c_uint = 239;
+const NV_CTRL_PCI_DEVICE: c_uint = 240;
+const NV_CTRL_PCI_FUNCTION: c_uint = 241;
+const NV_CTRL_PCI_DOMAIN: c_uint = 306;
+const NV_CTRL_DISPLAY_ENABLED: c_uint = 388;
+const NV_CTRL_DISPLAY_RANDR_OUTPUT_ID: c_uint = 391;
+const NV_CTRL_DISPLAYPORT_IS_MULTISTREAM: c_uint = 422;
+const NV_CTRL_STRING_DISPLAY_NAME_TYPE_ID: c_uint = 47;
+const NV_CTRL_STRING_DISPLAY_NAME_DP_GUID: c_uint = 48;
+const NV_CTRL_STRING_DISPLAY_NAME_EDID_HASH: c_uint = 49;
+const NV_CTRL_STRING_DISPLAY_NAME_TARGET_INDEX: c_uint = 50;
+const NV_CTRL_STRING_DISPLAY_NAME_RANDR: c_uint = 51;
+const NV_CTRL_STRING_GPU_UUID: c_uint = 52;
+const MAX_RANDR_EVENTS: u32 = 64;
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 pub enum OutputMappingReasonV1 {
@@ -44,6 +71,8 @@ pub enum OutputMappingReasonV1 {
     UnsupportedTopology,
     #[serde(rename = "BLOCKED_INVALID_OBSERVATION")]
     InvalidObservation,
+    #[serde(rename = "BLOCKED_NVCONTROL_UNAVAILABLE")]
+    NvControlUnavailable,
 }
 
 impl OutputMappingReasonV1 {
@@ -54,6 +83,7 @@ impl OutputMappingReasonV1 {
             Self::TopologyChanged => "BLOCKED_TOPOLOGY_CHANGED",
             Self::UnsupportedTopology => "BLOCKED_UNSUPPORTED_TOPOLOGY",
             Self::InvalidObservation => "BLOCKED_INVALID_OBSERVATION",
+            Self::NvControlUnavailable => "BLOCKED_NVCONTROL_UNAVAILABLE",
         }
     }
 }
@@ -65,8 +95,10 @@ pub enum OutputMappingRelationV1 {
     TopologyToken,
     RequestedOutput,
     RandrProvider,
-    DrmConnector,
-    CanonicalPciBdf,
+    NvControlExtension,
+    NvControlDisplayTarget,
+    NvControlEnabledOnXscreen,
+    NvControlGpuOwner,
     NvmlDevice,
 }
 
@@ -83,7 +115,8 @@ pub struct OutputMappingFailureV1 {
 pub enum OutputCollectionFailureV1 {
     XorgUnavailable,
     RandrUnavailable,
-    DrmUnavailable,
+    X11Unavailable,
+    NvControlUnavailable,
     NvmlUnavailable,
     InvalidObservation,
 }
@@ -93,7 +126,8 @@ impl OutputCollectionFailureV1 {
         match self {
             Self::XorgUnavailable => "xorg-unavailable",
             Self::RandrUnavailable => "randr-unavailable",
-            Self::DrmUnavailable => "drm-unavailable",
+            Self::X11Unavailable => "x11-unavailable",
+            Self::NvControlUnavailable => "nvcontrol-unavailable",
             Self::NvmlUnavailable => "nvml-unavailable",
             Self::InvalidObservation => "invalid-observation",
         }
@@ -175,7 +209,9 @@ pub fn prove_output_gpu_mapping(
 ) -> Result<SelectedOutputV1, OutputMappingFailureV1> {
     validate_observation(observation)?;
 
-    if observation.token_before != observation.token_after {
+    if observation.token_before != observation.token_after
+        || observation.token_before.randr_event_count != 0
+    {
         return Err(failure(
             OutputMappingReasonV1::TopologyChanged,
             OutputMappingRelationV1::TopologyToken,
@@ -196,17 +232,8 @@ pub fn prove_output_gpu_mapping(
     }
     let output = output_matches[0];
     validate_selected_output(output)?;
-    let edid_sha256 = output
-        .edid_sha256
-        .ok_or_else(|| cardinality_failure(OutputMappingRelationV1::DrmConnector, 0))?;
     let refresh_hz = exact_refresh_rate(&output.timing).ok_or_else(invalid_observation)?;
 
-    if observation.randr_providers.len() != 1 {
-        return Err(cardinality_failure(
-            OutputMappingRelationV1::RandrProvider,
-            observation.randr_providers.len(),
-        ));
-    }
     let provider_matches = observation
         .randr_providers
         .iter()
@@ -217,12 +244,6 @@ pub fn prove_output_gpu_mapping(
                 .filter(|candidate| **candidate == output.output_xid)
                 .count()
                 == 1
-                && provider
-                    .crtc_xids
-                    .iter()
-                    .filter(|candidate| **candidate == output.crtc_xid)
-                    .count()
-                    == 1
         })
         .collect::<Vec<_>>();
     if provider_matches.len() != 1 {
@@ -232,57 +253,125 @@ pub fn prove_output_gpu_mapping(
         ));
     }
     let provider = provider_matches[0];
-    if provider.capabilities != RANDR_PROVIDER_SOURCE_OUTPUT
-        || !provider.associated_provider_xids.is_empty()
+
+    let Some(extension_version) = observation.nvcontrol.extension_version else {
+        return Err(failure(
+            OutputMappingReasonV1::NvControlUnavailable,
+            OutputMappingRelationV1::NvControlExtension,
+            None,
+        ));
+    };
+    if !observation.nvcontrol.extension_present
+        || (extension_version.major, extension_version.minor) < MIN_NVCONTROL_VERSION
     {
         return Err(failure(
+            OutputMappingReasonV1::NvControlUnavailable,
+            OutputMappingRelationV1::NvControlExtension,
+            None,
+        ));
+    }
+    if !observation.nvcontrol.x_screen_is_nvidia {
+        return Err(failure(
             OutputMappingReasonV1::UnsupportedTopology,
-            OutputMappingRelationV1::RandrProvider,
+            OutputMappingRelationV1::NvControlExtension,
             Some(1),
         ));
     }
 
-    let metadata_candidates = observation
-        .drm_connectors
+    let display_matches = observation
+        .nvcontrol
+        .display_targets
         .iter()
-        .filter(|connector| {
-            connector.edid_sha256 == Some(edid_sha256)
-                && connector.connector_kind == output.connector_kind
-        })
+        .filter(|target| target.randr_output_xid == output.output_xid)
         .collect::<Vec<_>>();
-    let drm_matches = metadata_candidates
-        .iter()
-        .copied()
-        .filter(|connector| connector.active_timing == output.timing)
-        .collect::<Vec<_>>();
-    if drm_matches.is_empty() && !metadata_candidates.is_empty() {
+    if display_matches.len() != 1 {
+        return Err(cardinality_failure(
+            OutputMappingRelationV1::NvControlDisplayTarget,
+            display_matches.len(),
+        ));
+    }
+    let display_target = display_matches[0];
+    let Some(display_randr_name) = display_target.randr_name.as_ref() else {
+        return Err(failure(
+            OutputMappingReasonV1::NvControlUnavailable,
+            OutputMappingRelationV1::NvControlDisplayTarget,
+            None,
+        ));
+    };
+    if display_randr_name.hex != output.name.hex {
         return Err(failure(
             OutputMappingReasonV1::ConflictingFacts,
-            OutputMappingRelationV1::DrmConnector,
-            Some(0),
+            OutputMappingRelationV1::NvControlDisplayTarget,
+            Some(1),
         ));
     }
-    if drm_matches.len() != 1 {
-        return Err(cardinality_failure(
-            OutputMappingRelationV1::DrmConnector,
-            drm_matches.len(),
-        ));
+    match display_target.enabled {
+        Some(true) => {}
+        Some(false) => {
+            return Err(failure(
+                OutputMappingReasonV1::UnsupportedTopology,
+                OutputMappingRelationV1::NvControlDisplayTarget,
+                Some(1),
+            ));
+        }
+        None => {
+            return Err(failure(
+                OutputMappingReasonV1::NvControlUnavailable,
+                OutputMappingRelationV1::NvControlDisplayTarget,
+                None,
+            ));
+        }
     }
-    let connector = drm_matches[0];
-    validate_selected_connector(connector)?;
+    let target_index_name = display_target
+        .target_index_name
+        .as_ref()
+        .ok_or_else(invalid_observation)?;
+    let type_id_name = display_target
+        .type_id_name
+        .as_ref()
+        .ok_or_else(invalid_observation)?;
+    let displayport_is_multistream = display_target
+        .displayport_is_multistream
+        .ok_or_else(invalid_observation)?;
 
-    if connector.canonical_pci_bdfs.len() != 1 {
+    let enabled_matches = observation
+        .nvcontrol
+        .enabled_display_target_ids
+        .iter()
+        .filter(|candidate| **candidate == display_target.target_id)
+        .count();
+    if enabled_matches != 1 {
         return Err(cardinality_failure(
-            OutputMappingRelationV1::CanonicalPciBdf,
-            connector.canonical_pci_bdfs.len(),
+            OutputMappingRelationV1::NvControlEnabledOnXscreen,
+            enabled_matches,
         ));
     }
-    let canonical_pci_bdf = &connector.canonical_pci_bdfs[0];
 
+    let gpu_matches = observation
+        .nvcontrol
+        .gpu_targets
+        .iter()
+        .filter(|gpu| {
+            gpu.connected_display_target_ids
+                .iter()
+                .filter(|candidate| **candidate == display_target.target_id)
+                .count()
+                == 1
+        })
+        .collect::<Vec<_>>();
+    if gpu_matches.len() != 1 {
+        return Err(cardinality_failure(
+            OutputMappingRelationV1::NvControlGpuOwner,
+            gpu_matches.len(),
+        ));
+    }
+    let gpu = gpu_matches[0];
     let nvml_matches = observation
         .nvml_devices
         .iter()
-        .filter(|device| device.nvml_pci_bdf == *canonical_pci_bdf)
+        .filter(|device| {
+            device.nvml_pci_bdf == gpu.canonical_pci_bdf && device.nvml_uuid == gpu.uuid
+        })
         .collect::<Vec<_>>();
     if nvml_matches.len() != 1 {
         return Err(cardinality_failure(
@@ -291,17 +380,6 @@ pub fn prove_output_gpu_mapping(
         ));
     }
     let nvml_device = nvml_matches[0];
-    let uuid_matches = observation
-        .nvml_devices
-        .iter()
-        .filter(|device| device.nvml_uuid == nvml_device.nvml_uuid)
-        .count();
-    if uuid_matches != 1 {
-        return Err(cardinality_failure(
-            OutputMappingRelationV1::NvmlDevice,
-            uuid_matches,
-        ));
-    }
 
     Ok(SelectedOutputV1 {
         schema: SELECTED_OUTPUT_SCHEMA_V1.to_owned(),
@@ -316,24 +394,44 @@ pub fn prove_output_gpu_mapping(
         height_px: output.height_px,
         origin_x: output.origin_x,
         origin_y: output.origin_y,
+        randr_primary: output.primary,
         refresh_hz,
         exact_timing: output.timing.clone(),
-        edid_sha256,
+        edid_sha256: output.edid_sha256,
         randr_connector_kind: output.connector_kind,
         randr_connector_number: output.connector_number,
-        drm_connector_id: connector.connector_id,
-        drm_connector_kind: connector.connector_kind,
-        drm_connector_type_id: connector.connector_type_id,
-        drm_connector_name: connector.connector_name.clone(),
-        drm_canonical_pci_bdf: canonical_pci_bdf.clone(),
+        randr_provider_name: provider.name.clone(),
+        randr_provider_capabilities: provider.capabilities,
+        x11_library: observation.nvcontrol.x11_library.clone(),
+        xnvctrl_library: observation.nvcontrol.xnvctrl_library.clone(),
+        nvcontrol_extension_version: extension_version,
+        nvcontrol_x_screen: observation.nvcontrol.x_screen,
+        nvcontrol_display_target_id: display_target.target_id,
+        nvcontrol_display_randr_name: display_randr_name.clone(),
+        nvcontrol_display_target_index_name: target_index_name.clone(),
+        nvcontrol_display_type_id_name: type_id_name.clone(),
+        nvcontrol_display_dp_guid: display_target.dp_guid.clone(),
+        nvcontrol_display_edid_hash: display_target.edid_hash.clone(),
+        nvcontrol_display_enabled: true,
+        nvcontrol_displayport_is_multistream: displayport_is_multistream,
+        nvcontrol_gpu_target_id: gpu.target_id,
+        nvcontrol_gpu_pci_domain: gpu.pci_domain,
+        nvcontrol_gpu_pci_bus: gpu.pci_bus,
+        nvcontrol_gpu_pci_device: gpu.pci_device,
+        nvcontrol_gpu_pci_function: gpu.pci_function,
+        nvcontrol_gpu_pci_bdf: gpu.canonical_pci_bdf.clone(),
+        nvcontrol_gpu_uuid: gpu.uuid.clone(),
         nvml_pci_bdf: nvml_device.nvml_pci_bdf.clone(),
         nvml_uuid: nvml_device.nvml_uuid.clone(),
+        drm_diagnostic_before: observation.drm_diagnostic_before.clone(),
+        drm_diagnostic_after: observation.drm_diagnostic_after.clone(),
         topology_token: observation.token_before.clone(),
         proof: OutputMappingProofCardinalitiesV1 {
             requested_output_matches: 1,
             provider_matches: 1,
-            drm_connector_matches: 1,
-            canonical_pci_bdf_matches: 1,
+            nvcontrol_display_target_matches: 1,
+            enabled_on_xscreen_matches: 1,
+            nvcontrol_gpu_owner_matches: 1,
             nvml_device_matches: 1,
         },
     })
@@ -349,19 +447,47 @@ pub fn validate_selected_output_evidence(selected: &SelectedOutputV1) -> bool {
         && selected.width_px == selected.exact_timing.hdisplay
         && selected.height_px == selected.exact_timing.vdisplay
         && exact_refresh_rate(&selected.exact_timing) == Some(selected.refresh_hz)
-        && selected.randr_connector_kind == selected.drm_connector_kind
-        && selected.drm_connector_id.get() != 0
-        && selected.drm_connector_type_id != 0
-        && valid_visible_ascii(&selected.drm_connector_name, MAX_CONNECTOR_NAME_BYTES_V1)
-        && valid_canonical_pci_bdf(&selected.drm_canonical_pci_bdf)
-        && selected.drm_canonical_pci_bdf == selected.nvml_pci_bdf
+        && valid_output_name(&selected.randr_provider_name)
+        && selected.randr_provider_capabilities & !RANDR_PROVIDER_KNOWN_CAPABILITIES == 0
+        && valid_library_identity(&selected.x11_library, "libX11.so.")
+        && valid_library_identity(&selected.xnvctrl_library, "libXNVCtrl.so.")
+        && (
+            selected.nvcontrol_extension_version.major,
+            selected.nvcontrol_extension_version.minor,
+        ) >= MIN_NVCONTROL_VERSION
+        && selected.nvcontrol_display_randr_name == selected.output_name
+        && valid_nvcontrol_string(&selected.nvcontrol_display_target_index_name)
+        && valid_nvcontrol_string(&selected.nvcontrol_display_type_id_name)
+        && selected
+            .nvcontrol_display_dp_guid
+            .as_deref()
+            .is_none_or(valid_nvcontrol_string)
+        && selected
+            .nvcontrol_display_edid_hash
+            .as_deref()
+            .is_none_or(valid_nvcontrol_string)
+        && selected.nvcontrol_display_enabled
+        && canonical_nvcontrol_pci_bdf(
+            selected.nvcontrol_gpu_pci_domain,
+            selected.nvcontrol_gpu_pci_bus,
+            selected.nvcontrol_gpu_pci_device,
+            selected.nvcontrol_gpu_pci_function,
+        )
+        .as_deref()
+            == Some(selected.nvcontrol_gpu_pci_bdf.as_str())
+        && valid_nvml_uuid(&selected.nvcontrol_gpu_uuid)
+        && valid_canonical_pci_bdf(&selected.nvml_pci_bdf)
         && valid_nvml_uuid(&selected.nvml_uuid)
+        && selected.nvcontrol_gpu_pci_bdf == selected.nvml_pci_bdf
+        && selected.nvcontrol_gpu_uuid == selected.nvml_uuid
         && selected.randr_timestamp == selected.topology_token.randr_timestamp
         && selected.randr_config_timestamp == selected.topology_token.randr_config_timestamp
+        && selected.topology_token.randr_event_count == 0
         && selected.proof.requested_output_matches == 1
         && selected.proof.provider_matches == 1
-        && selected.proof.drm_connector_matches == 1
-        && selected.proof.canonical_pci_bdf_matches == 1
+        && selected.proof.nvcontrol_display_target_matches == 1
+        && selected.proof.enabled_on_xscreen_matches == 1
+        && selected.proof.nvcontrol_gpu_owner_matches == 1
         && selected.proof.nvml_device_matches == 1
 }
 
@@ -453,6 +579,9 @@ pub fn collect_live_output_topology(
     let Some(xorg) = crate::local_xorg::connect_authenticated_local_xorg() else {
         return failure(OutputCollectionFailureV1::XorgUnavailable);
     };
+    if subscribe_randr_topology_events(&xorg.connection, xorg.root).is_err() {
+        return failure(OutputCollectionFailureV1::X11Unavailable);
+    }
     let Ok(opening_randr) = collect_randr_snapshot(&xorg.connection, xorg.root) else {
         return failure(OutputCollectionFailureV1::RandrUnavailable);
     };
@@ -471,12 +600,13 @@ pub fn collect_live_output_topology(
         };
     }
 
-    let Ok(opening_drm) = collect_drm_snapshot() else {
+    let opening_drm = collect_drm_snapshot().ok().map(drm_diagnostic_snapshot);
+    let Ok(opening_nvcontrol) = collect_nvcontrol_snapshot(xorg.display, xorg.screen) else {
         return OutputCollectorObservationV1 {
             requested_output,
             candidates,
             topology: None,
-            collection_failure: Some(OutputCollectionFailureV1::DrmUnavailable),
+            collection_failure: Some(OutputCollectionFailureV1::NvControlUnavailable),
         };
     };
     let Ok(opening_nvml) = collect_nvml_snapshot() else {
@@ -495,12 +625,12 @@ pub fn collect_live_output_topology(
             collection_failure: Some(OutputCollectionFailureV1::RandrUnavailable),
         };
     };
-    let Ok(closing_drm) = collect_drm_snapshot() else {
+    let Ok(closing_nvcontrol) = collect_nvcontrol_snapshot(xorg.display, xorg.screen) else {
         return OutputCollectorObservationV1 {
             requested_output,
             candidates,
             topology: None,
-            collection_failure: Some(OutputCollectionFailureV1::DrmUnavailable),
+            collection_failure: Some(OutputCollectionFailureV1::NvControlUnavailable),
         };
     };
     let Ok(closing_nvml) = collect_nvml_snapshot() else {
@@ -511,6 +641,15 @@ pub fn collect_live_output_topology(
             collection_failure: Some(OutputCollectionFailureV1::NvmlUnavailable),
         };
     };
+    let closing_drm = collect_drm_snapshot().ok().map(drm_diagnostic_snapshot);
+    let Ok(randr_event_count) = collect_randr_event_count(&xorg.connection) else {
+        return OutputCollectorObservationV1 {
+            requested_output,
+            candidates,
+            topology: None,
+            collection_failure: Some(OutputCollectionFailureV1::X11Unavailable),
+        };
+    };
     let requested = requested_output
         .clone()
         .expect("explicit-output branch must carry the request");
@@ -519,20 +658,24 @@ pub fn collect_live_output_topology(
         token_before: OutputTopologyTokenV1 {
             randr_timestamp: opening_randr.timestamp,
             randr_config_timestamp: opening_randr.config_timestamp,
+            randr_event_count: 0,
             randr_snapshot_sha256: opening_randr.digest,
-            drm_snapshot_sha256: opening_drm.digest,
+            nvcontrol_snapshot_sha256: opening_nvcontrol.digest,
             nvml_snapshot_sha256: opening_nvml.digest,
         },
         token_after: OutputTopologyTokenV1 {
             randr_timestamp: closing_randr.timestamp,
             randr_config_timestamp: closing_randr.config_timestamp,
+            randr_event_count,
             randr_snapshot_sha256: closing_randr.digest,
-            drm_snapshot_sha256: closing_drm.digest,
+            nvcontrol_snapshot_sha256: closing_nvcontrol.digest,
             nvml_snapshot_sha256: closing_nvml.digest,
         },
         randr_outputs: opening_randr.outputs,
         randr_providers: opening_randr.providers,
-        drm_connectors: opening_drm.connectors,
+        nvcontrol: opening_nvcontrol.observation,
+        drm_diagnostic_before: opening_drm,
+        drm_diagnostic_after: closing_drm,
         nvml_devices: opening_nvml.devices,
     };
     let observation = OutputCollectorObservationV1 {
@@ -551,6 +694,57 @@ pub fn collect_live_output_topology(
             collection_failure: Some(OutputCollectionFailureV1::InvalidObservation),
         }
     }
+}
+
+fn subscribe_randr_topology_events(
+    connection: &x11rb::rust_connection::RustConnection<x11rb::rust_connection::DefaultStream>,
+    root: u32,
+) -> Result<(), ()> {
+    let mask = NotifyMask::SCREEN_CHANGE
+        | NotifyMask::CRTC_CHANGE
+        | NotifyMask::OUTPUT_CHANGE
+        | NotifyMask::OUTPUT_PROPERTY
+        | NotifyMask::PROVIDER_CHANGE
+        | NotifyMask::PROVIDER_PROPERTY
+        | NotifyMask::RESOURCE_CHANGE
+        | NotifyMask::LEASE;
+    connection
+        .randr_select_input(root, mask)
+        .map_err(|_| ())?
+        .check()
+        .map_err(|_| ())?;
+    connection
+        .get_input_focus()
+        .map_err(|_| ())?
+        .reply()
+        .map_err(|_| ())?;
+    while connection.poll_for_event().map_err(|_| ())?.is_some() {}
+    Ok(())
+}
+
+fn collect_randr_event_count(
+    connection: &x11rb::rust_connection::RustConnection<x11rb::rust_connection::DefaultStream>,
+) -> Result<u32, ()> {
+    connection
+        .get_input_focus()
+        .map_err(|_| ())?
+        .reply()
+        .map_err(|_| ())?;
+    let mut relevant = 0_u32;
+    let mut total = 0_u32;
+    while let Some(event) = connection.poll_for_event().map_err(|_| ())? {
+        total = total.saturating_add(1);
+        if total > MAX_RANDR_EVENTS.saturating_mul(4) {
+            return Err(());
+        }
+        if matches!(
+            event,
+            Event::RandrNotify(_) | Event::RandrScreenChangeNotify(_)
+        ) {
+            relevant = relevant.saturating_add(1).min(MAX_RANDR_EVENTS);
+        }
+    }
+    Ok(relevant)
 }
 
 #[derive(Debug)]
@@ -586,6 +780,12 @@ fn collect_randr_snapshot(
         .map_err(|_| ())?
         .reply()
         .map_err(|_| ())?;
+    let primary_output = connection
+        .randr_get_output_primary(root)
+        .map_err(|_| ())?
+        .reply()
+        .map_err(|_| ())?
+        .output;
     let provider_resources = connection
         .randr_get_providers(root)
         .map_err(|_| ())?
@@ -621,7 +821,10 @@ fn collect_randr_snapshot(
             .map_err(|_| ())?
             .reply()
             .map_err(|_| ())?;
-        if crtc.status != SetConfig::SUCCESS || crtc.mode == 0 {
+        if crtc.status != SetConfig::SUCCESS
+            || crtc.mode == 0
+            || crtc.outputs.len() > MAX_OUTPUT_MAPPING_ITEMS_V1
+        {
             continue;
         }
         let mode = resources
@@ -635,6 +838,20 @@ fn collect_randr_snapshot(
             output_property_u32(connection, output_xid, atoms.non_desktop)? != Some(0);
         let edid = output_property_bytes(connection, output_xid, atoms.edid, 4096)?;
         let name = output_name_from_bytes(&info.name).ok_or(())?;
+        let mut clone_output_xids = info
+            .clones
+            .iter()
+            .copied()
+            .map(crate::model::XrandrOutputXidV1::new)
+            .collect::<Vec<_>>();
+        clone_output_xids.sort_by_key(|xid| xid.get());
+        let mut crtc_output_xids = crtc
+            .outputs
+            .iter()
+            .copied()
+            .map(crate::model::XrandrOutputXidV1::new)
+            .collect::<Vec<_>>();
+        crtc_output_xids.sort_by_key(|xid| xid.get());
         outputs.push(RandrOutputObservationV1 {
             output_xid: crate::model::XrandrOutputXidV1::new(output_xid),
             crtc_xid: crate::model::XrandrCrtcXidV1::new(info.crtc),
@@ -643,12 +860,9 @@ fn collect_randr_snapshot(
             connected: true,
             physical: true,
             non_desktop,
-            clone_output_xids: info
-                .clones
-                .iter()
-                .copied()
-                .map(crate::model::XrandrOutputXidV1::new)
-                .collect(),
+            primary: output_xid == primary_output,
+            clone_output_xids,
+            crtc_output_xids,
             connector_kind,
             connector_number,
             width_px: crtc.width,
@@ -688,25 +902,31 @@ fn collect_randr_snapshot(
         {
             return Err(());
         }
+        let mut crtc_xids = info
+            .crtcs
+            .into_iter()
+            .map(crate::model::XrandrCrtcXidV1::new)
+            .collect::<Vec<_>>();
+        crtc_xids.sort_by_key(|xid| xid.get());
+        let mut output_xids = info
+            .outputs
+            .into_iter()
+            .map(crate::model::XrandrOutputXidV1::new)
+            .collect::<Vec<_>>();
+        output_xids.sort_by_key(|xid| xid.get());
+        let mut associated_provider_xids = info
+            .associated_providers
+            .into_iter()
+            .map(crate::model::XrandrProviderXidV1::new)
+            .collect::<Vec<_>>();
+        associated_provider_xids.sort_by_key(|xid| xid.get());
         providers.push(crate::model::RandrProviderObservationV1 {
             provider_xid: crate::model::XrandrProviderXidV1::new(provider_xid),
             name: output_name_from_bytes(&info.name).ok_or(())?,
             capabilities: u32::from(info.capabilities),
-            crtc_xids: info
-                .crtcs
-                .into_iter()
-                .map(crate::model::XrandrCrtcXidV1::new)
-                .collect(),
-            output_xids: info
-                .outputs
-                .into_iter()
-                .map(crate::model::XrandrOutputXidV1::new)
-                .collect(),
-            associated_provider_xids: info
-                .associated_providers
-                .into_iter()
-                .map(crate::model::XrandrProviderXidV1::new)
-                .collect(),
+            crtc_xids,
+            output_xids,
+            associated_provider_xids,
         });
     }
     providers.sort_by_key(|provider| provider.provider_xid.get());
@@ -864,6 +1084,575 @@ fn output_name_from_bytes(bytes: &[u8]) -> Option<OutputNameV1> {
         hex: lower_hex_encode(bytes),
         display: std::str::from_utf8(bytes).ok().map(str::to_owned),
     })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum NvControlTargetListErrorV1 {
+    Malformed,
+    TooMany,
+    Duplicate,
+    TargetOutOfRange,
+}
+
+pub fn decode_nvcontrol_target_list(bytes: &[u8]) -> Result<Vec<u32>, NvControlTargetListErrorV1> {
+    if bytes.len() < size_of::<c_int>() || !bytes.len().is_multiple_of(size_of::<c_int>()) {
+        return Err(NvControlTargetListErrorV1::Malformed);
+    }
+    let count = c_int::from_ne_bytes(
+        bytes[..size_of::<c_int>()]
+            .try_into()
+            .map_err(|_| NvControlTargetListErrorV1::Malformed)?,
+    );
+    let count = usize::try_from(count).map_err(|_| NvControlTargetListErrorV1::TargetOutOfRange)?;
+    if count > MAX_OUTPUT_MAPPING_ITEMS_V1 {
+        return Err(NvControlTargetListErrorV1::TooMany);
+    }
+    let expected_length = count
+        .checked_add(1)
+        .and_then(|items| items.checked_mul(size_of::<c_int>()))
+        .ok_or(NvControlTargetListErrorV1::Malformed)?;
+    if bytes.len() != expected_length {
+        return Err(NvControlTargetListErrorV1::Malformed);
+    }
+    let mut identifiers = HashSet::with_capacity(count);
+    let mut targets = Vec::with_capacity(count);
+    for chunk in bytes[size_of::<c_int>()..].chunks_exact(size_of::<c_int>()) {
+        let target = c_int::from_ne_bytes(
+            chunk
+                .try_into()
+                .map_err(|_| NvControlTargetListErrorV1::Malformed)?,
+        );
+        let target =
+            u32::try_from(target).map_err(|_| NvControlTargetListErrorV1::TargetOutOfRange)?;
+        if !identifiers.insert(target) {
+            return Err(NvControlTargetListErrorV1::Duplicate);
+        }
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
+type XOpenDisplayFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+type XCloseDisplayFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type XFreeFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type XNvCtrlQueryExtensionFn = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_int;
+type XNvCtrlQueryVersionFn = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_int;
+type XNvCtrlIsNvScreenFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
+type XNvCtrlQueryTargetCountFn = unsafe extern "C" fn(*mut c_void, c_int, *mut c_int) -> c_int;
+type XNvCtrlQueryTargetAttributeFn =
+    unsafe extern "C" fn(*mut c_void, c_int, c_int, c_uint, c_uint, *mut c_int) -> c_int;
+type XNvCtrlQueryTargetStringAttributeFn =
+    unsafe extern "C" fn(*mut c_void, c_int, c_int, c_uint, c_uint, *mut *mut c_char) -> c_int;
+type XNvCtrlQueryTargetBinaryDataFn = unsafe extern "C" fn(
+    *mut c_void,
+    c_int,
+    c_int,
+    c_uint,
+    c_uint,
+    *mut *mut u8,
+    *mut c_int,
+) -> c_int;
+
+struct X11Api {
+    _library: Library,
+    open_display: XOpenDisplayFn,
+    close_display: XCloseDisplayFn,
+    free: XFreeFn,
+}
+
+impl X11Api {
+    fn load() -> Result<Self, ()> {
+        // SAFETY: This is a fixed system SONAME; no caller-controlled path reaches dlopen.
+        let library = unsafe { Library::new(X11_LIBRARY_NAME) }.map_err(|_| ())?;
+        // SAFETY: Symbol names and signatures are copied from the Xlib ABI, and
+        // the owning library handle remains live for the lifetime of the pointers.
+        unsafe {
+            Ok(Self {
+                open_display: *library.get(b"XOpenDisplay\0").map_err(|_| ())?,
+                close_display: *library.get(b"XCloseDisplay\0").map_err(|_| ())?,
+                free: *library.get(b"XFree\0").map_err(|_| ())?,
+                _library: library,
+            })
+        }
+    }
+}
+
+struct XNvCtrlApi {
+    _library: Library,
+    query_extension: XNvCtrlQueryExtensionFn,
+    query_version: XNvCtrlQueryVersionFn,
+    is_nv_screen: XNvCtrlIsNvScreenFn,
+    query_target_count: XNvCtrlQueryTargetCountFn,
+    query_target_attribute: XNvCtrlQueryTargetAttributeFn,
+    query_target_string_attribute: XNvCtrlQueryTargetStringAttributeFn,
+    query_target_binary_data: XNvCtrlQueryTargetBinaryDataFn,
+}
+
+impl XNvCtrlApi {
+    fn load() -> Result<Self, ()> {
+        // SAFETY: This is a fixed system SONAME; no caller-controlled path reaches dlopen.
+        let library = unsafe { Library::new(XNVCTRL_LIBRARY_NAME) }.map_err(|_| ())?;
+        // SAFETY: Symbol names and signatures are copied from NVCtrlLib.h, and
+        // the owning library handle remains live for the lifetime of the pointers.
+        unsafe {
+            Ok(Self {
+                query_extension: *library.get(b"XNVCTRLQueryExtension\0").map_err(|_| ())?,
+                query_version: *library.get(b"XNVCTRLQueryVersion\0").map_err(|_| ())?,
+                is_nv_screen: *library.get(b"XNVCTRLIsNvScreen\0").map_err(|_| ())?,
+                query_target_count: *library.get(b"XNVCTRLQueryTargetCount\0").map_err(|_| ())?,
+                query_target_attribute: *library
+                    .get(b"XNVCTRLQueryTargetAttribute\0")
+                    .map_err(|_| ())?,
+                query_target_string_attribute: *library
+                    .get(b"XNVCTRLQueryTargetStringAttribute\0")
+                    .map_err(|_| ())?,
+                query_target_binary_data: *library
+                    .get(b"XNVCTRLQueryTargetBinaryData\0")
+                    .map_err(|_| ())?,
+                _library: library,
+            })
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NvControlLiveSnapshotV1 {
+    observation: NvControlSnapshotV1,
+    digest: crate::Sha256DigestV1,
+}
+
+fn collect_nvcontrol_snapshot(
+    display_number: u16,
+    screen: u16,
+) -> Result<NvControlLiveSnapshotV1, ()> {
+    let x11 = X11Api::load()?;
+    let nvcontrol = XNvCtrlApi::load()?;
+    let x11_library = loaded_library_identity("libX11.so.")?;
+    let xnvctrl_library = loaded_library_identity("libXNVCtrl.so.")?;
+    let display_name = CString::new(format!(":{display_number}.{screen}")).map_err(|_| ())?;
+    // SAFETY: `display_name` is a live, NUL-terminated string and Xlib owns the result.
+    let display = unsafe { (x11.open_display)(display_name.as_ptr()) };
+    if display.is_null() {
+        return Err(());
+    }
+    let result = collect_nvcontrol_from_display(
+        &x11,
+        &nvcontrol,
+        display,
+        screen,
+        x11_library,
+        xnvctrl_library,
+    );
+    // SAFETY: Exactly pairs the successful XOpenDisplay call above.
+    let close_result = unsafe { (x11.close_display)(display) };
+    if close_result != 0 {
+        return Err(());
+    }
+    result
+}
+
+fn collect_nvcontrol_from_display(
+    x11: &X11Api,
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    screen: u16,
+    x11_library: String,
+    xnvctrl_library: String,
+) -> Result<NvControlLiveSnapshotV1, ()> {
+    let screen_i32 = c_int::from(screen);
+    let mut event_base = 0;
+    let mut error_base = 0;
+    // SAFETY: `display` is a live Xlib Display and all output pointers are valid.
+    let extension_present =
+        unsafe { (api.query_extension)(display, &mut event_base, &mut error_base) } != 0;
+    let mut major = 0;
+    let mut minor = 0;
+    let extension_version = if extension_present {
+        // SAFETY: Same live Display and valid output pointers as above.
+        let succeeded = unsafe { (api.query_version)(display, &mut major, &mut minor) } != 0;
+        if !succeeded || major < 0 || minor < 0 {
+            None
+        } else {
+            Some(NvControlExtensionVersionV1 {
+                major: u32::try_from(major).map_err(|_| ())?,
+                minor: u32::try_from(minor).map_err(|_| ())?,
+            })
+        }
+    } else {
+        None
+    };
+    // SAFETY: The authenticated screen index came from the same X server setup.
+    let x_screen_is_nvidia =
+        extension_present && unsafe { (api.is_nv_screen)(display, screen_i32) } != 0;
+
+    let mut snapshot = NvControlSnapshotV1 {
+        x11_library,
+        xnvctrl_library,
+        extension_present,
+        extension_version,
+        x_screen: u32::from(screen),
+        x_screen_is_nvidia,
+        display_targets: Vec::new(),
+        enabled_display_target_ids: Vec::new(),
+        gpu_targets: Vec::new(),
+    };
+    if !extension_present
+        || !x_screen_is_nvidia
+        || extension_version
+            .is_none_or(|version| (version.major, version.minor) < MIN_NVCONTROL_VERSION)
+    {
+        let digest = sha256_bytes(&serde_json::to_vec(&snapshot).map_err(|_| ())?);
+        return Ok(NvControlLiveSnapshotV1 {
+            observation: snapshot,
+            digest,
+        });
+    }
+
+    let display_target_ids = query_nvcontrol_target_list(
+        x11,
+        api,
+        display,
+        NV_CTRL_TARGET_TYPE_X_SCREEN,
+        screen_i32,
+        NV_CTRL_BINARY_DATA_DISPLAY_TARGETS,
+    )?;
+    let enabled_display_target_ids = query_nvcontrol_target_list(
+        x11,
+        api,
+        display,
+        NV_CTRL_TARGET_TYPE_X_SCREEN,
+        screen_i32,
+        NV_CTRL_BINARY_DATA_DISPLAYS_ENABLED_ON_XSCREEN,
+    )?;
+    snapshot.enabled_display_target_ids = enabled_display_target_ids
+        .into_iter()
+        .map(NvControlDisplayTargetIdV1::new)
+        .collect();
+    snapshot
+        .enabled_display_target_ids
+        .sort_by_key(|target| target.get());
+
+    for target_id in display_target_ids {
+        let target_i32 = c_int::try_from(target_id).map_err(|_| ())?;
+        let randr_output_xid = query_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_DISPLAY,
+            target_i32,
+            NV_CTRL_DISPLAY_RANDR_OUTPUT_ID,
+        )?
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+        let randr_name = query_nvcontrol_string_bytes(
+            x11,
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_DISPLAY,
+            target_i32,
+            NV_CTRL_STRING_DISPLAY_NAME_RANDR,
+        )?
+        .as_deref()
+        .and_then(output_name_from_bytes);
+        let enabled = query_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_DISPLAY,
+            target_i32,
+            NV_CTRL_DISPLAY_ENABLED,
+        )?
+        .and_then(|value| match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        });
+        let displayport_is_multistream = query_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_DISPLAY,
+            target_i32,
+            NV_CTRL_DISPLAYPORT_IS_MULTISTREAM,
+        )?
+        .and_then(|value| match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        });
+        snapshot
+            .display_targets
+            .push(NvControlDisplayTargetObservationV1 {
+                target_id: NvControlDisplayTargetIdV1::new(target_id),
+                randr_output_xid: crate::model::XrandrOutputXidV1::new(randr_output_xid),
+                randr_name,
+                enabled,
+                target_index_name: query_nvcontrol_string(
+                    x11,
+                    api,
+                    display,
+                    NV_CTRL_TARGET_TYPE_DISPLAY,
+                    target_i32,
+                    NV_CTRL_STRING_DISPLAY_NAME_TARGET_INDEX,
+                )?,
+                type_id_name: query_nvcontrol_string(
+                    x11,
+                    api,
+                    display,
+                    NV_CTRL_TARGET_TYPE_DISPLAY,
+                    target_i32,
+                    NV_CTRL_STRING_DISPLAY_NAME_TYPE_ID,
+                )?,
+                dp_guid: query_nvcontrol_string(
+                    x11,
+                    api,
+                    display,
+                    NV_CTRL_TARGET_TYPE_DISPLAY,
+                    target_i32,
+                    NV_CTRL_STRING_DISPLAY_NAME_DP_GUID,
+                )?,
+                edid_hash: query_nvcontrol_string(
+                    x11,
+                    api,
+                    display,
+                    NV_CTRL_TARGET_TYPE_DISPLAY,
+                    target_i32,
+                    NV_CTRL_STRING_DISPLAY_NAME_EDID_HASH,
+                )?,
+                displayport_is_multistream,
+            });
+    }
+    snapshot
+        .display_targets
+        .sort_by_key(|target| target.target_id.get());
+
+    let mut gpu_count = 0;
+    // SAFETY: GPU is the only target type queried by count; the live Display
+    // and output pointer satisfy XNVCTRLQueryTargetCount's ABI.
+    if unsafe { (api.query_target_count)(display, NV_CTRL_TARGET_TYPE_GPU, &mut gpu_count) } == 0 {
+        return Err(());
+    }
+    let gpu_count = usize::try_from(gpu_count).map_err(|_| ())?;
+    if gpu_count > MAX_OUTPUT_MAPPING_ITEMS_V1 {
+        return Err(());
+    }
+    for gpu_id in 0..gpu_count {
+        let gpu_i32 = c_int::try_from(gpu_id).map_err(|_| ())?;
+        let connected_display_target_ids = query_nvcontrol_target_list(
+            x11,
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_BINARY_DATA_DISPLAYS_CONNECTED_TO_GPU,
+        )?;
+        let pci_domain = required_nonnegative_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_PCI_DOMAIN,
+        )?;
+        let pci_bus = required_nonnegative_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_PCI_BUS,
+        )?;
+        let pci_device = required_nonnegative_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_PCI_DEVICE,
+        )?;
+        let pci_function = required_nonnegative_nvcontrol_int(
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_PCI_FUNCTION,
+        )?;
+        let canonical_pci_bdf =
+            canonical_nvcontrol_pci_bdf(pci_domain, pci_bus, pci_device, pci_function).ok_or(())?;
+        let uuid = query_nvcontrol_string(
+            x11,
+            api,
+            display,
+            NV_CTRL_TARGET_TYPE_GPU,
+            gpu_i32,
+            NV_CTRL_STRING_GPU_UUID,
+        )?
+        .filter(|value| valid_nvml_uuid(value))
+        .ok_or(())?;
+        let mut connected_display_target_ids = connected_display_target_ids
+            .into_iter()
+            .map(NvControlDisplayTargetIdV1::new)
+            .collect::<Vec<_>>();
+        connected_display_target_ids.sort_by_key(|target| target.get());
+        snapshot.gpu_targets.push(NvControlGpuTargetObservationV1 {
+            target_id: NvControlGpuTargetIdV1::new(u32::try_from(gpu_id).map_err(|_| ())?),
+            connected_display_target_ids,
+            pci_domain,
+            pci_bus,
+            pci_device,
+            pci_function,
+            canonical_pci_bdf,
+            uuid,
+        });
+    }
+    snapshot.gpu_targets.sort_by_key(|gpu| gpu.target_id.get());
+    let digest = sha256_bytes(&serde_json::to_vec(&snapshot).map_err(|_| ())?);
+    Ok(NvControlLiveSnapshotV1 {
+        observation: snapshot,
+        digest,
+    })
+}
+
+fn query_nvcontrol_int(
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    target_type: c_int,
+    target_id: c_int,
+    attribute: c_uint,
+) -> Result<Option<c_int>, ()> {
+    let mut value = 0;
+    // SAFETY: The Display is live, target IDs are bounded signed values, the
+    // display mask is unused for target attributes, and `value` is writable.
+    let succeeded = unsafe {
+        (api.query_target_attribute)(display, target_type, target_id, 0, attribute, &mut value)
+    } != 0;
+    Ok(succeeded.then_some(value))
+}
+
+fn required_nonnegative_nvcontrol_int(
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    target_type: c_int,
+    target_id: c_int,
+    attribute: c_uint,
+) -> Result<u32, ()> {
+    query_nvcontrol_int(api, display, target_type, target_id, attribute)?
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(())
+}
+
+fn query_nvcontrol_string(
+    x11: &X11Api,
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    target_type: c_int,
+    target_id: c_int,
+    attribute: c_uint,
+) -> Result<Option<String>, ()> {
+    query_nvcontrol_string_bytes(x11, api, display, target_type, target_id, attribute)?
+        .map(|bytes| {
+            if !bytes.iter().all(|byte| byte.is_ascii_graphic()) {
+                return Err(());
+            }
+            String::from_utf8(bytes).map_err(|_| ())
+        })
+        .transpose()
+}
+
+fn query_nvcontrol_string_bytes(
+    x11: &X11Api,
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    target_type: c_int,
+    target_id: c_int,
+    attribute: c_uint,
+) -> Result<Option<Vec<u8>>, ()> {
+    let mut pointer = std::ptr::null_mut();
+    // SAFETY: The Display is live and `pointer` is writable. Successful calls
+    // return Xmalloc-owned storage released with XFree below.
+    let succeeded = unsafe {
+        (api.query_target_string_attribute)(
+            display,
+            target_type,
+            target_id,
+            0,
+            attribute,
+            &mut pointer,
+        )
+    } != 0;
+    if !succeeded {
+        if !pointer.is_null() {
+            // SAFETY: Defensive release of any Xmalloc-owned pointer returned on failure.
+            unsafe { (x11.free)(pointer.cast()) };
+        }
+        return Ok(None);
+    }
+    if pointer.is_null() {
+        return Err(());
+    }
+    // SAFETY: XNVCTRL promises a NUL-terminated Xmalloc-owned string on success.
+    let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+    let value = if bytes.is_empty() || bytes.len() > MAX_NVCONTROL_STRING_BYTES_V1 {
+        Err(())
+    } else {
+        Ok(bytes.to_vec())
+    };
+    // SAFETY: Exactly releases the Xmalloc-owned string returned above.
+    unsafe { (x11.free)(pointer.cast()) };
+    value.map(Some)
+}
+
+fn query_nvcontrol_target_list(
+    x11: &X11Api,
+    api: &XNvCtrlApi,
+    display: *mut c_void,
+    target_type: c_int,
+    target_id: c_int,
+    attribute: c_uint,
+) -> Result<Vec<u32>, ()> {
+    let mut pointer = std::ptr::null_mut();
+    let mut length = 0;
+    // SAFETY: The Display is live and both output pointers are writable.
+    // Successful calls return Xmalloc-owned bytes released with XFree below.
+    let succeeded = unsafe {
+        (api.query_target_binary_data)(
+            display,
+            target_type,
+            target_id,
+            0,
+            attribute,
+            &mut pointer,
+            &mut length,
+        )
+    } != 0;
+    if !succeeded || pointer.is_null() {
+        if !pointer.is_null() {
+            // SAFETY: Defensive release of any Xmalloc-owned pointer returned on failure.
+            unsafe { (x11.free)(pointer.cast()) };
+        }
+        return Err(());
+    }
+    let maximum = (MAX_OUTPUT_MAPPING_ITEMS_V1 + 1) * size_of::<c_int>();
+    let decoded = match usize::try_from(length) {
+        Ok(length) if length >= size_of::<c_int>() && length <= maximum => {
+            // SAFETY: XNVCTRL reports exactly `length` readable bytes for this allocation.
+            let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+            decode_nvcontrol_target_list(bytes).map_err(|_| ())
+        }
+        _ => Err(()),
+    };
+    // SAFETY: Exactly releases the Xmalloc-owned binary result returned above.
+    unsafe { (x11.free)(pointer.cast()) };
+    decoded
+}
+
+fn loaded_library_identity(prefix: &str) -> Result<String, ()> {
+    let maps = std::fs::read_to_string("/proc/self/maps").map_err(|_| ())?;
+    let identities = maps
+        .lines()
+        .filter_map(|line| line.split_ascii_whitespace().last())
+        .filter_map(|path| Path::new(path).file_name()?.to_str())
+        .filter(|name| name.starts_with(prefix) && valid_visible_ascii(name, 96))
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    (identities.len() == 1)
+        .then(|| identities.into_iter().next())
+        .flatten()
+        .ok_or(())
 }
 
 #[derive(Debug)]
@@ -1138,6 +1927,21 @@ fn collect_drm_snapshot() -> Result<DrmSnapshotV1, ()> {
     }
     let digest = sha256_bytes(&serde_json::to_vec(&connectors).map_err(|_| ())?);
     Ok(DrmSnapshotV1 { connectors, digest })
+}
+
+fn drm_diagnostic_snapshot(snapshot: DrmSnapshotV1) -> DrmDiagnosticSnapshotV1 {
+    DrmDiagnosticSnapshotV1 {
+        snapshot_sha256: snapshot.digest,
+        connector_count: u32::try_from(snapshot.connectors.len()).unwrap_or(u32::MAX),
+        active_connector_count: u32::try_from(
+            snapshot
+                .connectors
+                .iter()
+                .filter(|connector| connector.connected && connector.enabled)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+    }
 }
 
 fn collect_drm_card(
@@ -1479,9 +2283,13 @@ fn validate_observation(
 ) -> Result<(), OutputMappingFailureV1> {
     if !bounded(&observation.randr_outputs)
         || !bounded(&observation.randr_providers)
-        || !bounded(&observation.drm_connectors)
         || !bounded(&observation.nvml_devices)
         || !valid_output_name(&observation.requested_output_name)
+        || observation.token_before.randr_event_count > MAX_RANDR_EVENTS
+        || observation.token_after.randr_event_count > MAX_RANDR_EVENTS
+        || !valid_nvcontrol_snapshot(&observation.nvcontrol)
+        || !valid_drm_diagnostic(observation.drm_diagnostic_before.as_ref())
+        || !valid_drm_diagnostic(observation.drm_diagnostic_after.as_ref())
     {
         return Err(invalid_observation());
     }
@@ -1492,10 +2300,20 @@ fn validate_observation(
             || !output_ids.insert(output.output_xid)
             || !valid_output_name(&output.name)
             || !bounded(&output.clone_output_xids)
+            || !bounded(&output.crtc_output_xids)
             || output
                 .clone_output_xids
                 .iter()
                 .any(|candidate| candidate.get() == 0)
+            || output
+                .crtc_output_xids
+                .iter()
+                .any(|candidate| candidate.get() == 0)
+            || !unique_xrandr_outputs(&output.clone_output_xids)
+            || !unique_xrandr_outputs(&output.crtc_output_xids)
+            || output.crtc_xid.get() == 0
+            || output.mode_xid.get() == 0
+            || !valid_timing(&output.timing)
         {
             return Err(invalid_observation());
         }
@@ -1516,35 +2334,125 @@ fn validate_observation(
                 .associated_provider_xids
                 .iter()
                 .any(|xid| xid.get() == 0)
+            || !unique_xrandr_crtcs(&provider.crtc_xids)
+            || !unique_xrandr_outputs(&provider.output_xids)
+            || !unique_xrandr_providers(&provider.associated_provider_xids)
         {
             return Err(invalid_observation());
         }
     }
 
-    let mut connector_ids = HashSet::with_capacity(observation.drm_connectors.len());
-    for connector in &observation.drm_connectors {
-        if connector.connector_id.get() == 0
-            || !connector_ids.insert(connector.connector_id)
-            || connector.connector_type_id == 0
-            || !valid_visible_ascii(&connector.connector_name, MAX_CONNECTOR_NAME_BYTES_V1)
-            || !bounded(&connector.canonical_pci_bdfs)
-            || connector
-                .canonical_pci_bdfs
-                .iter()
-                .any(|bdf| !valid_canonical_pci_bdf(bdf))
-            || connector.enabled && !valid_timing(&connector.active_timing)
+    let mut nvml_pairs = HashSet::with_capacity(observation.nvml_devices.len());
+    let mut nvml_bdfs = HashSet::with_capacity(observation.nvml_devices.len());
+    let mut nvml_uuids = HashSet::with_capacity(observation.nvml_devices.len());
+    for device in &observation.nvml_devices {
+        if !valid_canonical_pci_bdf(&device.nvml_pci_bdf)
+            || !valid_nvml_uuid(&device.nvml_uuid)
+            || !nvml_pairs.insert((&device.nvml_pci_bdf, &device.nvml_uuid))
+            || !nvml_bdfs.insert(&device.nvml_pci_bdf)
+            || !nvml_uuids.insert(&device.nvml_uuid)
         {
             return Err(invalid_observation());
         }
-    }
-
-    if observation.nvml_devices.iter().any(|device| {
-        !valid_canonical_pci_bdf(&device.nvml_pci_bdf) || !valid_nvml_uuid(&device.nvml_uuid)
-    }) {
-        return Err(invalid_observation());
     }
 
     Ok(())
+}
+
+fn valid_nvcontrol_snapshot(snapshot: &NvControlSnapshotV1) -> bool {
+    if !valid_library_identity(&snapshot.x11_library, "libX11.so.")
+        || !valid_library_identity(&snapshot.xnvctrl_library, "libXNVCtrl.so.")
+        || snapshot.x_screen > u32::from(u16::MAX)
+        || !bounded(&snapshot.display_targets)
+        || !bounded(&snapshot.enabled_display_target_ids)
+        || !bounded(&snapshot.gpu_targets)
+    {
+        return false;
+    }
+
+    let mut display_ids = HashSet::with_capacity(snapshot.display_targets.len());
+    for target in &snapshot.display_targets {
+        if !display_ids.insert(target.target_id)
+            || target
+                .randr_name
+                .as_ref()
+                .is_some_and(|name| !valid_output_name(name))
+            || target
+                .target_index_name
+                .as_deref()
+                .is_some_and(|value| !valid_nvcontrol_string(value))
+            || target
+                .type_id_name
+                .as_deref()
+                .is_some_and(|value| !valid_nvcontrol_string(value))
+            || target
+                .dp_guid
+                .as_deref()
+                .is_some_and(|value| !valid_nvcontrol_string(value))
+            || target
+                .edid_hash
+                .as_deref()
+                .is_some_and(|value| !valid_nvcontrol_string(value))
+        {
+            return false;
+        }
+    }
+    let mut enabled_ids = HashSet::with_capacity(snapshot.enabled_display_target_ids.len());
+    if snapshot
+        .enabled_display_target_ids
+        .iter()
+        .any(|target| !enabled_ids.insert(*target))
+    {
+        return false;
+    }
+
+    let mut gpu_ids = HashSet::with_capacity(snapshot.gpu_targets.len());
+    for gpu in &snapshot.gpu_targets {
+        let mut connected_ids = HashSet::with_capacity(gpu.connected_display_target_ids.len());
+        if !gpu_ids.insert(gpu.target_id)
+            || !bounded(&gpu.connected_display_target_ids)
+            || gpu
+                .connected_display_target_ids
+                .iter()
+                .any(|target| !connected_ids.insert(*target))
+            || canonical_nvcontrol_pci_bdf(
+                gpu.pci_domain,
+                gpu.pci_bus,
+                gpu.pci_device,
+                gpu.pci_function,
+            )
+            .as_deref()
+                != Some(gpu.canonical_pci_bdf.as_str())
+            || !valid_nvml_uuid(&gpu.uuid)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_drm_diagnostic(diagnostic: Option<&DrmDiagnosticSnapshotV1>) -> bool {
+    diagnostic.is_none_or(|diagnostic| {
+        usize::try_from(diagnostic.connector_count).is_ok_and(|count| {
+            count <= MAX_OUTPUT_MAPPING_ITEMS_V1
+                && diagnostic.active_connector_count <= diagnostic.connector_count
+        })
+    })
+}
+
+fn unique_xrandr_outputs(items: &[crate::model::XrandrOutputXidV1]) -> bool {
+    let mut identifiers = HashSet::with_capacity(items.len());
+    items.iter().all(|item| identifiers.insert(*item))
+}
+
+fn unique_xrandr_crtcs(items: &[crate::model::XrandrCrtcXidV1]) -> bool {
+    let mut identifiers = HashSet::with_capacity(items.len());
+    items.iter().all(|item| identifiers.insert(*item))
+}
+
+fn unique_xrandr_providers(items: &[crate::model::XrandrProviderXidV1]) -> bool {
+    let mut identifiers = HashSet::with_capacity(items.len());
+    items.iter().all(|item| identifiers.insert(*item))
 }
 
 fn validate_selected_output(
@@ -1557,7 +2465,14 @@ fn validate_selected_output(
             Some(1),
         ));
     }
-    if !output.clone_output_xids.is_empty() {
+    if output.crtc_output_xids.len() != 1
+        || output
+            .crtc_output_xids
+            .iter()
+            .filter(|candidate| **candidate == output.output_xid)
+            .count()
+            != 1
+    {
         return Err(failure(
             OutputMappingReasonV1::UnsupportedTopology,
             OutputMappingRelationV1::RequestedOutput,
@@ -1577,24 +2492,6 @@ fn validate_selected_output(
         return Err(failure(
             OutputMappingReasonV1::ConflictingFacts,
             OutputMappingRelationV1::RequestedOutput,
-            Some(1),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_selected_connector(
-    connector: &DrmConnectorObservationV1,
-) -> Result<(), OutputMappingFailureV1> {
-    if !connector.connected
-        || !connector.enabled
-        || !connector.physical
-        || connector.mst
-        || connector.leased
-    {
-        return Err(failure(
-            OutputMappingReasonV1::UnsupportedTopology,
-            OutputMappingRelationV1::DrmConnector,
             Some(1),
         ));
     }
@@ -1715,7 +2612,8 @@ fn candidates_from_outputs(outputs: &[RandrOutputObservationV1]) -> Vec<OutputNa
                 && !output.non_desktop
                 && output.crtc_xid.get() != 0
                 && output.mode_xid.get() != 0
-                && output.clone_output_xids.is_empty()
+                && output.crtc_output_xids.len() == 1
+                && output.crtc_output_xids[0] == output.output_xid
         })
         .map(|output| output.name.clone())
         .collect::<Vec<_>>();
@@ -1762,12 +2660,37 @@ fn valid_visible_ascii(value: &str, maximum: usize) -> bool {
     !value.is_empty() && value.len() <= maximum && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
+fn valid_library_identity(value: &str, prefix: &str) -> bool {
+    value.starts_with(prefix)
+        && value.len() <= 96
+        && value.strip_prefix(prefix).is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+}
+
+fn valid_nvcontrol_string(value: &str) -> bool {
+    valid_visible_ascii(value, MAX_NVCONTROL_STRING_BYTES_V1)
+}
+
 fn valid_nvml_uuid(value: &str) -> bool {
     value.starts_with("GPU-")
         && value.len() < MAX_NVML_UUID_BYTES_V1
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn canonical_nvcontrol_pci_bdf(
+    domain: u32,
+    bus: u32,
+    device: u32,
+    function: u32,
+) -> Option<String> {
+    (bus <= u32::from(u8::MAX) && device <= u32::from(u8::MAX) && function <= 7)
+        .then(|| format!("{domain:08x}:{bus:02x}:{device:02x}.{function:x}"))
 }
 
 fn valid_canonical_pci_bdf(value: &str) -> bool {
@@ -1878,7 +2801,7 @@ mod collector_tests {
             .join("tests/fixtures/host02-output-topologies.json");
 
         let stable =
-            collect_fixture_output_topology(&fixture, "namespace-disjoint-unique", Some("DP-0"))
+            collect_fixture_output_topology(&fixture, "nvcontrol-mst-dp-0-3", Some("DP-0.3"))
                 .expect("stable fixture collection must succeed");
         let selected = stable
             .topology
@@ -1886,13 +2809,13 @@ mod collector_tests {
             .map(prove_output_gpu_mapping)
             .expect("an explicit selection must carry a topology")
             .expect("the full unequal-ID relation must pass");
-        assert_eq!(selected.output_name.display.as_deref(), Some("DP-0"));
+        assert_eq!(selected.output_name.display.as_deref(), Some("DP-0.3"));
         assert_ne!(
             selected.randr_output_xid.get(),
-            selected.drm_connector_id.get()
+            selected.nvcontrol_display_target_id.get()
         );
 
-        let raced = collect_fixture_output_topology(&fixture, "topology-changed", Some("DP-0"))
+        let raced = collect_fixture_output_topology(&fixture, "topology-changed", Some("DP-0.3"))
             .expect("the collector must preserve a changed closing token");
         let failure = raced
             .topology

@@ -274,8 +274,7 @@ fn host02_mapping_exact_name_origin_timing_and_mst_round_trip() {
     topology.randr_outputs[0].name = topology.requested_output_name.clone();
     topology.randr_outputs[0].origin_x = -7680;
     topology.randr_outputs[0].origin_y = -2160;
-    topology.nvcontrol.display_targets[0].randr_name =
-        Some(topology.requested_output_name.clone());
+    topology.nvcontrol.display_targets[0].randr_name = Some(topology.requested_output_name.clone());
 
     let selected = prove_output_gpu_mapping(&topology).expect("complete relation must pass");
     assert_eq!(selected.output_name.hex, "44502d302ece94");

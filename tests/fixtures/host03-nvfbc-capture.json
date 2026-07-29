@@ -2,11 +2,7 @@
   "schema": "replaydesktop.host03-nvfbc-capture-fixtures.v1",
   "selected_output_fixture": "host02-output-topologies.json",
   "selected_output_case": "nvcontrol-mst-dp-0-3",
-  "cases": [
-    {
-      "id": "valid-zero-copy",
-      "behavior": "normal",
-      "capture": {
+  "base_capture": {
         "schema": "replaydesktop.nvfbc-capture-primitives.v1",
         "provider": "fixture",
         "source": {
@@ -93,6 +89,455 @@
           "library-unloaded"
         ],
         "failure": null
+  },
+  "cases": [
+    {
+      "id": "valid-zero-copy",
+      "behavior": "normal",
+      "capture_patch": {}
+    },
+    {
+      "id": "valid-device-copy",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "lease_surface": "surface-device-copy-002",
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "same-gpu-device-copy",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-device-copy-002",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "valid-conversion",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "pixel_format": "yuv444p",
+          "lease_surface": "surface-conversion-002",
+          "planes": [
+            {
+              "index": 0,
+              "offset_bytes": 0,
+              "stride_bytes": 3840,
+              "size_bytes": 8294400
+            },
+            {
+              "index": 1,
+              "offset_bytes": 8294400,
+              "stride_bytes": 3840,
+              "size_bytes": 8294400
+            },
+            {
+              "index": 2,
+              "offset_bytes": 16588800,
+              "stride_bytes": 3840,
+              "size_bytes": 8294400
+            }
+          ],
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "conversion",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-conversion-002",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "yuv444p",
+              "peer_access": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "source-mismatch",
+      "behavior": "normal",
+      "capture_patch": {
+        "source": {
+          "identity": "fixture-nvfbc-api-1.7"
+        }
+      }
+    },
+    {
+      "id": "api-mismatch",
+      "behavior": "normal",
+      "capture_patch": {
+        "source": {
+          "api_version": 17
+        }
+      }
+    },
+    {
+      "id": "alternate-output",
+      "behavior": "normal",
+      "capture_patch": {
+        "binding": {
+          "output_name": {
+            "hex": "44502d302e34",
+            "display": "DP-0.4"
+          },
+          "randr_output_xid": 74
+        }
+      }
+    },
+    {
+      "id": "alternate-gpu",
+      "behavior": "normal",
+      "capture_patch": {
+        "binding": {
+          "gpu_pci_bdf": "00000000:02:00.0",
+          "gpu_uuid": "GPU-11111111-2222-3333-4444-555555555555"
+        }
+      }
+    },
+    {
+      "id": "false-alias",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "lease_surface": "surface-lease-002"
+        }
+      }
+    },
+    {
+      "id": "peer-without-access",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "lease_surface": "surface-peer-002",
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "peer-copy",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-peer-002",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:02:00.0",
+                "gpu_uuid": "GPU-11111111-2222-3333-4444-555555555555"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "host-staged",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "lease_surface": "surface-host-002",
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "host-staged",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-host-002",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "unknown-edge",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "unknown",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-capture-001",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "disconnected-edge",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "same-gpu-device-copy",
+              "from_surface": "surface-disconnected-999",
+              "to_surface": "surface-capture-001",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "malformed-frame",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "pitch_bytes": 1024
+        }
+      }
+    },
+    {
+      "id": "stale-frame",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "is_new_frame": false,
+          "timestamp_us": 0
+        }
+      }
+    },
+    {
+      "id": "cursor-mismatch",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "cursor_included": false,
+          "cursor_mode": "nvfbc-composited"
+        }
+      }
+    },
+    {
+      "id": "required-post-processing",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "required_post_processing": true
+        }
+      }
+    },
+    {
+      "id": "cleanup-missing",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "session-created",
+          "frame-grabbed"
+        ]
+      }
+    },
+    {
+      "id": "cleanup-duplicate",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "context-released",
+          "context-released",
+          "library-unloaded"
+        ]
+      }
+    },
+    {
+      "id": "cleanup-out-of-order",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "session-created",
+          "context-released",
+          "session-destroyed",
+          "library-unloaded"
+        ]
+      }
+    },
+    {
+      "id": "fail-after-library",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": ["library-loaded", "library-unloaded"],
+        "failure": "BUSY"
+      }
+    },
+    {
+      "id": "fail-after-status",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": ["library-loaded", "status-queried", "library-unloaded"],
+        "failure": "BUSY"
+      }
+    },
+    {
+      "id": "fail-after-context",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "context-released",
+          "library-unloaded"
+        ],
+        "failure": "BUSY"
+      }
+    },
+    {
+      "id": "fail-after-session",
+      "behavior": "normal",
+      "capture_patch": {
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "session-created",
+          "session-destroyed",
+          "context-released",
+          "library-unloaded"
+        ],
+        "failure": "BUSY"
+      }
+    },
+    {
+      "id": "fail-after-frame",
+      "behavior": "normal",
+      "capture_patch": {
+        "failure": "BUSY"
+      }
+    },
+    {
+      "id": "timeout",
+      "behavior": "timeout",
+      "capture_patch": {}
+    },
+    {
+      "id": "child-crash",
+      "behavior": "child-crash",
+      "capture_patch": {}
+    },
+    {
+      "id": "malformed-response",
+      "behavior": "malformed-response",
+      "capture_patch": {}
+    },
+    {
+      "id": "injected-verdict",
+      "behavior": "normal",
+      "capture_patch": {
+        "verdict": "fixture-verdict"
+      }
+    },
+    {
+      "id": "injected-ledger",
+      "behavior": "normal",
+      "capture_patch": {
+        "copy_ledger": "fixture-ledger-total"
+      }
+    },
+    {
+      "id": "injected-cleanup-result",
+      "behavior": "normal",
+      "capture_patch": {
+        "cleanup_complete": "fixture-cleanup-complete"
+      }
+    },
+    {
+      "id": "pointer-sentinel",
+      "behavior": "normal",
+      "capture_patch": {
+        "frame": {
+          "source_surface": "0x7ffdeadbeef",
+          "lease_surface": "0x7ffdeadbeef"
+        }
+      }
+    },
+    {
+      "id": "source-path-sentinel",
+      "behavior": "normal",
+      "capture_patch": {
+        "source_path": "/private/operator/NvFBC.h"
+      }
+    },
+    {
+      "id": "fallback-xcb",
+      "behavior": "normal",
+      "capture_patch": {
+        "backend": "xcb"
+      }
+    },
+    {
+      "id": "fallback-pipewire",
+      "behavior": "normal",
+      "capture_patch": {
+        "backend": "pipewire"
+      }
+    },
+    {
+      "id": "fallback-software",
+      "behavior": "normal",
+      "capture_patch": {
+        "backend": "software"
       }
     }
   ]

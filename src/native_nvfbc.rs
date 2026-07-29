@@ -145,7 +145,16 @@ pub fn evaluate_capture_observation(
         || observation.lifecycle.len() > MAX_CAPTURE_LIFECYCLE_EVENTS_V1
         || !valid_provider_source(&observation)
     {
-        return base(CaptureFailureV1::SourceMismatch);
+        let mut rejected = base(CaptureFailureV1::SourceMismatch);
+        rejected.provider = CaptureProviderKindV1::Fixture;
+        rejected.source = CaptureSourceEvidenceV1 {
+            status: CaptureSourceStatusV1::Fixture,
+            identity: Some("fixture-nvfbc-api-1.8".to_owned()),
+            api_version: Some(18),
+            nvfbc_header_sha256: None,
+            cuda_header_sha256: None,
+        };
+        return rejected;
     }
     if observation.failure.is_some() {
         return base(
@@ -184,6 +193,14 @@ pub fn evaluate_capture_observation(
     let Some(copy_ledger) = derive_copy_ledger(frame) else {
         return base(CaptureFailureV1::InvalidCopyLedger);
     };
+    let Some(first_edge) = copy_ledger.edges.first() else {
+        return base(CaptureFailureV1::InvalidCopyLedger);
+    };
+    if first_edge.from_gpu.pci_bdf != binding.gpu_pci_bdf
+        || first_edge.from_gpu.gpu_uuid != binding.gpu_uuid
+    {
+        return base(CaptureFailureV1::BindingMismatch);
+    }
 
     CapturePathEvidenceV1 {
         schema: NVFBC_CAPTURE_SCHEMA_V1.to_owned(),
@@ -438,7 +455,14 @@ fn derive_copy_ledger(frame: &CaptureFrameObservationV1) -> Option<CopyLedgerV1>
         return None;
     }
     let mut seen = HashSet::with_capacity(frame.edges.len());
+    let mut visited_surfaces = HashSet::with_capacity(frame.edges.len() + 1);
+    visited_surfaces.insert(frame.source_surface.as_str());
     let mut previous_surface = frame.source_surface.as_str();
+    let mut previous_format = frame
+        .edges
+        .first()
+        .map(|edge| edge.input_format)
+        .expect("non-empty copy ledger has a first edge");
     let mut zero_copy_edges = 0_u16;
     let mut device_copy_edges = 0_u16;
     let mut peer_copy_edges = 0_u16;
@@ -446,12 +470,18 @@ fn derive_copy_ledger(frame: &CaptureFrameObservationV1) -> Option<CopyLedgerV1>
     for (index, edge) in frame.edges.iter().enumerate() {
         if edge.sequence != index as u16
             || edge.from_surface != previous_surface
+            || edge.input_format != previous_format
             || !valid_edge(edge)
             || !seen.insert((
                 edge.sequence,
                 edge.from_surface.as_str(),
                 edge.to_surface.as_str(),
             ))
+        {
+            return None;
+        }
+        if edge.kind != CopyEdgeKindV1::ZeroCopy
+            && !visited_surfaces.insert(edge.to_surface.as_str())
         {
             return None;
         }
@@ -463,8 +493,9 @@ fn derive_copy_ledger(frame: &CaptureFrameObservationV1) -> Option<CopyLedgerV1>
             CopyEdgeKindV1::HostStaged | CopyEdgeKindV1::Unknown => return None,
         }
         previous_surface = &edge.to_surface;
+        previous_format = edge.output_format;
     }
-    if previous_surface != frame.lease_surface {
+    if previous_surface != frame.lease_surface || previous_format != frame.pixel_format {
         return None;
     }
     Some(CopyLedgerV1 {

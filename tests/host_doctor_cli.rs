@@ -2415,6 +2415,30 @@ fn host03_diagnostic_cursor_postprocess_and_partial_cleanup_are_explicit() {
     assert_eq!(payload["lease"]["cursor_mode"], "nvfbc-composited");
     assert_eq!(payload["nvenc_boundary"], "unproven");
 
+    for (case, pixel_format, device_copies, conversions) in [
+        ("valid-device-copy", "nv12", 1, 0),
+        ("valid-conversion", "yuv444p", 0, 1),
+    ] {
+        let evidence = directory.join(format!("{case}.json"));
+        let output = diagnose_host03(case, &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        let capture = extension_payload(extension(&envelope, "nvfbc-capture.v1"));
+        assert_eq!(capture["admission"], "unproven", "case {case}");
+        assert_eq!(
+            capture["lease"]["pixel_format"], pixel_format,
+            "case {case}"
+        );
+        assert_eq!(
+            capture["copy_ledger"]["device_copy_edges"], device_copies,
+            "case {case}"
+        );
+        assert_eq!(
+            capture["copy_ledger"]["conversion_edges"], conversions,
+            "case {case}"
+        );
+    }
+
     for case in [
         "fail-after-library",
         "fail-after-status",
@@ -2490,16 +2514,23 @@ fn host03_diagnostic_worker_and_secrecy_boundaries_remain_private() {
             "fixture-verdict",
             "fixture-ledger-total",
             "fixture-cleanup-complete",
-            "xcb",
-            "pipewire",
-            "software",
         ] {
             assert!(
-                !persisted.to_ascii_lowercase().contains(forbidden),
+                !persisted
+                    .to_ascii_lowercase()
+                    .contains(&forbidden.to_ascii_lowercase()),
                 "case {case} leaked {forbidden}"
             );
         }
         let envelope = read_envelope(&evidence);
+        let capture_payload =
+            extension_payload(extension(&envelope, "nvfbc-capture.v1")).to_string();
+        for forbidden_backend in ["xcb", "pipewire", "software"] {
+            assert!(
+                !capture_payload.contains(forbidden_backend),
+                "case {case} persisted fallback backend {forbidden_backend}"
+            );
+        }
         assert_eq!(
             extension(&envelope, "selected-output.v1").status,
             G0ExtensionStatusV1::Pass,

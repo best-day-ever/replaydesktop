@@ -872,7 +872,10 @@ fn fixture_nvfbc_worker(
 
     match case.behavior {
         Host03FixtureBehavior::Normal => {
-            let capture = case.capture.clone().ok_or(WorkerRequestError)?;
+            let mut capture = fixture.base_capture.clone();
+            overlay_fixture_json(&mut capture, &case.capture_patch);
+            let capture: crate::model::CapturePrimitiveObservationV1 =
+                serde_json::from_value(capture).map_err(|_| WorkerRequestError)?;
             let provider = crate::native_nvfbc::FixtureCaptureProvider::new(capture);
             let capture = crate::native_nvfbc::CaptureProvider::observe(&provider);
             normal_worker_output(
@@ -904,6 +907,21 @@ fn fixture_nvfbc_worker(
             stderr: String::new(),
             exit_code: 0,
         }),
+    }
+}
+
+fn overlay_fixture_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
+    match (base, patch) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(patch)) => {
+            for (key, patch_value) in patch {
+                if let Some(base_value) = base.get_mut(key) {
+                    overlay_fixture_json(base_value, patch_value);
+                } else {
+                    base.insert(key.clone(), patch_value.clone());
+                }
+            }
+        }
+        (base, patch) => *base = patch.clone(),
     }
 }
 
@@ -1040,6 +1058,7 @@ struct Host03FixtureDocument {
     schema: String,
     selected_output_fixture: String,
     selected_output_case: String,
+    base_capture: serde_json::Value,
     cases: Vec<Host03FixtureCase>,
 }
 
@@ -1048,7 +1067,8 @@ struct Host03FixtureDocument {
 struct Host03FixtureCase {
     id: String,
     behavior: Host03FixtureBehavior,
-    capture: Option<crate::model::CapturePrimitiveObservationV1>,
+    #[serde(default)]
+    capture_patch: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

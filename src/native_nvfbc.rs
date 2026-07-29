@@ -494,3 +494,97 @@ fn grab_failure(status: crate::model::CaptureGrabStatusV1) -> CaptureFailureV1 {
         crate::model::CaptureGrabStatusV1::ApiMismatch => CaptureFailureV1::ApiMismatch,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host03_no_source_provider_reports_compiled_gate_unavailable() {
+        let source = compiled_capture_source();
+        assert_eq!(source.status, CaptureSourceStatusV1::Unavailable);
+        assert_eq!(source.api_version, None);
+        assert_eq!(source.nvfbc_header_sha256, None);
+        assert_eq!(source.cuda_header_sha256, None);
+        assert_eq!(
+            LiveUnavailableCaptureProvider.observe().failure,
+            Some(CaptureFailureV1::SourceUnavailable)
+        );
+    }
+
+    #[test]
+    fn host03_source_abi_fixture_names_every_future_native_boundary() {
+        assert_eq!(
+            nvfbc_abi_contract_names(),
+            &[
+                "NVFBC_API_FUNCTION_LIST",
+                "NVFBC_CREATE_HANDLE_PARAMS",
+                "NVFBC_GET_STATUS_PARAMS",
+                "NVFBC_BIND_CONTEXT_PARAMS",
+                "NVFBC_CREATE_CAPTURE_SESSION_PARAMS",
+                "NVFBC_TOCUDA_SETUP_PARAMS",
+                "NVFBC_TOCUDA_GRAB_FRAME_PARAMS",
+                "NVFBC_FRAME_GRAB_INFO",
+                "NVFBC_DESTROY_CAPTURE_SESSION_PARAMS",
+                "NVFBC_RELEASE_CONTEXT_PARAMS",
+                "NVFBC_DESTROY_HANDLE_PARAMS",
+                "CUcontext",
+                "CUdeviceptr",
+            ]
+        );
+    }
+
+    #[test]
+    fn host03_cleanup_partial_acquisitions_unwind_once_in_reverse_order() {
+        use CaptureLifecycleEventV1::*;
+        for events in [
+            vec![LibraryLoaded, LibraryUnloaded],
+            vec![LibraryLoaded, StatusQueried, LibraryUnloaded],
+            vec![
+                LibraryLoaded,
+                StatusQueried,
+                ContextBound,
+                ContextReleased,
+                LibraryUnloaded,
+            ],
+            vec![
+                LibraryLoaded,
+                StatusQueried,
+                ContextBound,
+                SessionCreated,
+                SessionDestroyed,
+                ContextReleased,
+                LibraryUnloaded,
+            ],
+            FULL_LIFECYCLE.to_vec(),
+        ] {
+            let cleanup = derive_cleanup(&events);
+            assert!(cleanup.complete, "proper reverse cleanup: {events:?}");
+            assert!(valid_cleanup_ledger(&cleanup));
+        }
+    }
+
+    #[test]
+    fn host03_cleanup_duplicate_or_out_of_order_release_is_uncertain() {
+        use CaptureLifecycleEventV1::*;
+        for events in [
+            vec![LibraryLoaded, LibraryUnloaded, LibraryUnloaded],
+            vec![
+                LibraryLoaded,
+                ContextBound,
+                LibraryUnloaded,
+                ContextReleased,
+            ],
+            vec![
+                LibraryLoaded,
+                ContextBound,
+                ContextReleased,
+                ContextReleased,
+                LibraryUnloaded,
+            ],
+        ] {
+            let cleanup = derive_cleanup(&events);
+            assert!(!cleanup.complete, "invalid cleanup: {events:?}");
+        }
+    }
+}

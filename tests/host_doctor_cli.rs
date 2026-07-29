@@ -77,6 +77,10 @@ fn host02_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host02-output-topologies.json")
 }
 
+fn host03_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host03-nvfbc-capture.json")
+}
+
 fn pre_reboot_archive_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/validation/g0/pre-reboot")
 }
@@ -168,6 +172,16 @@ fn diagnose_host02(
         ])
         .output()
         .expect("doctor process must launch")
+}
+
+fn diagnose_host03(case: &str, evidence: &Path, timeout_ms: u64) -> Output {
+    diagnose_host02(
+        &host03_fixture(),
+        case,
+        Some("DP-0.3"),
+        evidence,
+        timeout_ms,
+    )
 }
 
 fn run(evidence: &Path, timeout_ms: u64) -> Output {
@@ -2220,4 +2234,124 @@ fn host02_operator_docs_cover_discovery_selection_and_honest_blockers() {
             "operator docs missing {required}"
         );
     }
+}
+
+#[test]
+fn host03_contract_derives_pointer_free_lease_copy_and_cleanup_evidence() {
+    let directory = temp_dir("host03-contract");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_host03("valid-zero-copy", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+
+    let envelope = read_envelope(&evidence);
+    let capture = extension(&envelope, "nvfbc-capture.v1");
+    assert_eq!(capture.status, G0ExtensionStatusV1::Unproven);
+    let payload = extension_payload(capture);
+    assert_eq!(payload["schema"], "replaydesktop.nvfbc-capture.v1");
+    assert_eq!(payload["provider"], "fixture");
+    assert_eq!(payload["admission"], "unproven");
+    assert_eq!(payload["lease"]["frame_sequence"], 42);
+    assert_eq!(payload["lease"]["new_frame"], true);
+    assert_eq!(payload["copy_ledger"]["zero_copy_edges"], 1);
+    assert_eq!(payload["copy_ledger"]["device_copy_edges"], 0);
+    assert_eq!(payload["copy_ledger"]["host_staged_edges"], 0);
+    assert_eq!(payload["cleanup"]["complete"], true);
+    assert_eq!(payload["nvenc_boundary"], "unproven");
+
+    let persisted = std::fs::read_to_string(&evidence).expect("evidence must be UTF-8");
+    for forbidden in ["0x", "pointer", "raw_frame", "source_path"] {
+        assert!(
+            !persisted.contains(forbidden),
+            "capture evidence leaked forbidden material: {forbidden}"
+        );
+    }
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host03_fixture_tracer_crosses_selected_output_worker_and_readback() {
+    let directory = temp_dir("host03-tracer");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_host03("valid-zero-copy", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+    let result = stdout_json(&output);
+    assert_eq!(result["provenance"], "diagnostic");
+    assert_eq!(result["status"], "fail");
+
+    let envelope = read_envelope(&evidence);
+    assert_eq!(
+        extension(&envelope, "selected-output.v1").status,
+        G0ExtensionStatusV1::Pass
+    );
+    assert_eq!(
+        extension(&envelope, "nvfbc-capture.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+    assert_eq!(
+        extension(&envelope, "nvenc-tuples.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+    let payload = extension_payload(extension(&envelope, "nvfbc-capture.v1"));
+    assert_eq!(payload["binding"]["randr_output_xid"], 73);
+    assert_eq!(
+        payload["binding"]["gpu_uuid"],
+        "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+    );
+    assert_eq!(
+        payload["binding"]["topology_token"],
+        extension_payload(extension(&envelope, "selected-output.v1"))["topology_token"]
+    );
+
+    let verified = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--run-id",
+            result["run_id"].as_str().expect("run ID"),
+            "--require-host02",
+            "pass",
+            "--require-host03",
+            "unproven",
+            "--require-host04",
+            "unproven",
+            "--validate-extension",
+            "nvfbc-capture.v1",
+        ])
+        .output()
+        .expect("verify process must launch");
+    assert_eq!(verified.status.code(), Some(0));
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn nvfbc_extension_rejects_injected_verdict_after_digest_rewrite() {
+    let directory = temp_dir("host03-extension-injection");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_host03("valid-zero-copy", &evidence, 500);
+    assert_eq!(output.status.code(), Some(2));
+    let run_id = stdout_json(&output)["run_id"]
+        .as_str()
+        .expect("run ID")
+        .to_owned();
+
+    let mut document = read_json(&evidence);
+    let capture = document["extensions"]
+        .as_array_mut()
+        .expect("extensions array")
+        .iter_mut()
+        .find(|extension| extension["id"] == "nvfbc-capture.v1")
+        .expect("capture extension");
+    capture["payload"]["verdict"] = json!("pass");
+    let encoded =
+        serde_json::to_vec(&capture["payload"]).expect("mutated payload must serialize");
+    capture["payload_sha256"] = json!(replay_host_doctor::sha256_bytes(&encoded));
+    std::fs::write(
+        &evidence,
+        serde_json::to_vec(&document).expect("evidence must serialize"),
+    )
+    .expect("evidence must be writable");
+
+    assert_private_error(&verify(&evidence, &run_id), 74, "EVIDENCE_PERSISTENCE");
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }

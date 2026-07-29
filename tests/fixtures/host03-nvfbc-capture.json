@@ -1,0 +1,100 @@
+{
+  "schema": "replaydesktop.host03-nvfbc-capture-fixtures.v1",
+  "selected_output_fixture": "host02-output-topologies.json",
+  "selected_output_case": "nvcontrol-mst-dp-0-3",
+  "cases": [
+    {
+      "id": "valid-zero-copy",
+      "behavior": "normal",
+      "capture": {
+        "schema": "replaydesktop.nvfbc-capture-primitives.v1",
+        "provider": "fixture",
+        "source": {
+          "status": "fixture",
+          "api_version": 18,
+          "nvfbc_header_sha256": null,
+          "cuda_header_sha256": null
+        },
+        "binding": {
+          "output_name": {
+            "hex": "44502d302e33",
+            "display": "DP-0.3"
+          },
+          "randr_output_xid": 73,
+          "topology_token": {
+            "randr_timestamp": 1000,
+            "randr_config_timestamp": 900,
+            "randr_event_count": 0,
+            "randr_snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nvcontrol_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "cuda_context": {
+            "pci_bdf": "00000000:01:00.0",
+            "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+          }
+        },
+        "frame": {
+          "grab_status": "success",
+          "frame_sequence": 42,
+          "timestamp_us": 1000000,
+          "is_new_frame": true,
+          "width_px": 3840,
+          "height_px": 2160,
+          "pixel_format": "nv12",
+          "pitch_bytes": 3840,
+          "planes": [
+            {
+              "index": 0,
+              "offset_bytes": 0,
+              "stride_bytes": 3840,
+              "size_bytes": 8294400
+            },
+            {
+              "index": 1,
+              "offset_bytes": 8294400,
+              "stride_bytes": 3840,
+              "size_bytes": 4147200
+            }
+          ],
+          "required_post_processing": false,
+          "cursor_included": true,
+          "cursor_mode": "nvfbc-composited",
+          "source_surface": "surface-capture-001",
+          "lease_surface": "surface-capture-001",
+          "edges": [
+            {
+              "sequence": 0,
+              "kind": "zero-copy",
+              "from_surface": "surface-capture-001",
+              "to_surface": "surface-capture-001",
+              "from_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "to_gpu": {
+                "pci_bdf": "00000000:01:00.0",
+                "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+              },
+              "input_format": "nv12",
+              "output_format": "nv12",
+              "peer_access": null
+            }
+          ]
+        },
+        "lifecycle": [
+          "library-loaded",
+          "status-queried",
+          "context-bound",
+          "session-created",
+          "frame-grabbed",
+          "frame-released",
+          "session-destroyed",
+          "context-released",
+          "library-unloaded"
+        ],
+        "failure": null
+      }
+    }
+  ]
+}

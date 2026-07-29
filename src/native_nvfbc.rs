@@ -697,6 +697,8 @@ mod tests {
                 "NVFBC_DESTROY_HANDLE_PARAMS",
                 "CUcontext",
                 "CUdeviceptr",
+                "CUuuid",
+                "cudaTypedefs.h",
             ]
         );
         let oracle = include_str!("../native/nvfbc_abi_oracle.c");
@@ -713,10 +715,43 @@ mod tests {
             "replay_nvfbc_sizeof_cuda_context",
             "replay_nvfbc_sizeof_cuda_device_pointer",
             "replay_nvfbc_api_version",
+            "replay_nvfbc_api_version_major",
+            "replay_nvfbc_api_version_minor",
+            "replay_nvfbc_offset_api_composite_cursor",
+            "replay_nvfbc_cuda_signature_mask",
             "replay_nvfbc_contract_mask",
         ] {
             assert!(oracle.contains(export), "ABI oracle missing {export}");
         }
+    }
+
+    #[test]
+    fn host03_source_abi_rejects_legacy_18_as_live() {
+        let legacy = CapturePrimitiveObservationV1 {
+            schema: NVFBC_CAPTURE_PRIMITIVES_SCHEMA_V1.to_owned(),
+            provider: CaptureProviderKindV1::SourceAuthenticated,
+            source: CaptureSourceEvidenceV1 {
+                status: CaptureSourceStatusV1::Authenticated,
+                identity: Some("nvidia-nvfbc-api-1.8-cuda-driver-api".to_owned()),
+                api_version: Some(18),
+                nvfbc_header_sha256: Some(
+                    "1111111111111111111111111111111111111111111111111111111111111111"
+                        .parse()
+                        .expect("test digest"),
+                ),
+                cuda_header_sha256: Some(
+                    "2222222222222222222222222222222222222222222222222222222222222222"
+                        .parse()
+                        .expect("test digest"),
+                ),
+            },
+            binding: None,
+            frame: None,
+            lifecycle: Vec::new(),
+            failure: Some(CaptureFailureV1::SourceMismatch),
+        };
+
+        assert!(!valid_provider_source(&legacy));
     }
 
     #[test]

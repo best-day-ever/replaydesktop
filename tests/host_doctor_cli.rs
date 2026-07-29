@@ -1672,6 +1672,7 @@ fn host01_native_current_wayland_driver_mismatch_is_specific_and_deterministic()
             .collect::<Vec<_>>(),
         [
             "SESSION_NOT_XORG",
+            "PHYSICAL_OUTPUT_REQUIRED",
             "NVIDIA_VERSION_MISMATCH",
             "SELECTED_OUTPUT_CORRELATION_UNPROVEN",
         ]

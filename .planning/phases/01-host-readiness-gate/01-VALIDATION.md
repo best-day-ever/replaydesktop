@@ -304,9 +304,9 @@ cargo run --locked --bin replay-host-doctor -- verify-evidence \
 ```
 
 The persisted evidence has SHA-256
-`b66dea6fab17037c4236019ece3e1875d39db0f914264a0f52309769c1f1f0d1`
+`be84baf42cd877fdea23502f493e8a83c6203a99a51ac781360c6ef3ded6c17c`
 and run ID
-`run-b62d5c6f2e9a0f4a7b73f61befca00ba6e126d3a102ca84241a982b9eaa23fd9`.
+`run-0e095e9609a1e591120d16a8bf44d57c9c6a4d2f21cfd10a3805deec04dc61bb`.
 Its live `nvfbc-capture.v1` extension records:
 
 | Fact | Current qualified value |

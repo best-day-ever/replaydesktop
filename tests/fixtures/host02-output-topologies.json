@@ -3,21 +3,23 @@
   "fixture_semantics": "Each topology_patch is a recursive object overlay applied to base_topology; arrays, scalars, and null replace the base value.",
   "base_topology": {
     "requested_output_name": {
-      "hex": "44502d30",
-      "display": "DP-0"
+      "hex": "44502d302e33",
+      "display": "DP-0.3"
     },
     "token_before": {
       "randr_timestamp": 1000,
       "randr_config_timestamp": 900,
-      "randr_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "drm_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "randr_event_count": 0,
+      "randr_snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "nvcontrol_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
     "token_after": {
       "randr_timestamp": 1000,
       "randr_config_timestamp": 900,
-      "randr_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "drm_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "randr_event_count": 0,
+      "randr_snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "nvcontrol_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
     "randr_outputs": [
@@ -26,20 +28,56 @@
         "crtc_xid": 81,
         "mode_xid": 89,
         "name": {
-          "hex": "44502d30",
-          "display": "DP-0"
+          "hex": "44502d302e33",
+          "display": "DP-0.3"
         },
         "connected": true,
         "physical": true,
         "non_desktop": false,
+        "primary": false,
         "clone_output_xids": [],
+        "crtc_output_xids": [73],
         "connector_kind": "display-port",
-        "connector_number": 7,
+        "connector_number": 99,
         "width_px": 3840,
         "height_px": 2160,
-        "origin_x": -3840,
+        "origin_x": 0,
         "origin_y": 0,
-        "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "edid_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timing": {
+          "pixel_clock_hz": 594000000,
+          "hdisplay": 3840,
+          "hsync_start": 4016,
+          "hsync_end": 4104,
+          "htotal": 4400,
+          "vdisplay": 2160,
+          "vsync_start": 2168,
+          "vsync_end": 2178,
+          "vtotal": 2250,
+          "flags": 5
+        }
+      },
+      {
+        "output_xid": 74,
+        "crtc_xid": 82,
+        "mode_xid": 90,
+        "name": {
+          "hex": "44502d302e34",
+          "display": "DP-0.4"
+        },
+        "connected": true,
+        "physical": true,
+        "non_desktop": false,
+        "primary": true,
+        "clone_output_xids": [],
+        "crtc_output_xids": [74],
+        "connector_kind": "display-port",
+        "connector_number": 99,
+        "width_px": 3840,
+        "height_px": 2160,
+        "origin_x": 3840,
+        "origin_y": 0,
+        "edid_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "timing": {
           "pixel_clock_hz": 594000000,
           "hdisplay": 3840,
@@ -62,120 +100,453 @@
           "display": "NVIDIA-0"
         },
         "capabilities": 1,
-        "crtc_xids": [
-          81
-        ],
-        "output_xids": [
-          73
-        ],
+        "crtc_xids": [82, 81],
+        "output_xids": [74, 73],
         "associated_provider_xids": []
-      }
-    ],
-    "drm_connectors": [
+      },
       {
-        "connector_id": 911,
-        "connector_kind": "display-port",
-        "connector_type_id": 1,
-        "connector_name": "DP-1",
-        "connected": true,
-        "enabled": true,
-        "physical": true,
-        "mst": false,
-        "leased": false,
-        "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "canonical_pci_bdfs": ["00000000:01:00.0"],
-        "active_timing": {
-          "pixel_clock_hz": 594000000,
-          "hdisplay": 3840,
-          "hsync_start": 4016,
-          "hsync_end": 4104,
-          "htotal": 4400,
-          "vdisplay": 2160,
-          "vsync_start": 2168,
-          "vsync_end": 2178,
-          "vtotal": 2250,
-          "flags": 5
-        }
+        "provider_xid": 102,
+        "name": {
+          "hex": "6f66666c6f61642d73696e6b",
+          "display": "offload-sink"
+        },
+        "capabilities": 10,
+        "crtc_xids": [],
+        "output_xids": [],
+        "associated_provider_xids": [101]
       }
     ],
+    "nvcontrol": {
+      "x11_library": "libX11.so.6.4.0",
+      "xnvctrl_library": "libXNVCtrl.so.0.0.0",
+      "extension_present": true,
+      "extension_version": {
+        "major": 1,
+        "minor": 29
+      },
+      "x_screen": 0,
+      "x_screen_is_nvidia": true,
+      "display_targets": [
+        {
+          "target_id": 17,
+          "randr_output_xid": 73,
+          "randr_name": {
+            "hex": "44502d302e33",
+            "display": "DP-0.3"
+          },
+          "enabled": true,
+          "target_index_name": "DPY-17",
+          "type_id_name": "DFP-1.0.3",
+          "dp_guid": "DP-GUID-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "edid_hash": "DPY-EDID-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "displayport_is_multistream": true
+        },
+        {
+          "target_id": 18,
+          "randr_output_xid": 74,
+          "randr_name": null,
+          "enabled": null,
+          "target_index_name": null,
+          "type_id_name": "DFP-1.0.3",
+          "dp_guid": null,
+          "edid_hash": null,
+          "displayport_is_multistream": null
+        }
+      ],
+      "enabled_display_target_ids": [18, 17],
+      "gpu_targets": [
+        {
+          "target_id": 0,
+          "connected_display_target_ids": [17],
+          "pci_domain": 0,
+          "pci_bus": 1,
+          "pci_device": 0,
+          "pci_function": 0,
+          "canonical_pci_bdf": "00000000:01:00.0",
+          "uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+        },
+        {
+          "target_id": 1,
+          "connected_display_target_ids": [18],
+          "pci_domain": 0,
+          "pci_bus": 2,
+          "pci_device": 0,
+          "pci_function": 0,
+          "canonical_pci_bdf": "00000000:02:00.0",
+          "uuid": "GPU-11111111-2222-3333-4444-555555555555"
+        }
+      ]
+    },
+    "drm_diagnostic_before": null,
+    "drm_diagnostic_after": null,
     "nvml_devices": [
       {
+        "nvml_pci_bdf": "00000000:02:00.0",
+        "nvml_uuid": "GPU-11111111-2222-3333-4444-555555555555"
+      },
+      {
         "nvml_pci_bdf": "00000000:01:00.0",
-        "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        "nvml_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
       }
     ]
   },
   "cases": [
     {
-      "id": "namespace-disjoint-unique",
+      "id": "nvcontrol-mst-dp-0-3",
       "topology_patch": {},
       "expected": {
         "status": "pass"
       }
     },
     {
-      "id": "identical-displays-ambiguous",
+      "id": "identical-edid-shared-mst-name",
+      "topology_patch": {},
+      "expected": {
+        "status": "pass"
+      }
+    },
+    {
+      "id": "drm-absent",
       "topology_patch": {
-        "drm_connectors": [
-          {
-            "connector_id": 911,
-            "connector_kind": "display-port",
-            "connector_type_id": 1,
-            "connector_name": "DP-1",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:01:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          },
-          {
-            "connector_id": 912,
-            "connector_kind": "display-port",
-            "connector_type_id": 2,
-            "connector_name": "DP-2",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:02:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
+        "drm_diagnostic_before": null,
+        "drm_diagnostic_after": null
+      },
+      "expected": {
+        "status": "pass"
+      }
+    },
+    {
+      "id": "drm-zero-inactive-ambiguous-changing",
+      "topology_patch": {
+        "drm_diagnostic_before": {
+          "snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "connector_count": 4,
+          "active_connector_count": 0
+        },
+        "drm_diagnostic_after": {
+          "snapshot_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "connector_count": 9,
+          "active_connector_count": 3
+        }
+      },
+      "expected": {
+        "status": "pass"
+      }
+    },
+    {
+      "id": "order-primary-number-not-ownership",
+      "topology_patch": {},
+      "expected": {
+        "status": "pass"
+      }
+    },
+    {
+      "id": "missing-nvcontrol-extension",
+      "topology_patch": {
+        "nvcontrol": {
+          "extension_present": false,
+          "extension_version": null
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_NVCONTROL_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "missing-nvcontrol-version",
+      "topology_patch": {
+        "nvcontrol": {
+          "extension_version": null
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_NVCONTROL_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "old-nvcontrol-version",
+      "topology_patch": {
+        "nvcontrol": {
+          "extension_version": {
+            "major": 1,
+            "minor": 26
           }
-        ],
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_NVCONTROL_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "non-nvidia-screen",
+      "topology_patch": {
+        "nvcontrol": {
+          "x_screen_is_nvidia": false
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_UNSUPPORTED_TOPOLOGY"
+      }
+    },
+    {
+      "id": "zero-display-targets-for-xid",
+      "topology_patch": {
+        "nvcontrol": {
+          "display_targets": []
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "multiple-display-targets-for-xid",
+      "topology_patch": {
+        "nvcontrol": {
+          "display_targets": [
+            {
+              "target_id": 17,
+              "randr_output_xid": 73,
+              "randr_name": {
+                "hex": "44502d302e33",
+                "display": "DP-0.3"
+              },
+              "enabled": true,
+              "target_index_name": "DPY-17",
+              "type_id_name": "DFP-1.0.3",
+              "dp_guid": null,
+              "edid_hash": null,
+              "displayport_is_multistream": true
+            },
+            {
+              "target_id": 18,
+              "randr_output_xid": 73,
+              "randr_name": {
+                "hex": "44502d302e33",
+                "display": "DP-0.3"
+              },
+              "enabled": true,
+              "target_index_name": "DPY-18",
+              "type_id_name": "DFP-1.0.3",
+              "dp_guid": null,
+              "edid_hash": null,
+              "displayport_is_multistream": true
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "display-name-mismatch",
+      "topology_patch": {
+        "nvcontrol": {
+          "display_targets": [
+            {
+              "target_id": 17,
+              "randr_output_xid": 73,
+              "randr_name": {
+                "hex": "44502d35",
+                "display": "DP-5"
+              },
+              "enabled": true,
+              "target_index_name": "DPY-17",
+              "type_id_name": "DFP-1.0.3",
+              "dp_guid": null,
+              "edid_hash": null,
+              "displayport_is_multistream": true
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_CONFLICTING_FACTS"
+      }
+    },
+    {
+      "id": "display-disabled",
+      "topology_patch": {
+        "nvcontrol": {
+          "display_targets": [
+            {
+              "target_id": 17,
+              "randr_output_xid": 73,
+              "randr_name": {
+                "hex": "44502d302e33",
+                "display": "DP-0.3"
+              },
+              "enabled": false,
+              "target_index_name": "DPY-17",
+              "type_id_name": "DFP-1.0.3",
+              "dp_guid": null,
+              "edid_hash": null,
+              "displayport_is_multistream": true
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_UNSUPPORTED_TOPOLOGY"
+      }
+    },
+    {
+      "id": "not-enabled-on-xscreen",
+      "topology_patch": {
+        "nvcontrol": {
+          "enabled_display_target_ids": [18]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "duplicate-enabled-membership",
+      "topology_patch": {
+        "nvcontrol": {
+          "enabled_display_target_ids": [17, 17]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_INVALID_OBSERVATION"
+      }
+    },
+    {
+      "id": "zero-owning-gpus",
+      "topology_patch": {
+        "nvcontrol": {
+          "gpu_targets": [
+            {
+              "target_id": 0,
+              "connected_display_target_ids": [18],
+              "pci_domain": 0,
+              "pci_bus": 1,
+              "pci_device": 0,
+              "pci_function": 0,
+              "canonical_pci_bdf": "00000000:01:00.0",
+              "uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "multiple-owning-gpus",
+      "topology_patch": {
+        "nvcontrol": {
+          "gpu_targets": [
+            {
+              "target_id": 0,
+              "connected_display_target_ids": [17],
+              "pci_domain": 0,
+              "pci_bus": 1,
+              "pci_device": 0,
+              "pci_function": 0,
+              "canonical_pci_bdf": "00000000:01:00.0",
+              "uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+            },
+            {
+              "target_id": 1,
+              "connected_display_target_ids": [17],
+              "pci_domain": 0,
+              "pci_bus": 2,
+              "pci_device": 0,
+              "pci_function": 0,
+              "canonical_pci_bdf": "00000000:02:00.0",
+              "uuid": "GPU-11111111-2222-3333-4444-555555555555"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "duplicate-gpu-membership",
+      "topology_patch": {
+        "nvcontrol": {
+          "gpu_targets": [
+            {
+              "target_id": 0,
+              "connected_display_target_ids": [17, 17],
+              "pci_domain": 0,
+              "pci_bus": 1,
+              "pci_device": 0,
+              "pci_function": 0,
+              "canonical_pci_bdf": "00000000:01:00.0",
+              "uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_INVALID_OBSERVATION"
+      }
+    },
+    {
+      "id": "invalid-pci-fields",
+      "topology_patch": {
+        "nvcontrol": {
+          "gpu_targets": [
+            {
+              "target_id": 0,
+              "connected_display_target_ids": [17],
+              "pci_domain": 0,
+              "pci_bus": 256,
+              "pci_device": 0,
+              "pci_function": 0,
+              "canonical_pci_bdf": "00000000:01:00.0",
+              "uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_INVALID_OBSERVATION"
+      }
+    },
+    {
+      "id": "nvml-bdf-mismatch",
+      "topology_patch": {
+        "nvml_devices": [
+          {
+            "nvml_pci_bdf": "00000000:02:00.0",
+            "nvml_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0"
+          }
+        ]
+      },
+      "expected": {
+        "status": "blocked",
+        "reason": "BLOCKED_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "nvml-uuid-mismatch",
+      "topology_patch": {
         "nvml_devices": [
           {
             "nvml_pci_bdf": "00000000:01:00.0",
-            "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-          },
-          {
-            "nvml_pci_bdf": "00000000:02:00.0",
-            "nvml_uuid": "GPU-bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+            "nvml_uuid": "GPU-99999999-8888-7777-6666-555555555555"
           }
         ]
       },
@@ -185,102 +556,7 @@
       }
     },
     {
-      "id": "duplicate-edid-missing-metadata",
-      "topology_patch": {
-        "randr_outputs": [
-          {
-            "output_xid": 73,
-            "crtc_xid": 81,
-            "mode_xid": 89,
-            "name": {
-              "hex": "44502d30",
-              "display": "DP-0"
-            },
-            "connected": true,
-            "physical": true,
-            "non_desktop": false,
-            "clone_output_xids": [],
-            "connector_kind": "display-port",
-            "connector_number": null,
-            "width_px": 3840,
-            "height_px": 2160,
-            "origin_x": -3840,
-            "origin_y": 0,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ],
-        "drm_connectors": [
-          {
-            "connector_id": 911,
-            "connector_kind": "display-port",
-            "connector_type_id": 1,
-            "connector_name": "DP-1",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:01:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          },
-          {
-            "connector_id": 912,
-            "connector_kind": "display-port",
-            "connector_type_id": 2,
-            "connector_name": "DP-2",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:02:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_AMBIGUOUS"
-      }
-    },
-    {
-      "id": "multiple-providers",
+      "id": "provider-ambiguity",
       "topology_patch": {
         "randr_providers": [
           {
@@ -290,12 +566,8 @@
               "display": "NVIDIA-0"
             },
             "capabilities": 1,
-            "crtc_xids": [
-              81
-            ],
-            "output_xids": [
-              73
-            ],
+            "crtc_xids": [81],
+            "output_xids": [73],
             "associated_provider_xids": []
           },
           {
@@ -305,132 +577,9 @@
               "display": "NVIDIA-1"
             },
             "capabilities": 1,
-            "crtc_xids": [
-              81
-            ],
-            "output_xids": [
-              73
-            ],
+            "crtc_xids": [81],
+            "output_xids": [73],
             "associated_provider_xids": []
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_AMBIGUOUS"
-      }
-    },
-    {
-      "id": "multiple-drm-connectors",
-      "topology_patch": {
-        "drm_connectors": [
-          {
-            "connector_id": 911,
-            "connector_kind": "display-port",
-            "connector_type_id": 1,
-            "connector_name": "DP-1",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:01:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          },
-          {
-            "connector_id": 919,
-            "connector_kind": "display-port",
-            "connector_type_id": 9,
-            "connector_name": "DP-9",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:01:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_AMBIGUOUS"
-      }
-    },
-    {
-      "id": "multiple-pci-bdfs",
-      "topology_patch": {
-        "drm_connectors": [
-          {
-            "connector_id": 911,
-            "connector_kind": "display-port",
-            "connector_type_id": 1,
-            "connector_name": "DP-1",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": false,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": [
-              "00000000:01:00.0",
-              "00000000:02:00.0"
-            ],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_AMBIGUOUS"
-      }
-    },
-    {
-      "id": "multiple-nvml-matches",
-      "topology_patch": {
-        "nvml_devices": [
-          {
-            "nvml_pci_bdf": "00000000:01:00.0",
-            "nvml_uuid": "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-          },
-          {
-            "nvml_pci_bdf": "00000000:01:00.0",
-            "nvml_uuid": "GPU-bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
           }
         ]
       },
@@ -443,7 +592,7 @@
       "id": "topology-changed",
       "topology_patch": {
         "token_after": {
-          "randr_snapshot_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          "nvcontrol_snapshot_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         }
       },
       "expected": {
@@ -452,155 +601,15 @@
       }
     },
     {
-      "id": "cloned-output",
+      "id": "randr-event-churn",
       "topology_patch": {
-        "randr_outputs": [
-          {
-            "output_xid": 73,
-            "crtc_xid": 81,
-            "mode_xid": 89,
-            "name": {
-              "hex": "44502d30",
-              "display": "DP-0"
-            },
-            "connected": true,
-            "physical": true,
-            "non_desktop": false,
-            "clone_output_xids": [
-              74
-            ],
-            "connector_kind": "display-port",
-            "connector_number": 7,
-            "width_px": 3840,
-            "height_px": 2160,
-            "origin_x": -3840,
-            "origin_y": 0,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
+        "token_after": {
+          "randr_event_count": 1
+        }
       },
       "expected": {
         "status": "blocked",
-        "reason": "BLOCKED_UNSUPPORTED_TOPOLOGY"
-      }
-    },
-    {
-      "id": "mst-topology",
-      "topology_patch": {
-        "drm_connectors": [
-          {
-            "connector_id": 911,
-            "connector_kind": "display-port",
-            "connector_type_id": 1,
-            "connector_name": "DP-1",
-            "connected": true,
-            "enabled": true,
-            "physical": true,
-            "mst": true,
-            "leased": false,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "canonical_pci_bdfs": ["00000000:01:00.0"],
-            "active_timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_UNSUPPORTED_TOPOLOGY"
-      }
-    },
-    {
-      "id": "prime-offload-topology",
-      "topology_patch": {
-        "randr_providers": [
-          {
-            "provider_xid": 101,
-            "name": {
-              "hex": "4e56494449412d30",
-              "display": "NVIDIA-0"
-            },
-            "capabilities": 5,
-            "crtc_xids": [
-              81
-            ],
-            "output_xids": [
-              73
-            ],
-            "associated_provider_xids": [
-              102
-            ]
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_UNSUPPORTED_TOPOLOGY"
-      }
-    },
-    {
-      "id": "missing-edid",
-      "topology_patch": {
-        "randr_outputs": [
-          {
-            "output_xid": 73,
-            "crtc_xid": 81,
-            "mode_xid": 89,
-            "name": {
-              "hex": "44502d30",
-              "display": "DP-0"
-            },
-            "connected": true,
-            "physical": true,
-            "non_desktop": false,
-            "clone_output_xids": [],
-            "connector_kind": "display-port",
-            "connector_number": 7,
-            "width_px": 3840,
-            "height_px": 2160,
-            "origin_x": -3840,
-            "origin_y": 0,
-            "edid_sha256": null,
-            "timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_AMBIGUOUS"
+        "reason": "BLOCKED_TOPOLOGY_CHANGED"
       }
     },
     {
@@ -612,26 +621,28 @@
             "crtc_xid": 81,
             "mode_xid": 89,
             "name": {
-              "hex": "44502d30",
-              "display": "DP-0"
+              "hex": "44502d302e33",
+              "display": "DP-0.3"
             },
             "connected": true,
             "physical": true,
             "non_desktop": false,
+            "primary": false,
             "clone_output_xids": [],
+            "crtc_output_xids": [73],
             "connector_kind": "display-port",
-            "connector_number": 7,
+            "connector_number": 99,
             "width_px": 3840,
             "height_px": 2160,
-            "origin_x": -3840,
+            "origin_x": 0,
             "origin_y": 0,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "edid_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "timing": {
-              "pixel_clock_hz": 0,
+              "pixel_clock_hz": 594000000,
               "hdisplay": 3840,
               "hsync_start": 4016,
               "hsync_end": 4104,
-              "htotal": 4400,
+              "htotal": 4000,
               "vdisplay": 2160,
               "vsync_start": 2168,
               "vsync_end": 2178,
@@ -644,49 +655,6 @@
       "expected": {
         "status": "blocked",
         "reason": "BLOCKED_INVALID_OBSERVATION"
-      }
-    },
-    {
-      "id": "conflicting-facts",
-      "topology_patch": {
-        "randr_outputs": [
-          {
-            "output_xid": 73,
-            "crtc_xid": 81,
-            "mode_xid": 89,
-            "name": {
-              "hex": "44502d30",
-              "display": "DP-0"
-            },
-            "connected": true,
-            "physical": true,
-            "non_desktop": false,
-            "clone_output_xids": [],
-            "connector_kind": "display-port",
-            "connector_number": 7,
-            "width_px": 1920,
-            "height_px": 1080,
-            "origin_x": -3840,
-            "origin_y": 0,
-            "edid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "timing": {
-              "pixel_clock_hz": 594000000,
-              "hdisplay": 3840,
-              "hsync_start": 4016,
-              "hsync_end": 4104,
-              "htotal": 4400,
-              "vdisplay": 2160,
-              "vsync_start": 2168,
-              "vsync_end": 2178,
-              "vtotal": 2250,
-              "flags": 5
-            }
-          }
-        ]
-      },
-      "expected": {
-        "status": "blocked",
-        "reason": "BLOCKED_CONFLICTING_FACTS"
       }
     }
   ]

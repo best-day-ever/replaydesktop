@@ -1467,7 +1467,6 @@ fn host01_source_neutral_device_failures_are_stable_and_actionable() {
     for (case, reason) in [
         ("missing-uinput", "UINPUT_ACCESS_REQUIRED"),
         ("missing-render", "DRM_RENDER_ACCESS_REQUIRED"),
-        ("missing-physical-output", "PHYSICAL_OUTPUT_REQUIRED"),
     ] {
         let directory = temp_dir(case);
         let evidence = directory.join("evidence.json");
@@ -1495,6 +1494,37 @@ fn host01_source_neutral_device_failures_are_stable_and_actionable() {
         );
         std::fs::remove_dir_all(&directory).expect("test directory must be removable");
     }
+}
+
+#[test]
+fn host01_public_drm_scanout_absence_is_diagnostic_on_nvidia_xorg() {
+    let directory = temp_dir("drm-scanout-diagnostic");
+    let evidence = directory.join("evidence.json");
+    let output = diagnose_with_fixture(
+        &session_fixture(),
+        "missing-physical-output",
+        &evidence,
+        500,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let envelope = read_envelope(&evidence);
+    let foundation = extension(&envelope, "host-foundation.v1");
+    assert_eq!(
+        foundation.status,
+        G0ExtensionStatusV1::Unproven,
+        "the unselected output, not public DRM scanout state, keeps HOST-01 unproven"
+    );
+    let payload = host_foundation_payload(&envelope);
+    assert_eq!(payload["physical_output"]["status"], "pass");
+    assert_eq!(payload["physical_output"]["observed"], 2);
+    assert!(
+        payload["reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .all(|reason| reason["code"] != "PHYSICAL_OUTPUT_REQUIRED")
+    );
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
 }
 
 #[test]
@@ -1827,12 +1857,12 @@ fn host01_native_known_extension_payload_is_strict_at_verify_readback() {
 }
 
 #[test]
-fn host02_discovery_and_namespace_disjoint_selection_use_the_production_path() {
+fn host02_discovery_and_nvcontrol_mst_selection_use_the_production_path() {
     let directory = temp_dir("host02-selection");
     let discovery_path = directory.join("discovery.json");
     let discovery = diagnose_host02(
         &host02_fixture(),
-        "namespace-disjoint-unique",
+        "nvcontrol-mst-dp-0-3",
         None,
         &discovery_path,
         500,
@@ -1846,14 +1876,14 @@ fn host02_discovery_and_namespace_disjoint_selection_use_the_production_path() {
         discovery_payload["schema"],
         "replaydesktop.selected-output-discovery.v1"
     );
-    assert_eq!(discovery_payload["candidates"][0]["display"], "DP-0");
+    assert_eq!(discovery_payload["candidates"][0]["display"], "DP-0.3");
     assert!(discovery_payload.get("requested_output").is_none());
 
     let selected_path = directory.join("selected.json");
     let selected = diagnose_host02(
         &host02_fixture(),
-        "namespace-disjoint-unique",
-        Some("DP-0"),
+        "nvcontrol-mst-dp-0-3",
+        Some("DP-0.3"),
         &selected_path,
         500,
     );
@@ -1867,12 +1897,30 @@ fn host02_discovery_and_namespace_disjoint_selection_use_the_production_path() {
         selected_payload["schema"],
         "replaydesktop.selected-output.v1"
     );
-    assert_eq!(selected_payload["output_name"]["display"], "DP-0");
+    assert_eq!(selected_payload["output_name"]["display"], "DP-0.3");
     assert_eq!(selected_payload["randr_output_xid"], 73);
-    assert_eq!(selected_payload["drm_connector_id"], 911);
+    assert_eq!(selected_payload["nvcontrol_display_target_id"], 17);
+    assert_eq!(selected_payload["nvcontrol_gpu_target_id"], 0);
     assert_ne!(
         selected_payload["randr_output_xid"],
-        selected_payload["drm_connector_id"]
+        selected_payload["nvcontrol_display_target_id"]
+    );
+    assert_eq!(
+        selected_payload["nvcontrol_gpu_pci_bdf"],
+        selected_payload["nvml_pci_bdf"]
+    );
+    assert_eq!(
+        selected_payload["nvcontrol_gpu_uuid"],
+        selected_payload["nvml_uuid"]
+    );
+    assert_eq!(
+        selected_payload["nvcontrol_displayport_is_multistream"],
+        true
+    );
+    assert!(
+        selected_payload["topology_token"]
+            .get("drm_snapshot_sha256")
+            .is_none()
     );
     assert_eq!(
         selected_envelope.base.status,
@@ -1904,49 +1952,91 @@ fn host02_discovery_and_namespace_disjoint_selection_use_the_production_path() {
 }
 
 #[test]
-fn host02_ambiguous_missing_and_racing_relations_fail_closed_in_process() {
+fn host02_nvcontrol_cardinality_and_topology_relations_fail_closed_in_process() {
     for (case, reason, relation, cardinality) in [
         (
-            "identical-displays-ambiguous",
+            "missing-nvcontrol-extension",
+            "BLOCKED_NVCONTROL_UNAVAILABLE",
+            "nv-control-extension",
+            None,
+        ),
+        (
+            "missing-nvcontrol-version",
+            "BLOCKED_NVCONTROL_UNAVAILABLE",
+            "nv-control-extension",
+            None,
+        ),
+        (
+            "old-nvcontrol-version",
+            "BLOCKED_NVCONTROL_UNAVAILABLE",
+            "nv-control-extension",
+            None,
+        ),
+        (
+            "non-nvidia-screen",
+            "BLOCKED_UNSUPPORTED_TOPOLOGY",
+            "nv-control-extension",
+            Some(1),
+        ),
+        (
+            "zero-display-targets-for-xid",
             "BLOCKED_AMBIGUOUS",
-            "drm-connector",
+            "nv-control-display-target",
+            Some(0),
+        ),
+        (
+            "multiple-display-targets-for-xid",
+            "BLOCKED_AMBIGUOUS",
+            "nv-control-display-target",
             Some(2),
         ),
         (
-            "duplicate-edid-missing-metadata",
+            "display-name-mismatch",
+            "BLOCKED_CONFLICTING_FACTS",
+            "nv-control-display-target",
+            Some(1),
+        ),
+        (
+            "display-disabled",
+            "BLOCKED_UNSUPPORTED_TOPOLOGY",
+            "nv-control-display-target",
+            Some(1),
+        ),
+        (
+            "not-enabled-on-xscreen",
             "BLOCKED_AMBIGUOUS",
-            "drm-connector",
+            "nv-control-enabled-on-xscreen",
+            Some(0),
+        ),
+        (
+            "zero-owning-gpus",
+            "BLOCKED_AMBIGUOUS",
+            "nv-control-gpu-owner",
+            Some(0),
+        ),
+        (
+            "multiple-owning-gpus",
+            "BLOCKED_AMBIGUOUS",
+            "nv-control-gpu-owner",
             Some(2),
         ),
         (
-            "multiple-providers",
+            "nvml-bdf-mismatch",
+            "BLOCKED_AMBIGUOUS",
+            "nvml-device",
+            Some(0),
+        ),
+        (
+            "nvml-uuid-mismatch",
+            "BLOCKED_AMBIGUOUS",
+            "nvml-device",
+            Some(0),
+        ),
+        (
+            "provider-ambiguity",
             "BLOCKED_AMBIGUOUS",
             "randr-provider",
             Some(2),
-        ),
-        (
-            "multiple-drm-connectors",
-            "BLOCKED_AMBIGUOUS",
-            "drm-connector",
-            Some(2),
-        ),
-        (
-            "multiple-pci-bdfs",
-            "BLOCKED_AMBIGUOUS",
-            "canonical-pci-bdf",
-            Some(2),
-        ),
-        (
-            "multiple-nvml-matches",
-            "BLOCKED_AMBIGUOUS",
-            "nvml-device",
-            Some(2),
-        ),
-        (
-            "missing-edid",
-            "BLOCKED_AMBIGUOUS",
-            "drm-connector",
-            Some(0),
         ),
         (
             "topology-changed",
@@ -1957,7 +2047,8 @@ fn host02_ambiguous_missing_and_racing_relations_fail_closed_in_process() {
     ] {
         let directory = temp_dir(case);
         let evidence = directory.join("evidence.json");
-        let output = diagnose_host02(&host02_fixture(), case, Some("DP-0"), &evidence, 500);
+        let output =
+            diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
         assert_eq!(output.status.code(), Some(2), "case {case}");
         let envelope = read_envelope(&evidence);
         let selected = extension(&envelope, "selected-output.v1");
@@ -1984,30 +2075,33 @@ fn host02_ambiguous_missing_and_racing_relations_fail_closed_in_process() {
 }
 
 #[test]
-fn host02_invalid_timing_and_output_name_are_rejected_before_admission() {
+fn host02_duplicate_native_membership_invalid_pci_and_timing_fail_closed() {
     let directory = temp_dir("host02-invalid");
-    let timing_evidence = directory.join("timing.json");
-    let timing = diagnose_host02(
-        &host02_fixture(),
+    for case in [
+        "duplicate-enabled-membership",
+        "duplicate-gpu-membership",
+        "invalid-pci-fields",
         "invalid-timing",
-        Some("DP-0"),
-        &timing_evidence,
-        500,
-    );
-    assert_eq!(timing.status.code(), Some(2));
-    let timing_envelope = read_envelope(&timing_evidence);
-    let timing_record = extension(&timing_envelope, "selected-output.v1");
-    assert_eq!(timing_record.status, G0ExtensionStatusV1::Fail);
-    assert_eq!(
-        extension_payload(timing_record)["mapping_failure"]["reason"],
-        "BLOCKED_INVALID_OBSERVATION"
-    );
+    ] {
+        let evidence = directory.join(format!("{case}.json"));
+        let output =
+            diagnose_host02(&host02_fixture(), case, Some("DP-0.3"), &evidence, 500);
+        assert_eq!(output.status.code(), Some(2), "case {case}");
+        let envelope = read_envelope(&evidence);
+        let selected = extension(&envelope, "selected-output.v1");
+        assert_eq!(selected.status, G0ExtensionStatusV1::Fail, "case {case}");
+        assert_eq!(
+            extension_payload(selected)["collection_failure"],
+            "invalid-observation",
+            "case {case}"
+        );
+    }
 
     let invalid_name_evidence = directory.join("invalid-name.json");
     let invalid_name = diagnose_host02(
         &host02_fixture(),
-        "namespace-disjoint-unique",
-        Some("DP-\n0"),
+        "nvcontrol-mst-dp-0-3",
+        Some("DP-\n0.3"),
         &invalid_name_evidence,
         500,
     );
@@ -2041,7 +2135,7 @@ fn host02_worker_timeout_cache_and_secrecy_cases_fail_closed() {
                 "--fixture-case",
                 case,
                 "--output",
-                "DP-0",
+                "DP-0.3",
                 "--evidence",
                 evidence.to_str().expect("evidence path must be UTF-8"),
                 "--probe-timeout-ms",
@@ -2112,8 +2206,10 @@ fn host02_operator_docs_cover_discovery_selection_and_honest_blockers() {
         "--require-host04 unproven",
         "--validate-extension selected-output.v1",
         "XRandR",
-        "DRM",
-        "EDID",
+        "NV-CONTROL",
+        "NV_CTRL_DISPLAY_RANDR_OUTPUT_ID",
+        "MST",
+        "DRM is optional diagnostic",
         "PCI BDF",
         "NVML UUID",
         "HOST-03",

@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
-stopped_at: Completed 01-07-PLAN.md
-last_updated: "2026-07-29T16:54:11.685Z"
+stopped_at: Completed 01-08-PLAN.md
+last_updated: "2026-07-29T22:03:36Z"
 last_activity: 2026-07-29
-last_activity_desc: Completed Plan 01-07 NvFBC capture contracts
+last_activity_desc: Completed Plan 01-08 live selected-output NvFBC proof
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 10
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -28,30 +28,30 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 ## Current Position
 
 Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
 Status: Ready to execute
-Last activity: 2026-07-29 — Completed Plan 01-07 NvFBC capture contracts
+Last activity: 2026-07-29 — Completed Plan 01-08 live selected-output NvFBC proof
 
-Progress: [███████░░░] 70%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 7
-- Average duration: 36m 5s
-- Total execution time: 4h 12m 35s
+- Total plans completed: 8
+- Average duration: 44m
+- Total execution time: 5h 52m
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| Phase 01 | 7 | 4h 12m 35s | 36m 5s |
+| Phase 01 | 8 | 5h 52m | 44m |
 
 **Recent Trend:**
 
-- Last 5 plans: 33m 28s, 29m 58s, 30m 16s, 46m 23s, 50m 30s
-- Trend: Longer recent plans reflect live-contract correction followed by the source/ABI and adversarial capture boundary.
+- Last 5 plans: 29m 58s, 30m 16s, 46m 23s, 50m 30s, 1h 39m 25s
+- Trend: Longer recent plans reflect increasingly hardware-bound proof, authenticated native ABI work, and adversarial evidence review.
 
 *Updated after each plan completion*
 **Per-Plan Metrics:**
@@ -65,6 +65,7 @@ Progress: [███████░░░] 70%
 | Phase 01-host-readiness-gate P05 | 30m 16s | 2 tasks | 8 files |
 | Phase 01-host-readiness-gate P06 | 46m 23s | 3 tasks | 23 files |
 | Phase 01-host-readiness-gate P07 | 50m 30s | 3 tasks | 11 files |
+| Phase 01-host-readiness-gate P08 | 1h 39m 25s | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -100,6 +101,10 @@ Recent decisions affecting current work:
 - [Phase 01]: Require both authenticated NvFBC and CUDA roots before enabling the conditional ABI oracle.
 - [Phase 01]: Derive capture leases, copy totals, cleanup, and verdicts in the parent; workers supply primitives only.
 - [Phase 01]: Diagnostic capture fixtures remain UNPROVEN; Plan 01-08 owns live HOST-03 proof.
+- [Phase 01]: Authenticate the operator-supplied NvFBC 1.9 and installed CUDA Driver API 13.3 declarations by exact digest without vendoring proprietary sources.
+- [Phase 01]: Bind live NvFBC capture to exact XRandR XID, NV-CONTROL GPU, NVML BDF/UUID, and the source identity compiled into the current executable.
+- [Phase 01]: Admit HOST-03 only after one fresh selected-output NV12 frame, one same-GPU device copy, zero host staging, and complete truthful cleanup.
+- [Phase 01]: Treat NvFBC cursor visibility and composition as independent facts; hidden-but-composited is valid.
 
 ### Pending Todos
 
@@ -107,7 +112,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: HOST-01/HOST-02 are proven on real Xorg with matching NVIDIA kernel/userspace 610.43.03 and exact MST output DP-0.3; HOST-03/HOST-04 remain the active G0 blockers.
+- [Phase 1]: HOST-01/HOST-02/HOST-03 are proven on real Xorg with matching NVIDIA kernel/userspace 610.43.03 and exact MST output DP-0.3; HOST-04 is the remaining G0 blocker.
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
 
@@ -119,6 +124,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-29T16:53:26.809Z
-Stopped at: Completed 01-07-PLAN.md
+Last session: 2026-07-29T22:03:36Z
+Stopped at: Completed 01-08-PLAN.md
 Resume file: None

@@ -58,7 +58,7 @@ with immersive control and working clipboard synchronization.
   startup reports its XRandR name, dimensions, refresh rate, GPU, and desktop
   origin.
 
-- [ ] **HOST-03**: The host proves creation of the selected NvFBC shared-CUDA
+- [x] **HOST-03**: The host proves creation of the selected NvFBC shared-CUDA
   capture path and reports every GPU-to-GPU, GPU-to-CPU, and cross-GPU copy
   between scanout capture and the encoder.
 
@@ -332,7 +332,7 @@ requirements are intentionally excluded.
 | CONN-05 | Phase 2 | Pending |
 | HOST-01 | Phase 1 | Complete |
 | HOST-02 | Phase 1 | Complete |
-| HOST-03 | Phase 1 | Pending |
+| HOST-03 | Phase 1 | Complete |
 | HOST-04 | Phase 1 | Pending |
 | HOST-05 | Phase 3 | Pending |
 | HOST-06 | Phase 3 | Pending |
@@ -381,4 +381,4 @@ requirements are intentionally excluded.
 
 ---
 *Requirements defined: 2026-07-26*
-*Last updated: 2026-07-26 after roadmap creation*
+*Last updated: 2026-07-29 after HOST-03 live proof*

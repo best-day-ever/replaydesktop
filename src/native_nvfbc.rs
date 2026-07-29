@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const LIVE_SOURCE_IDENTITY: &str = "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3";
+#[cfg(replay_nvfbc_source)]
 const LIVE_NVFBC_API_VERSION: u32 = 0x109;
 #[cfg(replay_nvfbc_source)]
 const NVFBC_CREATE_HANDLE_PARAMS_VERSION: u32 = 0x0903_0070;

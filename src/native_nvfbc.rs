@@ -15,6 +15,46 @@ use std::path::{Path, PathBuf};
 #[cfg(replay_nvfbc_source)]
 use std::time::Instant;
 
+#[cfg(replay_nvfbc_source)]
+pub(crate) struct NativeCaptureLease {
+    context: *mut c_void,
+    device_pointer: u64,
+    allocation_size: u64,
+    cuda_driver_version: u32,
+    selected: SelectedOutputV1,
+    frame: CaptureFrameObservationV1,
+}
+
+#[cfg(replay_nvfbc_source)]
+impl NativeCaptureLease {
+    pub(crate) fn context(&self) -> *mut c_void {
+        self.context
+    }
+
+    pub(crate) fn device_pointer(&self) -> u64 {
+        self.device_pointer
+    }
+
+    pub(crate) fn allocation_size(&self) -> u64 {
+        self.allocation_size
+    }
+
+    pub(crate) fn cuda_driver_version(&self) -> u32 {
+        self.cuda_driver_version
+    }
+
+    pub(crate) fn selected(&self) -> &SelectedOutputV1 {
+        &self.selected
+    }
+
+    pub(crate) fn frame(&self) -> &CaptureFrameObservationV1 {
+        &self.frame
+    }
+}
+
+#[cfg(replay_nvfbc_source)]
+type NativeLeaseConsumer<'consumer> = dyn FnMut(NativeCaptureLease) -> bool + 'consumer;
+
 const LIVE_SOURCE_IDENTITY: &str = "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3";
 #[cfg(replay_nvfbc_source)]
 const LIVE_NVFBC_API_VERSION: u32 = 0x109;
@@ -173,6 +213,69 @@ pub fn observe_live_selected_capture(
     {
         observe_source_authenticated_capture(requested_output)
     }
+}
+
+#[cfg(replay_nvfbc_source)]
+pub(crate) fn with_live_selected_capture_lease<R, F>(
+    requested_output: &crate::model::OutputNameV1,
+    mut consume: F,
+) -> Result<R, CaptureFailureV1>
+where
+    F: FnMut(NativeCaptureLease) -> (R, bool),
+{
+    let mut source = compiled_capture_source();
+    if authenticate_runtime_sources(&source).is_err() || verify_compiled_abi().is_err() {
+        return Err(CaptureFailureV1::SourceMismatch);
+    }
+    let before_observation =
+        crate::output_mapping::collect_live_output_topology(Some(requested_output.clone()));
+    let before = before_observation
+        .topology
+        .as_ref()
+        .and_then(|topology| crate::output_mapping::prove_output_gpu_mapping(topology).ok())
+        .filter(|_| before_observation.collection_failure.is_none())
+        .ok_or(CaptureFailureV1::BindingMismatch)?;
+
+    let mut consumed = None;
+    let mut consumer = |lease| {
+        let (value, containment_required) = consume(lease);
+        consumed = Some(value);
+        containment_required
+    };
+    let observation =
+        capture_native_one_frame_with_consumer(&before, source.clone(), Some(&mut consumer));
+    source = observation.source;
+
+    let after_observation =
+        crate::output_mapping::collect_live_output_topology(Some(requested_output.clone()));
+    let after = after_observation
+        .topology
+        .as_ref()
+        .and_then(|topology| crate::output_mapping::prove_output_gpu_mapping(topology).ok());
+    if after_observation.collection_failure.is_some()
+        || after
+            .as_ref()
+            .is_none_or(|after| !same_selected_capture_identity(&before, after))
+    {
+        return Err(CaptureFailureV1::BindingMismatch);
+    }
+    let _ = source;
+    consumed.ok_or_else(|| {
+        observation
+            .failure
+            .unwrap_or(CaptureFailureV1::WorkerRejected)
+    })
+}
+
+#[cfg(not(replay_nvfbc_source))]
+pub(crate) fn with_live_selected_capture_lease<R, F>(
+    _requested_output: &crate::model::OutputNameV1,
+    _consume: F,
+) -> Result<R, CaptureFailureV1>
+where
+    F: FnMut(()) -> (R, bool),
+{
+    Err(CaptureFailureV1::SourceUnavailable)
 }
 
 #[cfg(replay_nvfbc_source)]
@@ -358,6 +461,13 @@ type CuDevice = c_int;
 type CuContext = *mut c_void;
 #[cfg(replay_nvfbc_source)]
 type CuDevicePtr = u64;
+
+#[cfg(replay_nvfbc_source)]
+#[derive(Clone, Copy)]
+struct NativeCudaBinding {
+    context: CuContext,
+    device: CuDevice,
+}
 #[cfg(replay_nvfbc_source)]
 type NvFbcSessionHandle = u64;
 
@@ -1732,7 +1842,16 @@ fn validate_created_handle_backend(
 #[cfg(replay_nvfbc_source)]
 fn capture_native_one_frame(
     selected: &SelectedOutputV1,
+    source: CaptureSourceEvidenceV1,
+) -> CapturePrimitiveObservationV1 {
+    capture_native_one_frame_with_consumer(selected, source, None)
+}
+
+#[cfg(replay_nvfbc_source)]
+fn capture_native_one_frame_with_consumer(
+    selected: &SelectedOutputV1,
     mut source: CaptureSourceEvidenceV1,
+    mut consumer: Option<&mut NativeLeaseConsumer<'_>>,
 ) -> CapturePrimitiveObservationV1 {
     let binding = crate::model::CaptureOutputBindingV1 {
         output_name: selected.output_name.clone(),
@@ -1815,12 +1934,12 @@ fn capture_native_one_frame(
         verify_current_cuda_context(&cuda, context, device)?;
         capture_with_nvfbc(
             &cuda,
-            context,
-            device,
+            NativeCudaBinding { context, device },
             selected,
             &binding,
             &mut source,
             &mut lifecycle,
+            consumer.as_deref_mut(),
         )
     })();
 
@@ -1886,13 +2005,14 @@ fn capture_native_one_frame(
 #[cfg(replay_nvfbc_source)]
 fn capture_with_nvfbc(
     cuda: &DynamicCudaApi,
-    context: CuContext,
-    device: CuDevice,
+    cuda_binding: NativeCudaBinding,
     selected: &SelectedOutputV1,
     binding: &crate::model::CaptureOutputBindingV1,
     source: &mut CaptureSourceEvidenceV1,
     lifecycle: &mut Vec<CaptureLifecycleEventV1>,
+    mut consumer: Option<&mut NativeLeaseConsumer<'_>>,
 ) -> Result<(CaptureFrameObservationV1, i32), NativeCaptureError> {
+    let NativeCudaBinding { context, device } = cuda_binding;
     let nvfbc = DynamicNvfbcApi::load()?;
     source.nvfbc_runtime_library = Some(nvfbc.runtime_library.clone());
     lifecycle.push(CaptureLifecycleEventV1::LibraryLoaded);
@@ -2067,7 +2187,7 @@ fn capture_with_nvfbc(
             gpu_uuid: binding.gpu_uuid.clone(),
         };
         let planes = nv12_planes(selected.width_px, selected.height_px)?;
-        Ok(CaptureFrameObservationV1 {
+        let frame = CaptureFrameObservationV1 {
             grab_status: crate::model::CaptureGrabStatusV1::Success,
             frame_sequence: u64::from(frame_info.current_frame),
             timestamp_us: frame_info.timestamp_us,
@@ -2120,9 +2240,35 @@ fn capture_with_nvfbc(
             grab_flags: Some(NVFBC_TOCUDA_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY),
             grab_timeout_ms: Some(NVFBC_GRAB_TIMEOUT_MS),
             grab_elapsed_ns: Some(grab_elapsed_ns),
-        })
+        };
+        if let Some(consumer) = consumer.as_mut() {
+            let containment_required = consumer(NativeCaptureLease {
+                context,
+                device_pointer: application_buffer,
+                allocation_size: byte_size,
+                cuda_driver_version: source
+                    .cuda_driver_version
+                    .ok_or_else(|| NativeCaptureError::cuda(CaptureFailureV1::ApiMismatch))?,
+                selected: selected.clone(),
+                frame: frame.clone(),
+            });
+            if containment_required {
+                return Err(NativeCaptureError::cuda_containment(
+                    CaptureFailureV1::CleanupUncertain,
+                ));
+            }
+        }
+        Ok(frame)
     })();
 
+    let containment_required = body
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.containment_required);
+    if containment_required {
+        std::mem::forget(nvfbc);
+        return body.map(|frame| (frame, body_status));
+    }
     if frame_borrowed && !copy_pending {
         frame_borrowed = false;
         lifecycle.push(CaptureLifecycleEventV1::FrameReleased);

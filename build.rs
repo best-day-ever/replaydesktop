@@ -11,13 +11,16 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 const NVML_SOURCE_ROOT_ENV: &str = "REPLAY_NVML_SDK_ROOT";
 const NVFBC_SOURCE_ROOT_ENV: &str = "REPLAY_NVFBC_SDK_ROOT";
 const CUDA_SOURCE_ROOT_ENV: &str = "REPLAY_CUDA_SDK_ROOT";
+const NVENC_SOURCE_ROOT_ENV: &str = "REPLAY_NVENC_SDK_ROOT";
 const NVML_HEADER_NAME: &str = "nvml.h";
 const NVFBC_HEADER_NAME: &str = "NvFBC.h";
 const CUDA_HEADER_NAME: &str = "cuda.h";
 const CUDA_TYPEDEFS_HEADER_NAME: &str = "cudaTypedefs.h";
+const NVENC_HEADER_NAME: &str = "nvEncodeAPI.h";
 const NVML_SOURCE_IDENTITY: &str = "nvidia-nvml-api-13";
 const NVFBC_SOURCE_IDENTITY: &str = "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3";
 const CUDA_SOURCE_IDENTITY: &str = "nvidia-cuda-driver-api-13.3";
+const NVENC_SOURCE_IDENTITY: &str = "nvidia-video-codec-sdk-13.1";
 const MAX_HEADER_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,13 +63,17 @@ struct HeaderSnapshot {
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(replay_nvml_source)");
     println!("cargo:rustc-check-cfg=cfg(replay_nvfbc_source)");
+    println!("cargo:rustc-check-cfg=cfg(replay_nvenc_source)");
     println!("cargo:rerun-if-env-changed={NVML_SOURCE_ROOT_ENV}");
     println!("cargo:rerun-if-env-changed={NVFBC_SOURCE_ROOT_ENV}");
     println!("cargo:rerun-if-env-changed={CUDA_SOURCE_ROOT_ENV}");
+    println!("cargo:rerun-if-env-changed={NVENC_SOURCE_ROOT_ENV}");
     println!("cargo:rerun-if-changed=native/nvml_abi_oracle.c");
     println!("cargo:rerun-if-changed=native/nvfbc_abi_oracle.c");
+    println!("cargo:rerun-if-changed=native/nvenc_abi_oracle.c");
     configure_nvml_source();
     configure_nvfbc_source();
+    configure_nvenc_source();
 }
 
 fn configure_nvml_source() {
@@ -193,6 +200,49 @@ fn configure_nvfbc_source() {
     );
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=replay_nvfbc_abi_oracle");
+}
+
+fn configure_nvenc_source() {
+    let Some(root) = std::env::var_os(NVENC_SOURCE_ROOT_ENV).map(PathBuf::from) else {
+        return;
+    };
+    emit_asserted_source_reruns(&root, &[NVENC_HEADER_NAME]);
+    let header = authenticate_header(&root, NVENC_HEADER_NAME, "NVENC");
+    require_header_markers(
+        &header.bytes,
+        &[
+            "#define NVENCAPI_MAJOR_VERSION 13",
+            "#define NVENCAPI_MINOR_VERSION 1",
+            "#define NV_ENC_CONFIG_VER (NVENCAPI_STRUCT_VERSION(9) | ( 1<<31 ))",
+            "#define NV_ENCODE_API_FUNCTION_LIST_VER NVENCAPI_STRUCT_VERSION(2)",
+            "NvEncodeAPIGetMaxSupportedVersion          (uint32_t* version)",
+            "NvEncodeAPICreateInstance(NV_ENCODE_API_FUNCTION_LIST *functionList)",
+            "Copyright (c) 2010-2026 NVIDIA Corporation",
+        ],
+        "NVENC",
+    );
+
+    let out_dir = required_out_dir();
+    let snapshot = create_header_snapshot(&out_dir, "nvenc", &[&header]);
+    verify_header_snapshot(&snapshot, "NVENC");
+    compile_oracle(
+        "native/nvenc_abi_oracle.c",
+        &[snapshot.root.as_path()],
+        &out_dir,
+        "nvenc_abi_oracle",
+    );
+    verify_header_snapshot(&snapshot, "NVENC");
+    require_unchanged_header(&header, "NVENC");
+    unseal_header_snapshot(&snapshot);
+
+    println!("cargo:rustc-cfg=replay_nvenc_source");
+    println!("cargo:rustc-env=REPLAY_NVENC_SOURCE_IDENTITY={NVENC_SOURCE_IDENTITY}");
+    println!(
+        "cargo:rustc-env=REPLAY_NVENC_SOURCE_SHA256={}",
+        header.digest
+    );
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=replay_nvenc_abi_oracle");
 }
 
 fn required_out_dir() -> PathBuf {

@@ -211,23 +211,84 @@ pub fn validate_persisted_envelope(envelope: &G0EvidenceEnvelopeV1) -> bool {
         return false;
     }
 
-    if capture_record.status != G0ExtensionStatusV1::Pass {
+    let selected_and_capture = if capture_record.status == G0ExtensionStatusV1::Pass {
+        if envelope.base.provenance != G0EvidenceProvenanceV1::Live
+            || selected_record.status != G0ExtensionStatusV1::Pass
+        {
+            return false;
+        }
+        let Ok(selected) = serde_json::from_str::<SelectedOutputV1>(selected_record.payload.get())
+        else {
+            return false;
+        };
+        let Ok(capture) =
+            serde_json::from_str::<CapturePathEvidenceV1>(capture_record.payload.get())
+        else {
+            return false;
+        };
+        if !host03_pass_binding_matches(&selected, &capture) {
+            return false;
+        }
+        Some((selected, capture))
+    } else {
+        None
+    };
+
+    if nvenc_record.status != G0ExtensionStatusV1::Pass {
         return true;
     }
     if envelope.base.provenance != G0EvidenceProvenanceV1::Live
+        || foundation.status != G0ExtensionStatusV1::Pass
         || selected_record.status != G0ExtensionStatusV1::Pass
+        || capture_record.status != G0ExtensionStatusV1::Pass
     {
         return false;
     }
-    let Ok(selected) = serde_json::from_str::<SelectedOutputV1>(selected_record.payload.get())
+    let Some((selected, capture)) = selected_and_capture else {
+        return false;
+    };
+    let Ok(nvenc) = serde_json::from_str::<NvencTuplesEvidenceV1>(nvenc_record.payload.get())
     else {
         return false;
     };
-    let Ok(capture) = serde_json::from_str::<CapturePathEvidenceV1>(capture_record.payload.get())
-    else {
+    host04_pass_binding_matches(&selected, &capture, &nvenc)
+}
+
+fn host04_pass_binding_matches(
+    selected: &SelectedOutputV1,
+    capture: &CapturePathEvidenceV1,
+    nvenc: &NvencTuplesEvidenceV1,
+) -> bool {
+    let Some(capture_binding) = capture.binding.as_ref() else {
         return false;
     };
-    host03_pass_binding_matches(&selected, &capture)
+    let Some(capture_lease) = capture.lease.as_ref() else {
+        return false;
+    };
+    !nvenc.advertised.is_empty()
+        && nvenc.advertised.iter().all(|advertised| {
+            nvenc
+                .attempts
+                .iter()
+                .find(|attempt| {
+                    attempt.position == advertised.position && attempt.tuple == advertised.tuple
+                })
+                .and_then(|attempt| attempt.resource_proof.as_ref())
+                .is_some_and(|resource| {
+                    resource.output_name == selected.output_name
+                        && resource.output_name == capture_binding.output_name
+                        && resource.topology_token == selected.topology_token
+                        && resource.topology_token == capture_binding.topology_token
+                        && resource.gpu_pci_bdf == selected.nvml_pci_bdf
+                        && resource.gpu_pci_bdf == capture_binding.gpu_pci_bdf
+                        && resource.gpu_uuid == selected.nvml_uuid
+                        && resource.gpu_uuid == capture_binding.gpu_uuid
+                        && resource.lease_surface == capture_lease.lease_surface
+                        && resource.width_px == capture_lease.width_px
+                        && resource.height_px == capture_lease.height_px
+                        && resource.pitch_bytes == capture_lease.pitch_bytes
+                })
+        })
 }
 
 pub fn validate_nvenc_tuples_record(record: &G0ExtensionRecordV1) -> bool {

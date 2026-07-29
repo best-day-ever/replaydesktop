@@ -1491,6 +1491,60 @@ pub struct NvencStreamProofV1 {
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum NvencPresetV1 {
+    P2,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencTuningV1 {
+    UltraLowLatency,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencConfigProofV1 {
+    pub width_px: u16,
+    pub height_px: u16,
+    pub frame_rate: RefreshRateV1,
+    pub preset: NvencPresetV1,
+    pub tuning: NvencTuningV1,
+    pub synchronous: bool,
+    pub picture_type_decision: bool,
+    pub forced_keyframe: bool,
+    pub output_parameter_sets: bool,
+    pub b_frames: u16,
+    pub lookahead_depth: u16,
+    pub reorder_delay: u16,
+    pub one_frame_vbv: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencResourceProofV1 {
+    pub output_name: OutputNameV1,
+    pub topology_token: OutputTopologyTokenV1,
+    pub gpu_pci_bdf: String,
+    pub gpu_uuid: String,
+    pub lease_surface: String,
+    pub width_px: u16,
+    pub height_px: u16,
+    pub pitch_bytes: u32,
+    pub buffer_format: NvencBufferFormatV1,
+    pub allocation_byte_size: u64,
+    pub allocation_base_verified: bool,
+    pub allocation_range_verified: bool,
+    pub same_cuda_context: bool,
+    pub same_gpu: bool,
+    pub registered: bool,
+    pub mapped: bool,
+    pub submitted: bool,
+    pub bitstream_locked: bool,
+    pub bitstream_unlocked: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum NvencResourceEventV1 {
     EncoderSession,
     RegisteredResource,
@@ -1537,6 +1591,10 @@ pub struct NvencTupleAttemptV1 {
     pub provider_invoked: bool,
     pub terminal: bool,
     pub outcome: NvencAttemptOutcomeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_proof: Option<NvencConfigProofV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_proof: Option<NvencResourceProofV1>,
     pub copy_proof: Option<CopyBoundaryProofV1>,
     pub stream_proof: Option<NvencStreamProofV1>,
     pub cleanup: NvencCleanupProofV1,
@@ -1555,6 +1613,8 @@ impl NvencTupleAttemptV1 {
             provider_invoked: false,
             terminal: true,
             outcome: NvencAttemptOutcomeV1::GenerationIneligible,
+            config_proof: None,
+            resource_proof: None,
             copy_proof: None,
             stream_proof: None,
             cleanup: NvencCleanupProofV1::no_resources(),
@@ -1573,6 +1633,8 @@ impl NvencTupleAttemptV1 {
             provider_invoked: true,
             terminal: true,
             outcome: NvencAttemptOutcomeV1::ProviderUnavailable,
+            config_proof: None,
+            resource_proof: None,
             copy_proof: None,
             stream_proof: None,
             cleanup: NvencCleanupProofV1::no_resources(),
@@ -1600,18 +1662,39 @@ pub enum NvencProviderKindV1 {
 #[serde(deny_unknown_fields)]
 pub struct NvencSourceEvidenceV1 {
     pub api_version: NvencApiVersionV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version_raw: Option<u32>,
     pub source_identity: Option<String>,
     pub header_sha256: Option<Sha256DigestV1>,
     pub runtime_library: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_max_api_version: Option<NvencApiVersionV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_max_api_version_raw: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_linux_driver_major: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvidia_driver_major: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_cuda_driver_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_driver_version: Option<u32>,
 }
 
 impl NvencSourceEvidenceV1 {
     pub fn unavailable(api_version: NvencApiVersionV1) -> Self {
         Self {
             api_version,
+            api_version_raw: None,
             source_identity: None,
             header_sha256: None,
             runtime_library: None,
+            runtime_max_api_version: None,
+            runtime_max_api_version_raw: None,
+            minimum_linux_driver_major: None,
+            nvidia_driver_major: None,
+            minimum_cuda_driver_version: None,
+            cuda_driver_version: None,
         }
     }
 

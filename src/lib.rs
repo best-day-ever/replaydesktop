@@ -352,12 +352,6 @@ fn validate_required_statuses(
     envelope: &G0EvidenceEnvelopeV1,
     required: &RequiredExtensionStatuses,
 ) -> Result<(), DoctorError> {
-    if required
-        .host04
-        .is_some_and(|status| status != G0ExtensionStatusV1::Unproven)
-    {
-        return Err(DoctorError::Persistence);
-    }
     for (identifier, expected) in [
         (HOST_FOUNDATION_EXTENSION_ID, required.host01),
         (SELECTED_OUTPUT_EXTENSION_ID, required.host02),
@@ -546,7 +540,11 @@ fn probe_extension_records(
                         nvenc.provider == model::NvencProviderKindV1::DiagnosticFixture
                     }
                     G0EvidenceProvenanceV1::Live => {
-                        nvenc.provider == model::NvencProviderKindV1::LiveUnavailable
+                        matches!(
+                            nvenc.provider,
+                            model::NvencProviderKindV1::LiveUnavailable
+                                | model::NvencProviderKindV1::SourceAuthenticated
+                        )
                     }
                 };
                 if !provider_matches_provenance
@@ -556,7 +554,11 @@ fn probe_extension_records(
                 }
                 return extension_record(
                     NVENC_TUPLES_EXTENSION_ID,
-                    G0ExtensionStatusV1::Unproven,
+                    match nvenc.admission {
+                        model::NvencAdmissionV1::Pass => G0ExtensionStatusV1::Pass,
+                        model::NvencAdmissionV1::Rejected => G0ExtensionStatusV1::Fail,
+                        model::NvencAdmissionV1::Unproven => G0ExtensionStatusV1::Unproven,
+                    },
                     serde_json::to_value(nvenc).map_err(|_| DoctorError::Internal)?,
                 )
                 .map_err(|_| DoctorError::Internal);

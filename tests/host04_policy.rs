@@ -142,16 +142,14 @@ impl NvencProvider for SuccessThenTimeoutProvider {
             attempt.resource_proof = None;
             attempt.copy_proof = None;
             attempt.stream_proof = None;
-            attempt.cleanup =
-                replay_host_doctor::model::NvencCleanupProofV1::no_resources();
+            attempt.cleanup = replay_host_doctor::model::NvencCleanupProofV1::no_resources();
         } else if self.calls > 2 {
             attempt.outcome = NvencAttemptOutcomeV1::Unsupported;
             attempt.config_proof = None;
             attempt.resource_proof = None;
             attempt.copy_proof = None;
             attempt.stream_proof = None;
-            attempt.cleanup =
-                replay_host_doctor::model::NvencCleanupProofV1::no_resources();
+            attempt.cleanup = replay_host_doctor::model::NvencCleanupProofV1::no_resources();
         }
         attempt
     }

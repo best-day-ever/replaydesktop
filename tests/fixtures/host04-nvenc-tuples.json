@@ -206,17 +206,35 @@
       "one_frame_vbv": true
     },
     "resource_proof": {
+      "output_name": {
+        "hex": "44502d302e33",
+        "display": "DP-0.3"
+      },
+      "topology_token": {
+        "randr_timestamp": 1000,
+        "randr_config_timestamp": 900,
+        "randr_event_count": 0,
+        "randr_snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nvcontrol_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nvml_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "gpu_pci_bdf": "00000000:01:00.0",
+      "gpu_uuid": "GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0",
       "lease_surface": "application-owned-nv12",
       "width_px": 3840,
       "height_px": 2160,
       "pitch_bytes": 3840,
       "buffer_format": "nv12",
       "allocation_byte_size": 12441600,
+      "allocation_base_verified": true,
+      "allocation_range_verified": true,
       "same_cuda_context": true,
       "same_gpu": true,
       "registered": true,
       "mapped": true,
-      "submitted": true
+      "submitted": true,
+      "bitstream_locked": true,
+      "bitstream_unlocked": true
     },
     "copy_proof": {
       "status": "pass",

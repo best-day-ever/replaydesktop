@@ -20,6 +20,7 @@ const MAX_FIXTURE_BYTES: usize = 1024 * 1024;
 const MAX_OBSERVATION_CODE_BYTES: usize = 256;
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
 const MIN_LIVE_NVFBC_WORKER_TIMEOUT: Duration = Duration::from_secs(5);
+const MIN_LIVE_NVENC_WORKER_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -124,6 +125,10 @@ pub trait ProbeBackend {
         parent_nonce: &str,
         requested_output: Option<&crate::model::OutputNameV1>,
     ) -> ProbeOutcome;
+
+    fn is_live(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +160,10 @@ impl ProbeBackend for LiveProbeBackend {
             Ok(observation) => ProbeOutcome::observed(probe, observation),
             Err(failure) => ProbeOutcome::failed(probe, failure),
         }
+    }
+
+    fn is_live(&self) -> bool {
+        true
     }
 }
 
@@ -285,7 +294,7 @@ impl BoundedProbeRunner {
             command.env("REPLAY_NVML_SDK_ROOT", root);
         }
         if matches!(request.source, ProbeSourceV1::Live)
-            && request.probe == ProbeId::NvfbcCapture
+            && matches!(request.probe, ProbeId::NvfbcCapture | ProbeId::NvencTuples)
             && let (Some(nvfbc_root), Some(cuda_root)) = (
                 std::env::var_os("REPLAY_NVFBC_SDK_ROOT"),
                 std::env::var_os("REPLAY_CUDA_SDK_ROOT"),
@@ -298,9 +307,19 @@ impl BoundedProbeRunner {
                 .env("REPLAY_CUDA_SDK_ROOT", cuda_root);
         }
         if matches!(request.source, ProbeSourceV1::Live)
+            && request.probe == ProbeId::NvencTuples
+            && let Some(nvenc_root) = std::env::var_os("REPLAY_NVENC_SDK_ROOT")
+            && Path::new(&nvenc_root).is_absolute()
+        {
+            command.env("REPLAY_NVENC_SDK_ROOT", nvenc_root);
+        }
+        if matches!(request.source, ProbeSourceV1::Live)
             && matches!(
                 request.probe,
-                ProbeId::HostFoundation | ProbeId::SelectedOutput | ProbeId::NvfbcCapture
+                ProbeId::HostFoundation
+                    | ProbeId::SelectedOutput
+                    | ProbeId::NvfbcCapture
+                    | ProbeId::NvencTuples
             )
         {
             // The worker starts from an empty environment. Forward only the
@@ -366,8 +385,12 @@ impl BoundedProbeRunner {
     }
 
     fn effective_timeout(&self, request: &ProbeRequestV1) -> Duration {
-        if matches!(request.source, ProbeSourceV1::Live) && request.probe == ProbeId::NvfbcCapture {
-            self.timeout.max(MIN_LIVE_NVFBC_WORKER_TIMEOUT)
+        if matches!(request.source, ProbeSourceV1::Live) {
+            match request.probe {
+                ProbeId::NvfbcCapture => self.timeout.max(MIN_LIVE_NVFBC_WORKER_TIMEOUT),
+                ProbeId::NvencTuples => self.timeout.max(MIN_LIVE_NVENC_WORKER_TIMEOUT),
+                _ => self.timeout,
+            }
         } else {
             self.timeout
         }
@@ -532,9 +555,12 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
         || (request.requested_output.is_some()
             && !matches!(
                 request.probe,
-                ProbeId::SelectedOutput | ProbeId::NvfbcCapture
+                ProbeId::SelectedOutput | ProbeId::NvfbcCapture | ProbeId::NvencTuples
             ))
         || (request.probe == ProbeId::NvfbcCapture && request.requested_output.is_none())
+        || (matches!(request.source, ProbeSourceV1::Live)
+            && request.probe == ProbeId::NvencTuples
+            && request.requested_output.is_none())
         || request
             .requested_output
             .as_ref()
@@ -597,18 +623,22 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
             )
         }
         ProbeSourceV1::Live if request.probe == ProbeId::NvencTuples => {
-            let mut provider = crate::native_nvenc::LiveUnavailableNvencProvider::new(
-                crate::model::NvencApiVersionV1::new(13, 1),
-            );
-            let nvenc = crate::native_nvenc::evaluate_nvenc_policy(
-                crate::model::NvencGpuGenerationV1::Unknown,
-                &mut provider,
-            );
+            let requested_output = request
+                .requested_output
+                .as_ref()
+                .ok_or(WorkerRequestError)?;
+            let nvenc = crate::native_nvenc::observe_live_nvenc_policy(requested_output);
+            let source_authenticated =
+                nvenc.provider == crate::model::NvencProviderKindV1::SourceAuthenticated;
             normal_worker_output(
                 &request,
                 PrimitiveObservationV1 {
-                    available: false,
-                    code: "nvenc-live-provider-unavailable".to_owned(),
+                    available: source_authenticated,
+                    code: if source_authenticated {
+                        "nvenc-live-policy-observed".to_owned()
+                    } else {
+                        "nvenc-live-provider-unavailable".to_owned()
+                    },
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
@@ -1171,15 +1201,15 @@ fn validate_observation_for_request(
         let Some(nvenc) = observation.nvenc.as_ref() else {
             return Ok(());
         };
-        if observation.available {
-            return Err(());
-        }
         let valid_provider = match request.source {
-            ProbeSourceV1::Live => {
-                nvenc.provider == crate::model::NvencProviderKindV1::LiveUnavailable
-            }
+            ProbeSourceV1::Live => match nvenc.provider {
+                crate::model::NvencProviderKindV1::SourceAuthenticated => observation.available,
+                crate::model::NvencProviderKindV1::LiveUnavailable => !observation.available,
+                crate::model::NvencProviderKindV1::DiagnosticFixture => false,
+            },
             ProbeSourceV1::Fixture { .. } => {
-                nvenc.provider == crate::model::NvencProviderKindV1::DiagnosticFixture
+                !observation.available
+                    && nvenc.provider == crate::model::NvencProviderKindV1::DiagnosticFixture
             }
         };
         return valid_provider.then_some(()).ok_or(());
@@ -1443,23 +1473,63 @@ pub fn collect_probes(
     run_id: &str,
     requested_output: Option<&crate::model::OutputNameV1>,
 ) -> Vec<ProbeOutcome> {
-    ProbeId::ALL
-        .into_iter()
-        .map(|probe| {
-            let mut material = Vec::with_capacity(run_id.len() + probe.as_str().len() + 1);
-            material.extend_from_slice(run_id.as_bytes());
-            material.push(0);
-            material.extend_from_slice(probe.as_str().as_bytes());
-            let nonce = format!("nonce-{}", crate::sha256_bytes(&material));
-            backend.observe(
-                probe,
-                &nonce,
-                matches!(probe, ProbeId::SelectedOutput | ProbeId::NvfbcCapture)
-                    .then_some(requested_output)
-                    .flatten(),
-            )
-        })
-        .collect()
+    let mut outcomes = Vec::with_capacity(ProbeId::ALL.len());
+    for probe in [
+        ProbeId::HostFoundation,
+        ProbeId::SelectedOutput,
+        ProbeId::NvfbcCapture,
+    ] {
+        outcomes.push(observe_bound_probe(
+            backend,
+            run_id,
+            requested_output,
+            probe,
+        ));
+    }
+    let prerequisites_pass = outcomes.iter().all(|outcome| {
+        outcome.failure.is_none()
+            && outcome
+                .observation
+                .as_ref()
+                .is_some_and(|observation| observation.available)
+    });
+    if !backend.is_live() || prerequisites_pass {
+        outcomes.push(observe_bound_probe(
+            backend,
+            run_id,
+            requested_output,
+            ProbeId::NvencTuples,
+        ));
+    } else {
+        outcomes.push(ProbeOutcome::failed(
+            ProbeId::NvencTuples,
+            ProbeFailure::ProtocolMismatch,
+        ));
+    }
+    outcomes
+}
+
+fn observe_bound_probe(
+    backend: &dyn ProbeBackend,
+    run_id: &str,
+    requested_output: Option<&crate::model::OutputNameV1>,
+    probe: ProbeId,
+) -> ProbeOutcome {
+    let mut material = Vec::with_capacity(run_id.len() + probe.as_str().len() + 1);
+    material.extend_from_slice(run_id.as_bytes());
+    material.push(0);
+    material.extend_from_slice(probe.as_str().as_bytes());
+    let nonce = format!("nonce-{}", crate::sha256_bytes(&material));
+    backend.observe(
+        probe,
+        &nonce,
+        matches!(
+            probe,
+            ProbeId::SelectedOutput | ProbeId::NvfbcCapture | ProbeId::NvencTuples
+        )
+        .then_some(requested_output)
+        .flatten(),
+    )
 }
 
 #[cfg(test)]
@@ -1480,7 +1550,10 @@ mod tests {
             ) -> ProbeOutcome {
                 assert_eq!(
                     requested_output.is_some(),
-                    matches!(probe, ProbeId::SelectedOutput | ProbeId::NvfbcCapture),
+                    matches!(
+                        probe,
+                        ProbeId::SelectedOutput | ProbeId::NvfbcCapture | ProbeId::NvencTuples
+                    ),
                     "probe {probe:?}"
                 );
                 ProbeOutcome::failed(probe, ProbeFailure::Spawn)

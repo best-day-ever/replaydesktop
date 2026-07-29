@@ -2,8 +2,9 @@ use replay_host_doctor::digest::sha256_bytes;
 use replay_host_doctor::evidence::validate_nvenc_tuples_record;
 use replay_host_doctor::model::{
     CopyBoundaryStatusV1, G0ExtensionRecordV1, G0ExtensionStatusV1, NVENC_TUPLES_EXTENSION_ID,
-    NvencAdmissionV1, NvencApiVersionV1, NvencGpuGenerationV1, NvencPolicyPositionV1,
-    NvencProviderKindV1, NvencSourceEvidenceV1, NvencTupleAttemptV1, NvencTupleV1,
+    NvencAdmissionV1, NvencApiVersionV1, NvencAttemptOutcomeV1, NvencGpuGenerationV1,
+    NvencPolicyPositionV1, NvencProviderKindV1, NvencSourceEvidenceV1, NvencTupleAttemptV1,
+    NvencTupleV1,
 };
 use replay_host_doctor::native_nvenc::{
     DiagnosticNvencProvider, LiveUnavailableNvencProvider, NvencProvider,
@@ -69,6 +70,101 @@ fn host04_policy_advertisement_requires_complete_exact_attempt() {
         serde_json::from_value(root["complete_attempt"].clone()).expect("complete attempt");
     attempt.cleanup.complete = false;
     assert!(advertisement_from_attempt(&attempt).is_none());
+
+    let mut attempt: NvencTupleAttemptV1 =
+        serde_json::from_value(root["complete_attempt"].clone()).expect("complete attempt");
+    attempt
+        .config_proof
+        .as_mut()
+        .expect("configuration proof")
+        .synchronous = false;
+    assert!(advertisement_from_attempt(&attempt).is_none());
+
+    let mut attempt: NvencTupleAttemptV1 =
+        serde_json::from_value(root["complete_attempt"].clone()).expect("complete attempt");
+    attempt
+        .resource_proof
+        .as_mut()
+        .expect("resource proof")
+        .same_cuda_context = false;
+    assert!(advertisement_from_attempt(&attempt).is_none());
+}
+
+#[derive(Debug)]
+struct SuccessThenTimeoutProvider {
+    source: NvencSourceEvidenceV1,
+    complete: NvencTupleAttemptV1,
+    calls: usize,
+}
+
+impl SuccessThenTimeoutProvider {
+    fn new() -> Self {
+        let root: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/host04-nvenc-tuples.json"))
+                .expect("fixture JSON");
+        Self {
+            source: serde_json::from_value(serde_json::json!({
+                "api_version": { "major": 13, "minor": 1 },
+                "source_identity": "nvidia-video-codec-sdk-13.1",
+                "header_sha256":
+                    "1111111111111111111111111111111111111111111111111111111111111111",
+                "runtime_library": "libnvidia-encode.so.1"
+            }))
+            .expect("source fixture"),
+            complete: serde_json::from_value(root["complete_attempt"].clone())
+                .expect("complete attempt"),
+            calls: 0,
+        }
+    }
+}
+
+impl NvencProvider for SuccessThenTimeoutProvider {
+    fn kind(&self) -> NvencProviderKindV1 {
+        NvencProviderKindV1::SourceAuthenticated
+    }
+
+    fn source(&self) -> &NvencSourceEvidenceV1 {
+        &self.source
+    }
+
+    fn attempt(
+        &mut self,
+        position: NvencPolicyPositionV1,
+        tuple: NvencTupleV1,
+    ) -> NvencTupleAttemptV1 {
+        self.calls += 1;
+        let mut attempt = self.complete.clone();
+        attempt.position = position;
+        attempt.tuple = tuple;
+        if self.calls == 2 {
+            attempt.outcome = NvencAttemptOutcomeV1::Timeout;
+            attempt.config_proof = None;
+            attempt.resource_proof = None;
+            attempt.copy_proof = None;
+            attempt.stream_proof = None;
+            attempt.cleanup =
+                replay_host_doctor::model::NvencCleanupProofV1::no_resources();
+        } else if self.calls > 2 {
+            attempt.outcome = NvencAttemptOutcomeV1::Unsupported;
+            attempt.config_proof = None;
+            attempt.resource_proof = None;
+            attempt.copy_proof = None;
+            attempt.stream_proof = None;
+            attempt.cleanup =
+                replay_host_doctor::model::NvencCleanupProofV1::no_resources();
+        }
+        attempt
+    }
+}
+
+#[test]
+fn host04_policy_one_success_cannot_mask_a_later_timeout() {
+    let mut provider = SuccessThenTimeoutProvider::new();
+    let evidence = evaluate_nvenc_policy(NvencGpuGenerationV1::Ampere, &mut provider);
+
+    assert_eq!(evidence.attempts.len(), 7);
+    assert_eq!(evidence.admission, NvencAdmissionV1::Rejected);
+    assert!(evidence.advertised.is_empty());
 }
 
 #[derive(Debug)]

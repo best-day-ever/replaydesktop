@@ -190,6 +190,34 @@
     "provider_invoked": true,
     "terminal": true,
     "outcome": "success",
+    "config_proof": {
+      "width_px": 3840,
+      "height_px": 2160,
+      "frame_rate": { "numerator": 60, "denominator": 1 },
+      "preset": "p2",
+      "tuning": "ultra-low-latency",
+      "synchronous": true,
+      "picture_type_decision": true,
+      "forced_keyframe": true,
+      "output_parameter_sets": true,
+      "b_frames": 0,
+      "lookahead_depth": 0,
+      "reorder_delay": 0,
+      "one_frame_vbv": true
+    },
+    "resource_proof": {
+      "lease_surface": "application-owned-nv12",
+      "width_px": 3840,
+      "height_px": 2160,
+      "pitch_bytes": 3840,
+      "buffer_format": "nv12",
+      "allocation_byte_size": 12441600,
+      "same_cuda_context": true,
+      "same_gpu": true,
+      "registered": true,
+      "mapped": true,
+      "submitted": true
+    },
     "copy_proof": {
       "status": "pass",
       "application_edges": [

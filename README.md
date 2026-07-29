@@ -63,7 +63,7 @@ The operator must choose one exact candidate; the doctor never selects by
 position, display order, or an inferred default:
 
 ```console
-export REPLAY_HOST_OUTPUT='DP-0'
+export REPLAY_HOST_OUTPUT='DP-0.3'
 ```
 
 Run the full read-only relation with that exact name. A successful HOST-02
@@ -88,13 +88,19 @@ cargo run --locked --bin replay-host-doctor -- verify-evidence \
   --validate-extension selected-output.v1
 ```
 
-The admitted extension records the exact XRandR output/CRTC/mode/provider,
-active timing and origin, an in-memory EDID SHA-256, the unique DRM connector,
-canonical PCI BDF, matching NVML UUID, and before/after topology digests.
-Missing or ambiguous relations, malformed observations, unsupported
-clone/MST/PRIME layouts, or a topology change produce a typed HOST-02 failure.
-No raw EDID bytes, native errors, SDK paths, or inherited secrets are
-persisted.
+The admitted extension records the exact XRandR output/CRTC/mode/provider and
+active timing/origin, then follows
+`NV_CTRL_DISPLAY_RANDR_OUTPUT_ID` to one NV-CONTROL display target, one
+enabled-on-X-screen membership, one owning NV-CONTROL GPU target, and one NVML
+device matching both canonical PCI BDF and NVML UUID. MST is accepted when
+that source-defined chain is unique; `DP-0.3` is the live proven MST example.
+DRM is optional diagnostic data only and never affects HOST-01, HOST-02, or
+the authoritative topology token.
+
+Missing or ambiguous direct relations, mismatched names/BDFs/UUIDs, malformed
+observations, an actual multi-output CRTC scanout, or a RandR/topology change
+produce a typed HOST-02 failure. No raw EDID bytes, X authority material,
+native errors, SDK paths, or inherited secrets are persisted.
 
 ## Preserved pre-reboot failure
 

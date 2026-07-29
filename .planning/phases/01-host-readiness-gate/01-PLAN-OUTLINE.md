@@ -6,8 +6,8 @@
 | 01-02 | Ship the doctor CLI, bounded workers, diagnostic admission policy, currentness, atomic evidence persistence/readback, process fixtures, and valid development command. | 2 | 01-01 | HOST-01 | 9 |
 | 01-03 | Prove local Xorg through logind/AF_UNIX/SO_PEERCRED/real-Xorg/x11rb and source-gate the complete live NVML sequence (D-01, D-02, D-06–D-08). | 3 | 01-02 | HOST-01 | 9 |
 | 01-04 | Archive the fresh current-host FAIL with the exact `/proc/self/exe` copy, exact V1 evidence, contained manifest, create-once integrity, and permanent compatibility regressions (D-06, D-09). | 4 | 01-03 | HOST-01 | 8 |
-| 01-05 | Create the output/GPU mapping spike first, then implement the pure unique XRandR/EDID/DRM/PCI/NVML relation and ambiguity fixtures (D-02, D-03). | 5 | 01-04 | HOST-02 | 5 |
-| 01-06 | Integrate explicit `--output`, durable `selected-output.v1`, process tests, original-archive compatibility, and corrected-host live HOST-01/HOST-02 proof; G0 remains FAIL. | 6 | 01-05 | HOST-02 | 8 |
+| 01-05 | Create the output/GPU mapping spike, then freeze the corrected pure XRandR→NV-CONTROL display/GPU→exact NVML BDF+UUID relation and ambiguity fixtures (D-02, D-03). | 5 | 01-04 | HOST-02 | 5 |
+| 01-06 | Integrate explicit `--output`, fixed-SONAME NV-CONTROL collection, durable `selected-output.v1`, optional DRM diagnostics, process tests, archive compatibility, and corrected-host live HOST-01/HOST-02 proof; G0 remains FAIL. | 6 | 01-05 | HOST-02 | 8 |
 | 01-07 | Build the NvFBC/CUDA source/ABI gate, no-SDK and fixture providers, frame/lease/copy/cursor/driver models, strict extension, and cleanup matrix (D-02, D-05, D-08). | 7 | 01-06 | HOST-03 | 9 |
 | 01-08 | Verify immutable history and separate operator source assertion, then prove one selected-output shared-CUDA frame and `nvfbc-capture.v1`; G0 remains FAIL for HOST-04. | 8 | 01-07 | HOST-03 | 7 |
 | 01-09 | Create the NVENC copy-boundary spike first, then freeze H.264 High/HEVC/Ampere-Ada policy, bounded bitstream parsers, and diagnostic fixtures (D-04, D-05). | 9 | 01-08 | HOST-04 | 7 |

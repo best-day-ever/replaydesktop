@@ -6,7 +6,7 @@ status: complete
 tags:
   - rust
   - xrandr
-  - drm-kms
+  - nv-control
   - nvml
   - pci-identity
   - tdd
@@ -15,18 +15,18 @@ dependency-graph:
     - "01-04: exact local-Xorg/NVML contracts and immutable pre-reboot failure archive"
   provides:
     - "Primary-source output-to-GPU mapping predicate with explicit namespaces, units, and cardinalities"
-    - "Pure typed XRandR-to-DRM-to-PCI-to-NVML unique-correlation contract"
+    - "Pure typed XRandR-to-NV-CONTROL-display/GPU-to-NVML unique-correlation contract, corrected by Plan 01-06 live evidence"
     - "Bounded exact SelectedOutputV1 model with stable topology token and proof cardinalities"
-    - "Adversarial fixtures for ambiguity, duplication, topology changes, clones, MST, PRIME, and offload"
+    - "Adversarial fixtures for target ID zero, ambiguity, duplication, topology changes, MST, providers, and optional DRM diagnostics"
   affects:
     - "01-06 live selected-output collection and evidence integration"
     - "Later capture geometry, coordinate mapping, and latency telemetry"
 tech-stack:
   added: []
   patterns:
-    - "Typed disjoint XRandR and DRM identifier newtypes"
-    - "SHA-256-only EDID identity with bounded raw-name hex"
-    - "Opening/closing RandR, DRM, and NVML topology snapshot token"
+    - "Typed disjoint XRandR and NV-CONTROL identifier newtypes"
+    - "Supplemental SHA-256-only EDID digest with bounded raw-name hex"
+    - "Opening/closing RandR, NV-CONTROL, and NVML topology snapshot token plus RandR event count"
     - "Checked reduced rational refresh without floating-point admission"
 key-files:
   created:
@@ -40,11 +40,11 @@ key-files:
     - src/model.rs
     - .planning/WINDOWS.md
 decisions:
-  - "XRandR XIDs and DRM connector IDs are typed disjoint namespaces and are never compared; identity is proved only through provider membership, EDID digest, connector kind, exact timing, PCI BDF, and NVML UUID."
-  - "The canonical PCI representation is lowercase NVML-compatible dddddddd:bb:dd.f, with sysfs domains zero-extended before comparison."
-  - "Topology stability includes a complete RandR observation digest in addition to server/config timestamps and DRM/NVML snapshot digests."
-  - "NV-CONTROL remains NOT_REQUIRED because RandR, DRM, canonical sysfs ancestry, and NVML close the relation without another identity namespace."
-  - "The current Wayland/Xwayland and mismatched-NVML host remains BLOCKED_PRE_REBOOT_XORG; only Plan 01-06 may perform live integration."
+  - "Plan 01-06 corrected the live ownership edge to XRandR output XID → NV-CONTROL display target → enabled X screen → NV-CONTROL GPU → exact NVML BDF+UUID."
+  - "The canonical PCI representation is lowercase NVML-compatible dddddddd:bb:dd.f and is derived directly from NV-CONTROL GPU PCI components."
+  - "Topology stability includes complete RandR, NV-CONTROL, and NVML digests plus RandR timestamps and a zero-event guard."
+  - "DRM connector observations are optional diagnostics only; MST is accepted when the direct source-defined target relation is unique."
+  - "The preserved pre-reboot Wayland/NVML-mismatch run remains immutable history; Plan 01-06 separately proved the corrected live Xorg/NV-CONTROL relation."
 requirements-completed:
   - HOST-02
 coverage:
@@ -56,15 +56,15 @@ coverage:
         ref: "tests/output_mapping.rs#host02_mapping_spike_contract_is_explicit_and_fail_closed"
         status: pass
       - kind: environment
-        ref: "tests/output_mapping.rs#host02_mapping_spike_current_machine_is_blocked_before_xorg_reboot"
+        ref: "tests/output_mapping.rs#host02_mapping_fixture_covers_nvcontrol_and_drm_diagnostic_boundaries"
         status: pass
     human_judgment: false
   - id: D2
-    description: "A namespace-disjoint XRandR output maps only through one provider, matching EDID/kind/timing, one DRM connector/BDF, and one NVML BDF/UUID."
+    description: "A namespace-disjoint XRandR output maps only through one provider, one NV-CONTROL display target, one owning GPU target, and one exact NVML BDF+UUID."
     requirement: HOST-02
     verification:
       - kind: integration
-        ref: "tests/output_mapping.rs#host02_namespace_disjoint_full_relation_passes_without_id_equality"
+        ref: "tests/output_mapping.rs#host02_source_defined_xid_target_gpu_nvml_relation_ignores_shortcuts"
         status: pass
       - kind: integration
         ref: "tests/output_mapping.rs#host02_mapping_fixture_matrix_is_deterministic_and_fail_closed"
@@ -75,7 +75,7 @@ coverage:
     requirement: HOST-02
     verification:
       - kind: integration
-        ref: "tests/output_mapping.rs#host02_mapping_exact_name_origin_and_refresh_round_trip"
+        ref: "tests/output_mapping.rs#host02_mapping_exact_name_origin_timing_and_mst_round_trip"
         status: pass
       - kind: integration
         ref: "tests/output_mapping.rs#host02_mapping_bounds_and_exact_arithmetic_reject_invalid_observations"
@@ -86,7 +86,7 @@ coverage:
     requirement: HOST-02
     verification:
       - kind: integration
-        ref: "tests/output_mapping.rs#host02_topology_token_change_returns_no_selection"
+        ref: "tests/output_mapping.rs#host02_topology_or_randr_event_change_returns_no_selection"
         status: pass
       - kind: compatibility
         ref: "tests/host_doctor_cli.rs#g0_v1_foundation_compat"
@@ -106,30 +106,41 @@ metrics:
 
 # Phase 1 Plan 5: Output-to-GPU Mapping Contract Summary
 
-Typed fail-closed XRandR-to-DRM-to-PCI-to-NVML correlation with SHA-256
-display identity, exact timing and rational refresh, stable topology snapshots,
-and adversarial ambiguity rejection.
+Typed fail-closed XRandR-to-NV-CONTROL-to-NVML correlation with exact timing,
+rational refresh, stable authoritative snapshots, valid MST support, and
+adversarial ambiguity rejection.
+
+## Plan 01-06 Live Correction
+
+The initial Plan 01-05 implementation tested a DRM-mediated hypothesis. The
+corrected Xorg host disproved DRM scanout as an NVIDIA X11 ownership oracle:
+the exact selected MST output passed the direct NV-CONTROL relation while the
+optional DRM diagnostic contained zero active connectors. Plan 01-06 replaced
+the model, fixtures, predicate, and live collector accordingly. This summary
+describes the current corrected contract; the historical RED/GREEN commit
+table below remains an audit record of the original plan execution.
 
 ## Accomplishments
 
-- Recorded the authoritative RandR, DRM KMS, sysfs, and NVML field semantics,
-  namespaces, units, collection bounds, reproducible commands, and exact
-  cardinality predicate before implementation.
+- Recorded and then corrected the authoritative RandR, NV-CONTROL, and NVML
+  field semantics, namespaces, units, collection bounds, reproducible
+  commands, and exact cardinality predicate.
 - Preserved the current reference machine honestly as
   `BLOCKED_PRE_REBOOT_XORG`: Xwayland exposes zero providers and emulated RandR,
   while NVML reports the already archived driver/library mismatch.
 - Added distinct Rust newtypes for XRandR output/CRTC/mode/provider XIDs and
-  DRM connector IDs, preventing accidental cross-namespace equality.
+  NV-CONTROL display/GPU target IDs, preventing accidental cross-namespace
+  equality while allowing valid target ID zero.
 - Added bounded observation and `SelectedOutputV1` models for exact name bytes,
   optional round-tripped Unicode, signed origin, exact timing, reduced rational
-  refresh, EDID digest, separately named DRM/PCI/NVML identity, and proof
-  cardinalities.
+  refresh, supplemental EDID digest, direct display/GPU target identities,
+  canonical PCI BDF/UUID, optional DRM diagnostics, and proof cardinalities.
 - Implemented `prove_output_gpu_mapping` as a pure function with no native
   query, enumeration-order preference, approximate refresh, or fallback.
-- Replayed a data-driven matrix covering a unique unequal-ID relation,
-  identical displays, duplicate EDID, multiple providers/connectors/BDFs/NVML
-  matches, missing EDID, conflicting facts, token changes, clones, MST, and
-  PRIME/offload.
+- Replayed a data-driven matrix covering unequal and zero target IDs,
+  identical displays, duplicate EDID, multiple providers/display targets/GPU
+  owners/NVML matches, conflicting facts, token/event changes, MST, actual
+  CRTC sharing, and optional/unstable DRM diagnostics.
 
 ## Task Commits
 
@@ -160,20 +171,21 @@ and adversarial ambiguity rejection.
 
 ## Decisions Made
 
-- Numeric equality between an XRandR XID and a DRM connector ID is meaningless.
-  The Rust types are incompatible, and the positive fixture deliberately uses
-  `73` and `911`.
-- XRandR `ConnectorNumber`, DRM `connector_type_id`, and connector display names
-  remain separately named evidence. None is treated as a cross-API identity.
-- Raw EDID exists only inside the future collector long enough to hash it.
+- Numeric equality between an XRandR XID, an NV-CONTROL target ID, or a DRM
+  diagnostic ID is meaningless. The direct edge is attribute-defined, and
+  target ID zero is valid.
+- XRandR primary state, `ConnectorNumber`, EDID, DRM connector state, and
+  enumeration order remain supplemental evidence. None is treated as an
+  ownership identity.
+- Raw EDID exists only inside the live collector long enough to hash it.
   Models, fixtures, errors, and persisted selections carry only
   `Sha256DigestV1`.
-- Canonical PCI BDF uses NVML's eight-digit domain representation. Linux's
-  common four-digit sysfs domain is zero-extended before exact comparison.
+- Canonical PCI BDF uses NVML's eight-digit domain representation and is
+  derived with checked formatting from NV-CONTROL GPU PCI components.
 - Clock-modifying mode flags not supported by the rational derivation fail
   closed rather than being silently ignored.
-- Live collection, a second topology read, and selected-output extension
-  integration remain solely owned by Plan 01-06.
+- Plan 01-06 owns the completed fixed-SONAME live collection, second topology
+  read, RandR event guard, and selected-output extension integration.
 
 ## Deviations from Plan
 
@@ -244,18 +256,16 @@ the pure Plan 01-05 contract.
 ## Requirement Coverage
 
 HOST-02's mapping and evidence-shape contract is complete: one explicitly
-named physical output can produce a deterministic selected-output proof or a
-stable blocker without guessing. The requirement registry marks HOST-02
-complete for this contract deliverable; Plan 01-06 remains the downstream
-native Xorg/DRM collector, closing-token recheck, G0 integration, and corrected
-host live-validation gate.
+named physical output can produce a deterministic direct-target proof or a
+stable blocker without guessing. Plan 01-06 supplies the fixed-SONAME native
+Xorg/NV-CONTROL/NVML collector, event-aware closing-token recheck, G0
+integration, and corrected-host live proof.
 
 ## Next Plan Readiness
 
-Plan 01-06 can implement bounded live collectors directly against this pure
-contract. Its live acceptance remains blocked until the host is rebooted into
-the intended native Xorg session and the NVIDIA kernel/userspace mismatch is
-remediated; fixture success cannot substitute for that live proof.
+Plan 01-06 implemented the corrected bounded collector and proved the exact
+`DP-0.3` MST relation on real Xorg with matching NVIDIA kernel/userspace
+`610.43.03`. Fixture success did not substitute for that live proof.
 
 ## Self-Check: PASSED
 

@@ -178,7 +178,7 @@ The operator chooses one exact listed XRandR name. Do not select by array
 position or connector numbering:
 
 ```console
-export REPLAY_HOST_OUTPUT='DP-0'
+export REPLAY_HOST_OUTPUT='DP-0.3'
 ```
 
 Run the selected relation and require the honest nonzero result:
@@ -208,12 +208,17 @@ cargo run --locked --bin replay-host-doctor -- verify-evidence \
 ```
 
 The selected proof joins the exact XRandR output, CRTC, mode, provider,
-geometry and timing to an EDID SHA-256, one active DRM connector, one canonical
-PCI BDF, and one matching NVML UUID. It records unequal namespace IDs
-independently and rechecks XRandR, DRM, and NVML topology before admission.
-Missing, ambiguous, malformed, cached, raced, clone/MST/PRIME, timeout, or
-secret-bearing observations fail closed. Raw EDID, authority files, SDK paths,
-and native error strings are never evidence.
+geometry and timing through `NV_CTRL_DISPLAY_RANDR_OUTPUT_ID` to one
+NV-CONTROL display target, its enabled X-screen membership, one owning
+NV-CONTROL GPU target, and one current NVML device matching both canonical PCI
+BDF and NVML UUID. MST is admitted when this source-defined chain is unique.
+DRM is optional diagnostic data and is excluded from HOST-01/HOST-02
+admission and the authoritative topology token.
+
+The collector rechecks XRandR, NV-CONTROL, NVML, and queued RandR events before
+admission. Missing, ambiguous, malformed, cached, raced, actual multi-output
+CRTC, timeout, or secret-bearing observations fail closed. Raw EDID, authority
+files, SDK paths, and native error strings are never evidence.
 
 The corrected evidence must also identify a different boot and session from
 the preserved archive (`be28f2a4-b236-4fbf-b0e2-5a90d0e9641e` and

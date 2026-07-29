@@ -85,15 +85,15 @@ Recent decisions affecting current work:
 - [Phase 01]: Local Xorg admission requires one active local logind session whose AF_UNIX peer identity, real Xorg executable, X11 setup, and RandR facts all agree.
 - [Phase 01]: NVML admission requires authenticated API 13 source/ABI metadata and the complete fixed-SONAME runtime/device/shutdown sequence.
 - [Phase 01]: Strict host-foundation.v1 semantics are enforced on application readback without changing the generic V1 base decoder.
-- [Phase 01]: Selected-output correlation remains UNPROVEN and prevents G0 PASS even when the HOST-01 foundation passes.
+- [Phase 01]: Selected-output correlation is proven for exact XRandR output DP-0.3; NvFBC and NVENC remain UNPROVEN and prevent G0 PASS.
 - [Phase 01]: The executable source is trusted only through an open /proc/self/exe descriptor; Cargo-style hard links are safe because path identity is never reopened or resolved.
 - [Phase 01]: The loaded libnvidia-ml.so exact filename version is recorded before NVML initialization so initialization failure cannot hide a real kernel/userspace mismatch.
 - [Phase 01]: Archive verification is offline and never executes the archived binary or consults target/ or the current executable.
 - [Phase 01]: Plans 01-06, 01-08, and 01-10 and every base-decoder/archive-verifier change must run both permanent compatibility tests.
-- [Phase 01]: XRandR XIDs and DRM connector IDs remain typed disjoint namespaces; the mapper proves identity only through provider membership, EDID digest, connector kind, exact timing, PCI BDF, and NVML UUID.
-- [Phase 01]: Canonical output-to-GPU PCI identity uses lowercase NVML-compatible dddddddd:bb:dd.f, with sysfs domains zero-extended before exact comparison.
-- [Phase 01]: HOST-02 topology stability requires equal opening and closing RandR observation, DRM, and NVML snapshot digests plus RandR timestamps.
-- [Phase 01]: NV-CONTROL is not required; live collection and selected-output evidence integration remain Plan 01-06 scope.
+- [Phase 01]: HOST-02 ownership is the direct source-defined chain XRandR output XID → NV-CONTROL display target → enabled X screen → owning NV-CONTROL GPU target → one NVML device matching both PCI BDF and UUID.
+- [Phase 01]: Canonical output-to-GPU PCI identity uses lowercase NVML-compatible dddddddd:bb:dd.f derived from NV-CONTROL GPU PCI components; NV-CONTROL target ID zero is valid.
+- [Phase 01]: HOST-02 topology stability requires equal opening and closing RandR, NV-CONTROL, and NVML snapshot digests plus RandR timestamps and zero queued RandR topology events.
+- [Phase 01]: DRM connector state is optional diagnostic data only; it does not affect HOST-01/HOST-02 or the authoritative token, and source-proven MST is accepted.
 
 ### Pending Todos
 
@@ -101,7 +101,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: The development host is currently on Wayland with an NVIDIA kernel/userspace mismatch; reboot to a matching installed kernel and log into real Xorg before G0 can pass.
+- [Phase 1]: HOST-01/HOST-02 are proven on real Xorg with matching NVIDIA kernel/userspace 610.43.03 and exact MST output DP-0.3; HOST-03/HOST-04 remain the active G0 blockers.
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
 

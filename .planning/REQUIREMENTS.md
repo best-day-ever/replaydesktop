@@ -51,7 +51,8 @@ with immersive control and working clipboard synchronization.
 
 - [x] **HOST-01**: An operator can run a host-doctor command that reports and
   blocks on a non-Xorg session, NVIDIA kernel/userspace mismatch, failed NVML,
-  missing physical output, missing `/dev/uinput`, or missing DRM/render access.
+  missing connected XRandR output, missing `/dev/uinput`, or missing DRM
+  render-node access. Public DRM connector scanout state is diagnostic only.
 
 - [x] **HOST-02**: An operator can select exactly one physical X11 output, and
   startup reports its XRandR name, dimensions, refresh rate, GPU, and desktop

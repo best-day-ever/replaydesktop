@@ -114,9 +114,9 @@ and working clipboard synchronization.
   reproducible proof.
 - The current development host has an RTX A5000 Laptop GPU (Ampere), two
   physical 4K displays including one 120 Hz display, and adequate development
-  tooling. It is presently running a Wayland session and has a loaded
-  NVIDIA-kernel/userspace version mismatch; a reboot into a matching installed
-  kernel followed by an X11 login is required before live NVENC/NvFBC tests.
+  tooling. It now runs real local Xorg with matching NVIDIA
+  kernel/userspace `610.43.03`; HOST-01 and the exact `DP-0.3` HOST-02
+  NV-CONTROL mapping are proven. NVENC and NvFBC remain separate live gates.
 - `/dev/uinput` and DRM render access are already available to the current user
   through ACLs. NVENC must be re-probed after the driver/session correction.
 - Internal use and possible later open-source release make AGPLv3 acceptable

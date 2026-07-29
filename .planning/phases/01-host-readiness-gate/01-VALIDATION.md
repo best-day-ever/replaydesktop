@@ -224,6 +224,114 @@ The corrected evidence must also identify a different boot and session from
 the preserved archive (`be28f2a4-b236-4fbf-b0e2-5a90d0e9641e` and
 `sid-1968565`). A repeated original identity is not post-reboot proof.
 
+## Authenticated sources and live HOST-03 proof
+
+The operator separately asserted that the official NVIDIA Capture SDK source
+was lawfully available and its applicable terms had been accepted. Automated
+path, digest, and ABI checks did not substitute for that assertion. The source
+archive and authenticated declarations used for this run were:
+
+| Object | Location / identity | SHA-256 |
+|---|---|---|
+| Capture SDK archive | `/home/finn/Downloads/SW_36244718.0_SW-apps_Release_Linux_AMD64_CaptureSDK.tgz` | `31e0d8f2e2fe94fab1f9cdb76b85f5f343692a6323edd732a9aad761814697f5` |
+| NvFBC 1.9 header | `capture-linux-v9.0.0-31e0d8f2e2fe94fa/include/NvFBC.h` | `b079b8d672e9ef34e358ded5e40592971ef290a972ccb831f46b38c691ed9ee1` |
+| CUDA Driver API 13.3 header | `/opt/cuda/targets/x86_64-linux/include/cuda.h` | `31df84e16179b6d97db4b3c0bae7697392a370b41983f4a8962f0e5a8069b577` |
+| CUDA typedef header | `/opt/cuda/targets/x86_64-linux/include/cudaTypedefs.h` | `30d517cfa051f7a498e432eb1a1964abb11c1cd32098125bba3dfef0b059381f` |
+
+No additional CUDA library download was required. ReplayDesktop uses the CUDA
+Driver API declarations in `cuda.h` and `cudaTypedefs.h`; at runtime it loads
+`libcuda.so.1` from the installed NVIDIA display driver. It does not link
+`libcudart`, use CUDA samples, or require a full Toolkit installation for this
+capture proof. NVENC headers are a separate, pinned Plan 01-09/01-10 input.
+
+The authenticated build and test environment was:
+
+```console
+export REPLAY_NVFBC_SDK_ROOT=/home/finn/.local/share/replaydesktop/nvidia-capture-sdk/capture-linux-v9.0.0-31e0d8f2e2fe94fa/include
+export REPLAY_CUDA_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include
+export REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include
+export REPLAY_HOST_OUTPUT=DP-0.3
+export DISPLAY=:0
+export XAUTHORITY=/run/user/1000/xauth_LAgRuP
+export XDG_SESSION_ID=3
+export XDG_SESSION_TYPE=x11
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+```
+
+The X authority and session values are observations from this qualification
+run, not stable configuration; rediscover them from the active local Xorg
+session after a logout or reboot.
+
+The source/ABI, fixture, cleanup, and process gates passed before live capture:
+
+```console
+cargo test --locked host03_source_abi_
+cargo test --locked host03_fixture_
+cargo test --locked host03_cleanup_
+cargo test --locked --test host_doctor_cli host03_process_
+```
+
+The independent hardware test then obtained one selected-output frame under
+both an outer process timeout and the provider's shorter native deadline:
+
+```console
+timeout 180s cargo test --locked --test host_doctor_cli \
+  host03_live_one_frame_current_selected_output \
+  -- --ignored --exact --nocapture
+```
+
+Result: one test passed in 2.20 seconds. The provider performed exactly one
+fresh-frame grab with a 750 ms native timeout and no retry or fallback.
+
+The final production readback was created with:
+
+```console
+set +e
+cargo run --locked --bin replay-host-doctor -- run \
+  --output "$REPLAY_HOST_OUTPUT" \
+  --evidence target/g0-host03-live.json
+live_status=$?
+set -e
+test "$live_status" -eq 2
+
+cargo run --locked --bin replay-host-doctor -- verify-evidence \
+  --evidence target/g0-host03-live.json \
+  --require-host01 pass \
+  --require-host02 pass \
+  --require-host03 pass \
+  --require-host04 unproven \
+  --validate-extension nvfbc-capture.v1
+```
+
+The persisted evidence has SHA-256
+`b66dea6fab17037c4236019ece3e1875d39db0f914264a0f52309769c1f1f0d1`
+and run ID
+`run-b62d5c6f2e9a0f4a7b73f61befca00ba6e126d3a102ca84241a982b9eaa23fd9`.
+Its live `nvfbc-capture.v1` extension records:
+
+| Fact | Current qualified value |
+|---|---|
+| source identity | `nvidia-nvfbc-api-1.9-cuda-driver-api-13.3` |
+| runtime libraries | `libnvidia-fbc.so.610.43.03`, `libcuda.so.610.43.03` |
+| selected output | `DP-0.3`, XRandR XID `540`, 3840×2160 at origin 0,0 |
+| selected GPU | `00000000:01:00.0`, `GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0` |
+| frame | sequence 1, fresh, NV12, 3840×2160, 12,441,600 bytes, two validated planes |
+| capture processing | selected scanout BGRA → NvFBC shared-CUDA NV12; `required_post_processing=true`, `direct_capture=false` |
+| cursor | requested, included, and NvFBC-composited; the independent visibility flag was `false` |
+| application-visible copy | one same-GPU device-to-device copy to application-owned NV12; zero host-staged or peer-copy edges |
+| cleanup | frame release, application buffer free, session/handle destruction, library unload, CUDA context/library release; complete in reverse order |
+| encoder boundary | `unproven` |
+
+The evidence carries typed identities, sizes, formats, counts, timestamps,
+digests, and lifecycle events only. It persists no frame bytes, native pointer,
+operator source path, native error string, or inferred protected-content
+meaning. Protected/DRM content is outside the prototype requirement; DRM
+remains optional diagnostic data and cannot affect admission.
+
+The overall run intentionally remained `fail` with one reason only:
+`nvenc-tuples.v1 unproven`. HOST-03 is therefore complete without making an
+NVENC or G0 PASS claim.
+
 ## Permanent compatibility obligation
 
 The two stable regressions are:

@@ -8,8 +8,10 @@ verifies that the evidence belongs to the current run.
 The host-foundation probe proves or rejects the local Xorg session and exact
 NVIDIA kernel/NVML userspace identity. Selected output mapping is available
 only through explicit, measured selection; omission enters discovery and never
-chooses a default. NvFBC capture and NVENC tuples remain `UNPROVEN`, so the
-current command still cannot produce G0 PASS.
+chooses a default. With separately authenticated NVIDIA Capture SDK and CUDA
+Driver API headers, the live path now proves one selected-output NvFBC
+shared-CUDA frame. NVENC tuples remain `UNPROVEN`, so the current command still
+cannot produce G0 PASS.
 
 ## Run the doctor
 
@@ -101,6 +103,81 @@ Missing or ambiguous direct relations, mismatched names/BDFs/UUIDs, malformed
 observations, an actual multi-output CRTC scanout, or a RandR/topology change
 produce a typed HOST-02 failure. No raw EDID bytes, X authority material,
 native errors, SDK paths, or inherited secrets are persisted.
+
+## Prove one selected-output NvFBC frame
+
+The current host already has everything needed for the CUDA side of this
+prototype. No additional CUDA runtime or full Toolkit download is required:
+the build consumes only the CUDA Driver API declarations in `cuda.h` and
+`cudaTypedefs.h` from
+`/opt/cuda/targets/x86_64-linux/include`, and the program dynamically loads
+`libcuda.so.1` from the installed NVIDIA display driver. The later NVENC plan
+uses its separately pinned Video Codec SDK headers.
+
+The qualified Capture SDK 9.0 source was supplied by the operator after a
+separate lawful-source and terms assertion. This run used these explicit
+source roots:
+
+```console
+export REPLAY_NVFBC_SDK_ROOT=/home/finn/.local/share/replaydesktop/nvidia-capture-sdk/capture-linux-v9.0.0-31e0d8f2e2fe94fa/include
+export REPLAY_CUDA_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include
+export REPLAY_NVML_SDK_ROOT=/opt/cuda/targets/x86_64-linux/include
+export REPLAY_HOST_OUTPUT=DP-0.3
+```
+
+Source-enabled builds fail closed unless the authenticated NvFBC 1.9 and CUDA
+Driver API 13.3 declarations match the C ABI oracle and remain stable
+throughout the build. Exercise the source, fixture, cleanup, and process
+contracts before touching hardware:
+
+```console
+cargo test --locked host03_source_abi_
+cargo test --locked host03_fixture_
+cargo test --locked host03_cleanup_
+cargo test --locked --test host_doctor_cli host03_process_
+```
+
+The independent live test has a 180-second process bound and an inner
+750-millisecond one-grab deadline:
+
+```console
+timeout 180s cargo test --locked --test host_doctor_cli \
+  host03_live_one_frame_current_selected_output \
+  -- --ignored --exact --nocapture
+```
+
+After that test passes, produce and strictly read back the current production
+evidence. Exit 2 is required because HOST-04 remains open:
+
+```console
+set +e
+cargo run --locked --bin replay-host-doctor -- run \
+  --output "$REPLAY_HOST_OUTPUT" \
+  --evidence target/g0-host03-live.json
+doctor_status=$?
+set -e
+test "$doctor_status" -eq 2
+
+cargo run --locked --bin replay-host-doctor -- verify-evidence \
+  --evidence target/g0-host03-live.json \
+  --require-host01 pass \
+  --require-host02 pass \
+  --require-host03 pass \
+  --require-host04 unproven \
+  --validate-extension nvfbc-capture.v1
+```
+
+The qualified `DP-0.3` readback binds XRandR output XID `540` at
+3840×2160 to NVIDIA GPU `00000000:01:00.0` /
+`GPU-becdbf04-4151-31a1-a69e-8d877a1e26b0`, with driver, CUDA, and NvFBC
+runtime libraries at `610.43.03`. It records one genuinely new NV12 frame,
+12,441,600 bytes with two validated planes, required BGRA→NV12
+post-processing, a requested/included/NvFBC-composited cursor whose independent
+visibility flag was false, one same-GPU device copy into application-owned
+memory, no host or peer copy, and complete reverse cleanup. No pixel data or
+native pointer is persisted. Protected/DRM content is outside prototype scope;
+DRM remains diagnostic and no protected-content meaning is inferred from the
+raw NvFBC status.
 
 ## Preserved pre-reboot failure
 
@@ -195,11 +272,14 @@ fsyncs the parent directory, then reopens without following symlinks and
 requires the exact run and byte digest. Parent directories are never created
 implicitly.
 
-The probes have a read-only/no-remediation contract. They do not install
-packages, change permissions, alter sessions, load modules, reboot, download
-sources, accept licenses, capture frames, invoke encoders, or contact a
-network. The requested evidence file and its owned same-directory temporary
-sibling are the only writes.
+The foundation/output probes and every verification command retain a
+read-only/no-remediation contract. They do not install packages, change
+permissions, alter sessions, load modules, reboot, download sources, accept
+licenses, invoke encoders, or contact a network. The explicit HOST-03 live
+probe additionally creates one bounded NvFBC/CUDA session, captures and copies
+exactly one frame on the GPU, and releases every acquired resource in reverse
+order. It never persists frame pixels. The requested evidence file and its
+owned same-directory temporary sibling are the only durable writes.
 
 ## Remaining native blockers
 
@@ -207,12 +287,12 @@ This skeleton reports rather than hides the remaining work:
 
 - retain the now-proven real Xorg/NVML HOST-01 foundation and exact
   `DP-0.3` NV-CONTROL/NVML HOST-02 identity;
-- prove one NvFBC shared-CUDA capture with the required format and cleanup for
-  HOST-03;
+- retain the now-proven one-frame NvFBC shared-CUDA HOST-03 path, including
+  its exact output/GPU binding, conversion/copy ledger, and cleanup;
 - open the required NVENC codec/chroma tuples for HOST-04 and record their exact
   capabilities.
 
-Even after HOST-01 and HOST-02 pass, HOST-03 and HOST-04 remain `UNPROVEN`, so
-the overall G0 remains FAIL. Those media proofs belong to later Phase 1 plans.
-Diagnostic fixtures, cached evidence, and child-supplied claims can never
-substitute for them.
+HOST-01, HOST-02, and HOST-03 now pass on the current host. HOST-04 remains
+`UNPROVEN`, so overall G0 remains FAIL. The encoder proof belongs to the next
+Phase 1 plans. Diagnostic fixtures, cached evidence, and child-supplied claims
+can never substitute for a live gate.

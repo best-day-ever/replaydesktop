@@ -196,7 +196,7 @@ impl HostFoundationEvidenceV1 {
         if self.physical_output.status == FoundationCheckStatusV1::Fail {
             expected_reasons.push(reason(
                 "PHYSICAL_OUTPUT_REQUIRED",
-                "Connect and enable a physical DRM output before rerunning the doctor.",
+                "Connect and enable a physical XRandR output before rerunning the doctor.",
             ));
         }
         expected_reasons.extend(

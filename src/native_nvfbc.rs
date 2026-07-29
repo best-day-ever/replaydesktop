@@ -2394,14 +2394,11 @@ fn validate_frame_contract(
             NVFBC_SUCCESS,
         ));
     }
-    let cursor_visible = parse_nvfbc_bool(frame.cursor_visible)?;
-    let cursor_composited = parse_nvfbc_bool(frame.cursor_composited)?;
-    if cursor_composited && !cursor_visible {
-        return Err(NativeCaptureError::nvfbc(
-            CaptureFailureV1::InvalidFrame,
-            NVFBC_SUCCESS,
-        ));
-    }
+    // API 1.9 reports visibility and composition as independent output facts.
+    // A hidden hardware cursor can still traverse the configured composition
+    // path, so validate both booleans without inventing an implication.
+    parse_nvfbc_bool(frame.cursor_visible)?;
+    parse_nvfbc_bool(frame.cursor_composited)?;
     Ok(())
 }
 
@@ -2882,9 +2879,6 @@ fn valid_frame_geometry(frame: &CaptureFrameObservationV1) -> bool {
             ))
         || frame
             .cursor_composited
-            .is_some_and(|composited| composited && frame.cursor_visible != Some(true))
-        || frame
-            .cursor_composited
             .is_some_and(|composited| composited != frame.cursor_included)
     {
         return false;
@@ -2997,7 +2991,6 @@ fn valid_live_lease(lease: &CaptureFrameLeaseV1) -> bool {
         && lease.cursor_requested == Some(true)
         && lease.cursor_visible.is_some()
         && lease.cursor_composited.is_some()
-        && (lease.cursor_composited != Some(true) || lease.cursor_visible == Some(true))
         && lease.missed_frames.is_some()
         && lease.grab_flags == Some(4)
         && lease
@@ -3713,19 +3706,73 @@ mod tests {
             cursor_visible: 0,
             cursor_composited: 0,
         };
-        for (visible, composited, accepted) in
-            [(0, 0, true), (1, 0, true), (1, 1, true), (0, 1, false)]
-        {
+        for (visible, composited) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
             let candidate = NvFbcFrameGrabInfo {
                 cursor_visible: visible,
                 cursor_composited: composited,
                 ..frame
             };
-            assert_eq!(
+            assert!(
                 validate_frame_contract(&candidate, 3840, 2160, 12_441_600).is_ok(),
-                accepted
+                "visibility and composition are independent API facts"
             );
         }
+        let hidden_composited = CaptureFrameObservationV1 {
+            grab_status: crate::model::CaptureGrabStatusV1::Success,
+            frame_sequence: 1,
+            timestamp_us: 1,
+            is_new_frame: true,
+            width_px: 3840,
+            height_px: 2160,
+            pixel_format: CapturePixelFormatV1::Nv12,
+            pitch_bytes: 3840,
+            planes: nv12_planes(3840, 2160).expect("exact NV12 planes"),
+            required_post_processing: true,
+            cursor_included: true,
+            cursor_mode: crate::model::CaptureCursorModeV1::NvfbcComposited,
+            source_surface: "selected-scanout-bgra".to_owned(),
+            lease_surface: "application-owned-nv12".to_owned(),
+            edges: Vec::new(),
+            requested_pixel_format: Some(CapturePixelFormatV1::Nv12),
+            byte_size: Some(12_441_600),
+            missed_frames: Some(0),
+            direct_capture: Some(false),
+            cursor_requested: Some(true),
+            cursor_visible: Some(false),
+            cursor_composited: Some(true),
+            grab_flags: Some(NVFBC_TOCUDA_GRAB_FLAGS_NOWAIT_IF_NEW_FRAME_READY),
+            grab_timeout_ms: Some(NVFBC_GRAB_TIMEOUT_MS),
+            grab_elapsed_ns: Some(1),
+        };
+        assert!(
+            valid_frame_geometry(&hidden_composited),
+            "live API 1.9 can report a hidden cursor through the composition path"
+        );
+        assert!(valid_live_lease(&CaptureFrameLeaseV1 {
+            frame_sequence: hidden_composited.frame_sequence,
+            timestamp_us: hidden_composited.timestamp_us,
+            new_frame: hidden_composited.is_new_frame,
+            width_px: hidden_composited.width_px,
+            height_px: hidden_composited.height_px,
+            pixel_format: hidden_composited.pixel_format,
+            pitch_bytes: hidden_composited.pitch_bytes,
+            planes: hidden_composited.planes.clone(),
+            required_post_processing: hidden_composited.required_post_processing,
+            cursor_included: hidden_composited.cursor_included,
+            cursor_mode: hidden_composited.cursor_mode,
+            source_surface: hidden_composited.source_surface.clone(),
+            lease_surface: hidden_composited.lease_surface.clone(),
+            requested_pixel_format: hidden_composited.requested_pixel_format,
+            byte_size: hidden_composited.byte_size,
+            missed_frames: hidden_composited.missed_frames,
+            direct_capture: hidden_composited.direct_capture,
+            cursor_requested: hidden_composited.cursor_requested,
+            cursor_visible: hidden_composited.cursor_visible,
+            cursor_composited: hidden_composited.cursor_composited,
+            grab_flags: hidden_composited.grab_flags,
+            grab_timeout_ms: hidden_composited.grab_timeout_ms,
+            grab_elapsed_ns: hidden_composited.grab_elapsed_ns,
+        }));
 
         let stale = NvFbcFrameGrabInfo {
             is_new_frame: 0,

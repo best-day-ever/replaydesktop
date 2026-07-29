@@ -1175,6 +1175,471 @@ pub struct CapturePathEvidenceV1 {
     pub nvfbc_status_raw: Option<i32>,
 }
 
+pub const NVENC_TUPLES_SCHEMA_V1: &str = "replaydesktop.nvenc-tuples.v1";
+pub const NVENC_POLICY_POSITION_COUNT_V1: usize = 7;
+pub const MAX_NVENC_COPY_EDGES_V1: usize = 16;
+pub const MAX_NVENC_RESOURCE_EVENTS_V1: usize = 16;
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencApiVersionV1 {
+    pub major: u16,
+    pub minor: u16,
+}
+
+impl NvencApiVersionV1 {
+    pub const fn new(major: u16, minor: u16) -> Self {
+        Self { major, minor }
+    }
+
+    pub const fn is_sdk_13_1(self) -> bool {
+        self.major == 13 && self.minor == 1
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencGpuGenerationV1 {
+    TuringOrOlder,
+    Ampere,
+    Ada,
+    BlackwellOrNewer,
+    Unknown,
+}
+
+impl NvencGpuGenerationV1 {
+    pub const fn supports_av1_encode(self) -> bool {
+        matches!(self, Self::Ada | Self::BlackwellOrNewer)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencCodecV1 {
+    H264,
+    Hevc,
+    Av1,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencProfileV1 {
+    H264High,
+    HevcMain,
+    HevcMain10,
+    HevcFrext,
+    Av1Main,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencChromaV1 {
+    Yuv420,
+    Yuv444,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencBufferFormatV1 {
+    Nv12,
+    Yuv420TenBit,
+    Yuv444,
+    Yuv444TenBit,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencPolicyPositionV1 {
+    H264HighYuv420EightBit,
+    HevcMainYuv420EightBit,
+    HevcMain10Yuv420TenBit,
+    HevcFrextYuv444EightBit,
+    HevcFrextYuv444TenBit,
+    Av1MainYuv420EightBit,
+    Av1MainYuv420TenBit,
+}
+
+impl NvencPolicyPositionV1 {
+    pub const ALL: [Self; NVENC_POLICY_POSITION_COUNT_V1] = [
+        Self::H264HighYuv420EightBit,
+        Self::HevcMainYuv420EightBit,
+        Self::HevcMain10Yuv420TenBit,
+        Self::HevcFrextYuv444EightBit,
+        Self::HevcFrextYuv444TenBit,
+        Self::Av1MainYuv420EightBit,
+        Self::Av1MainYuv420TenBit,
+    ];
+
+    pub const fn tuple(self) -> NvencTupleV1 {
+        let (codec, profile, chroma, bit_depth, buffer_format) = match self {
+            Self::H264HighYuv420EightBit => (
+                NvencCodecV1::H264,
+                NvencProfileV1::H264High,
+                NvencChromaV1::Yuv420,
+                8,
+                NvencBufferFormatV1::Nv12,
+            ),
+            Self::HevcMainYuv420EightBit => (
+                NvencCodecV1::Hevc,
+                NvencProfileV1::HevcMain,
+                NvencChromaV1::Yuv420,
+                8,
+                NvencBufferFormatV1::Nv12,
+            ),
+            Self::HevcMain10Yuv420TenBit => (
+                NvencCodecV1::Hevc,
+                NvencProfileV1::HevcMain10,
+                NvencChromaV1::Yuv420,
+                10,
+                NvencBufferFormatV1::Yuv420TenBit,
+            ),
+            Self::HevcFrextYuv444EightBit => (
+                NvencCodecV1::Hevc,
+                NvencProfileV1::HevcFrext,
+                NvencChromaV1::Yuv444,
+                8,
+                NvencBufferFormatV1::Yuv444,
+            ),
+            Self::HevcFrextYuv444TenBit => (
+                NvencCodecV1::Hevc,
+                NvencProfileV1::HevcFrext,
+                NvencChromaV1::Yuv444,
+                10,
+                NvencBufferFormatV1::Yuv444TenBit,
+            ),
+            Self::Av1MainYuv420EightBit => (
+                NvencCodecV1::Av1,
+                NvencProfileV1::Av1Main,
+                NvencChromaV1::Yuv420,
+                8,
+                NvencBufferFormatV1::Nv12,
+            ),
+            Self::Av1MainYuv420TenBit => (
+                NvencCodecV1::Av1,
+                NvencProfileV1::Av1Main,
+                NvencChromaV1::Yuv420,
+                10,
+                NvencBufferFormatV1::Yuv420TenBit,
+            ),
+        };
+        NvencTupleV1 {
+            codec,
+            profile,
+            chroma,
+            bit_depth,
+            buffer_format,
+            width_px: 3840,
+            height_px: 2160,
+            frame_rate: RefreshRateV1 {
+                numerator: 60,
+                denominator: 1,
+            },
+        }
+    }
+
+    pub const fn requires_ada_or_newer(self) -> bool {
+        matches!(
+            self,
+            Self::Av1MainYuv420EightBit | Self::Av1MainYuv420TenBit
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "NvencTupleWireV1", into = "NvencTupleWireV1")]
+pub struct NvencTupleV1 {
+    codec: NvencCodecV1,
+    profile: NvencProfileV1,
+    chroma: NvencChromaV1,
+    bit_depth: u8,
+    buffer_format: NvencBufferFormatV1,
+    width_px: u16,
+    height_px: u16,
+    frame_rate: RefreshRateV1,
+}
+
+impl NvencTupleV1 {
+    pub const fn codec(self) -> NvencCodecV1 {
+        self.codec
+    }
+
+    pub const fn profile(self) -> NvencProfileV1 {
+        self.profile
+    }
+
+    pub const fn chroma(self) -> NvencChromaV1 {
+        self.chroma
+    }
+
+    pub const fn bit_depth(self) -> u8 {
+        self.bit_depth
+    }
+
+    pub const fn buffer_format(self) -> NvencBufferFormatV1 {
+        self.buffer_format
+    }
+
+    pub const fn width_px(self) -> u16 {
+        self.width_px
+    }
+
+    pub const fn height_px(self) -> u16 {
+        self.height_px
+    }
+
+    pub const fn frame_rate(self) -> RefreshRateV1 {
+        self.frame_rate
+    }
+
+    pub fn position(self) -> NvencPolicyPositionV1 {
+        NvencPolicyPositionV1::ALL
+            .into_iter()
+            .find(|position| position.tuple() == self)
+            .expect("NvencTupleV1 construction is closed to policy positions")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NvencTupleWireV1 {
+    codec: NvencCodecV1,
+    profile: NvencProfileV1,
+    chroma: NvencChromaV1,
+    bit_depth: u8,
+    buffer_format: NvencBufferFormatV1,
+    width_px: u16,
+    height_px: u16,
+    frame_rate: RefreshRateV1,
+}
+
+impl TryFrom<NvencTupleWireV1> for NvencTupleV1 {
+    type Error = &'static str;
+
+    fn try_from(wire: NvencTupleWireV1) -> Result<Self, Self::Error> {
+        NvencPolicyPositionV1::ALL
+            .into_iter()
+            .map(NvencPolicyPositionV1::tuple)
+            .find(|candidate| {
+                candidate.codec == wire.codec
+                    && candidate.profile == wire.profile
+                    && candidate.chroma == wire.chroma
+                    && candidate.bit_depth == wire.bit_depth
+                    && candidate.buffer_format == wire.buffer_format
+                    && candidate.width_px == wire.width_px
+                    && candidate.height_px == wire.height_px
+                    && candidate.frame_rate == wire.frame_rate
+            })
+            .ok_or("NVENC tuple is outside the closed seven-position policy")
+    }
+}
+
+impl From<NvencTupleV1> for NvencTupleWireV1 {
+    fn from(tuple: NvencTupleV1) -> Self {
+        Self {
+            codec: tuple.codec,
+            profile: tuple.profile,
+            chroma: tuple.chroma,
+            bit_depth: tuple.bit_depth,
+            buffer_format: tuple.buffer_format,
+            width_px: tuple.width_px,
+            height_px: tuple.height_px,
+            frame_rate: tuple.frame_rate,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CopyBoundaryStatusV1 {
+    Pass,
+    BlockedUnknown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencCopyEdgeV1 {
+    RegisterNoCopy,
+    MapNoCopy,
+    SubmitNoCopy,
+    SameGpuPitchLinearToBlockLinearCopy,
+    DeviceToHost,
+    HostToDevice,
+    CrossGpu,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyBoundaryProofV1 {
+    pub status: CopyBoundaryStatusV1,
+    pub application_edges: Vec<NvencCopyEdgeV1>,
+    pub encoder_internal_edges: Vec<NvencCopyEdgeV1>,
+    pub host_staging_edges: u16,
+    pub cross_gpu_edges: u16,
+    pub unknown_application_edges: u16,
+    pub unknown_encoder_internal_edges: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencStreamProofV1 {
+    pub bitstream_sha256: Sha256DigestV1,
+    pub byte_len: u32,
+    pub keyframe: bool,
+    pub parsed_tuple: NvencTupleV1,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencResourceEventV1 {
+    EncoderSession,
+    RegisteredResource,
+    MappedResource,
+    BitstreamBuffer,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencCleanupProofV1 {
+    pub acquired: Vec<NvencResourceEventV1>,
+    pub released: Vec<NvencResourceEventV1>,
+    pub complete: bool,
+}
+
+impl NvencCleanupProofV1 {
+    pub fn no_resources() -> Self {
+        Self {
+            acquired: Vec::new(),
+            released: Vec::new(),
+            complete: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencAttemptOutcomeV1 {
+    Success,
+    GenerationIneligible,
+    Unsupported,
+    ProviderUnavailable,
+    Rejected,
+    Timeout,
+    InvalidStream,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencTupleAttemptV1 {
+    pub position: NvencPolicyPositionV1,
+    pub tuple: NvencTupleV1,
+    pub api_version: NvencApiVersionV1,
+    pub provider_invoked: bool,
+    pub terminal: bool,
+    pub outcome: NvencAttemptOutcomeV1,
+    pub copy_proof: Option<CopyBoundaryProofV1>,
+    pub stream_proof: Option<NvencStreamProofV1>,
+    pub cleanup: NvencCleanupProofV1,
+}
+
+impl NvencTupleAttemptV1 {
+    pub fn generation_ineligible(
+        position: NvencPolicyPositionV1,
+        tuple: NvencTupleV1,
+        api_version: NvencApiVersionV1,
+    ) -> Self {
+        Self {
+            position,
+            tuple,
+            api_version,
+            provider_invoked: false,
+            terminal: true,
+            outcome: NvencAttemptOutcomeV1::GenerationIneligible,
+            copy_proof: None,
+            stream_proof: None,
+            cleanup: NvencCleanupProofV1::no_resources(),
+        }
+    }
+
+    pub fn provider_unavailable(
+        position: NvencPolicyPositionV1,
+        tuple: NvencTupleV1,
+        api_version: NvencApiVersionV1,
+    ) -> Self {
+        Self {
+            position,
+            tuple,
+            api_version,
+            provider_invoked: true,
+            terminal: true,
+            outcome: NvencAttemptOutcomeV1::ProviderUnavailable,
+            copy_proof: None,
+            stream_proof: None,
+            cleanup: NvencCleanupProofV1::no_resources(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencAdvertisementV1 {
+    pub position: NvencPolicyPositionV1,
+    pub tuple: NvencTupleV1,
+    pub bitstream_sha256: Sha256DigestV1,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencProviderKindV1 {
+    DiagnosticFixture,
+    LiveUnavailable,
+    SourceAuthenticated,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencSourceEvidenceV1 {
+    pub api_version: NvencApiVersionV1,
+    pub source_identity: Option<String>,
+    pub header_sha256: Option<Sha256DigestV1>,
+    pub runtime_library: Option<String>,
+}
+
+impl NvencSourceEvidenceV1 {
+    pub fn unavailable(api_version: NvencApiVersionV1) -> Self {
+        Self {
+            api_version,
+            source_identity: None,
+            header_sha256: None,
+            runtime_library: None,
+        }
+    }
+
+    pub fn diagnostic(api_version: NvencApiVersionV1) -> Self {
+        Self::unavailable(api_version)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NvencAdmissionV1 {
+    Pass,
+    Unproven,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvencTuplesEvidenceV1 {
+    pub schema: String,
+    pub provider: NvencProviderKindV1,
+    pub source: NvencSourceEvidenceV1,
+    pub admission: NvencAdmissionV1,
+    pub gpu_generation: NvencGpuGenerationV1,
+    pub attempts: Vec<NvencTupleAttemptV1>,
+    pub advertised: Vec<NvencAdvertisementV1>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -44,10 +44,7 @@ fn host04_copy_spike_source_matrix_and_graph_are_executable() {
     }
 
     let fixture = fixture();
-    assert_eq!(
-        fixture["schema"],
-        "replaydesktop.host04-nvenc-fixtures.v1"
-    );
+    assert_eq!(fixture["schema"], "replaydesktop.host04-nvenc-fixtures.v1");
     assert_eq!(fixture["provenance"], "diagnostic");
     assert!(
         fixture["copy_boundary_cases"]

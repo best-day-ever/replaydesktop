@@ -92,7 +92,150 @@
       "expected_copy_status": "blocked-unknown"
     }
   ],
-  "tuple_cases": [],
+  "tuple_cases": [
+    {
+      "position": "h264-high-yuv420-eight-bit",
+      "codec": "h264",
+      "profile": "h264-high",
+      "chroma": "yuv420",
+      "bit_depth": 8,
+      "buffer_format": "nv12"
+    },
+    {
+      "position": "hevc-main-yuv420-eight-bit",
+      "codec": "hevc",
+      "profile": "hevc-main",
+      "chroma": "yuv420",
+      "bit_depth": 8,
+      "buffer_format": "nv12"
+    },
+    {
+      "position": "hevc-main10-yuv420-ten-bit",
+      "codec": "hevc",
+      "profile": "hevc-main10",
+      "chroma": "yuv420",
+      "bit_depth": 10,
+      "buffer_format": "yuv420-ten-bit"
+    },
+    {
+      "position": "hevc-frext-yuv444-eight-bit",
+      "codec": "hevc",
+      "profile": "hevc-frext",
+      "chroma": "yuv444",
+      "bit_depth": 8,
+      "buffer_format": "yuv444"
+    },
+    {
+      "position": "hevc-frext-yuv444-ten-bit",
+      "codec": "hevc",
+      "profile": "hevc-frext",
+      "chroma": "yuv444",
+      "bit_depth": 10,
+      "buffer_format": "yuv444-ten-bit"
+    },
+    {
+      "position": "av1-main-yuv420-eight-bit",
+      "codec": "av1",
+      "profile": "av1-main",
+      "chroma": "yuv420",
+      "bit_depth": 8,
+      "buffer_format": "nv12",
+      "generation": "ada-or-newer"
+    },
+    {
+      "position": "av1-main-yuv420-ten-bit",
+      "codec": "av1",
+      "profile": "av1-main",
+      "chroma": "yuv420",
+      "bit_depth": 10,
+      "buffer_format": "yuv420-ten-bit",
+      "generation": "ada-or-newer"
+    }
+  ],
+  "api_version_cases": [
+    {
+      "id": "sdk-12-x-diagnostic",
+      "api_version": { "major": 12, "minor": 2 },
+      "expected_admission": "unproven"
+    },
+    {
+      "id": "sdk-13-0-diagnostic",
+      "api_version": { "major": 13, "minor": 0 },
+      "expected_admission": "unproven"
+    },
+    {
+      "id": "sdk-13-1-diagnostic",
+      "api_version": { "major": 13, "minor": 1 },
+      "expected_admission": "unproven"
+    },
+    {
+      "id": "sdk-14-incompatible-diagnostic",
+      "api_version": { "major": 14, "minor": 0 },
+      "expected_admission": "unproven"
+    }
+  ],
+  "complete_attempt": {
+    "position": "h264-high-yuv420-eight-bit",
+    "tuple": {
+      "codec": "h264",
+      "profile": "h264-high",
+      "chroma": "yuv420",
+      "bit_depth": 8,
+      "buffer_format": "nv12",
+      "width_px": 3840,
+      "height_px": 2160,
+      "frame_rate": { "numerator": 60, "denominator": 1 }
+    },
+    "api_version": { "major": 13, "minor": 1 },
+    "provider_invoked": true,
+    "terminal": true,
+    "outcome": "success",
+    "copy_proof": {
+      "status": "pass",
+      "application_edges": [
+        "register-no-copy",
+        "map-no-copy",
+        "submit-no-copy"
+      ],
+      "encoder_internal_edges": [
+        "same-gpu-pitch-linear-to-block-linear-copy"
+      ],
+      "host_staging_edges": 0,
+      "cross_gpu_edges": 0,
+      "unknown_application_edges": 0,
+      "unknown_encoder_internal_edges": 0
+    },
+    "stream_proof": {
+      "bitstream_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_len": 32,
+      "keyframe": true,
+      "parsed_tuple": {
+        "codec": "h264",
+        "profile": "h264-high",
+        "chroma": "yuv420",
+        "bit_depth": 8,
+        "buffer_format": "nv12",
+        "width_px": 3840,
+        "height_px": 2160,
+        "frame_rate": { "numerator": 60, "denominator": 1 }
+      }
+    },
+    "cleanup": {
+      "acquired": [
+        "encoder-session",
+        "registered-resource",
+        "mapped-resource",
+        "bitstream-buffer"
+      ],
+      "released": [
+        "bitstream-buffer",
+        "mapped-resource",
+        "registered-resource",
+        "encoder-session"
+      ],
+      "complete": true
+    }
+  },
   "bitstream_cases": [],
   "process_cases": []
 }

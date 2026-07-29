@@ -5,6 +5,7 @@ pub mod digest;
 pub mod evidence;
 pub mod local_xorg;
 pub mod model;
+pub mod native_nvenc;
 pub mod native_nvfbc;
 pub mod native_nvml;
 pub mod output_mapping;
@@ -28,11 +29,20 @@ pub use model::{
     DrmDiagnosticSnapshotV1, ExactModeTimingV1, G0DecodeError, G0EvidenceBaseV1,
     G0EvidenceEnvelopeV1, G0ExtensionRecordV1, NvControlDisplayTargetIdV1,
     NvControlDisplayTargetObservationV1, NvControlExtensionVersionV1, NvControlGpuTargetIdV1,
-    NvControlGpuTargetObservationV1, NvControlSnapshotV1, NvmlDeviceIdentityObservationV1,
-    OutputMappingProofCardinalitiesV1, OutputNameV1, OutputTopologyObservationV1,
-    OutputTopologyTokenV1, PhysicalConnectorKindV1, RandrOutputObservationV1,
-    RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1, XrandrCrtcXidV1, XrandrModeXidV1,
-    XrandrOutputXidV1, XrandrProviderXidV1, decode_g0_evidence,
+    NvControlGpuTargetObservationV1, NvControlSnapshotV1, NvencAdmissionV1, NvencAdvertisementV1,
+    NvencApiVersionV1, NvencAttemptOutcomeV1, NvencBufferFormatV1, NvencChromaV1,
+    NvencCleanupProofV1, NvencCodecV1, NvencCopyEdgeV1, NvencGpuGenerationV1,
+    NvencPolicyPositionV1, NvencProfileV1, NvencProviderKindV1, NvencResourceEventV1,
+    NvencSourceEvidenceV1, NvencStreamProofV1, NvencTupleAttemptV1, NvencTupleV1,
+    NvencTuplesEvidenceV1, NvmlDeviceIdentityObservationV1, OutputMappingProofCardinalitiesV1,
+    OutputNameV1, OutputTopologyObservationV1, OutputTopologyTokenV1, PhysicalConnectorKindV1,
+    RandrOutputObservationV1, RandrProviderObservationV1, RefreshRateV1, SelectedOutputV1,
+    XrandrCrtcXidV1, XrandrModeXidV1, XrandrOutputXidV1, XrandrProviderXidV1, decode_g0_evidence,
+};
+pub use native_nvenc::{
+    DiagnosticNvencProvider, LiveUnavailableNvencProvider, NvencProvider,
+    advertisement_from_attempt, evaluate_nvenc_policy, nvenc_policy_positions,
+    validate_nvenc_tuples_evidence,
 };
 pub use native_nvfbc::{
     CaptureProvider, FixtureCaptureProvider, LiveUnavailableCaptureProvider, capture_one_frame,

@@ -3,7 +3,8 @@ use crate::model::{
     CaptureAdmissionV1, CaptureFrameObservationV1, CapturePathEvidenceV1, CaptureSourceEvidenceV1,
     G0EvidenceEnvelopeV1, G0EvidenceProvenanceV1, G0ExtensionRecordV1, G0ExtensionStatusV1,
     HOST_FOUNDATION_EXTENSION_ID, MAX_G0_ENVELOPE_BYTES, NVENC_TUPLES_EXTENSION_ID,
-    NVFBC_CAPTURE_EXTENSION_ID, SELECTED_OUTPUT_EXTENSION_ID, SelectedOutputV1, decode_g0_evidence,
+    NVFBC_CAPTURE_EXTENSION_ID, NvencAdmissionV1, NvencTuplesEvidenceV1,
+    SELECTED_OUTPUT_EXTENSION_ID, SelectedOutputV1, decode_g0_evidence,
 };
 use crate::output_mapping::{
     SelectedOutputDiscoveryV1, SelectedOutputFailureEvidenceV1, validate_selected_output_discovery,
@@ -230,22 +231,31 @@ pub fn validate_persisted_envelope(envelope: &G0EvidenceEnvelopeV1) -> bool {
 }
 
 pub fn validate_nvenc_tuples_record(record: &G0ExtensionRecordV1) -> bool {
-    if record.id != NVENC_TUPLES_EXTENSION_ID
-        || record.version != 1
-        || record.status != G0ExtensionStatusV1::Unproven
-    {
+    if record.id != NVENC_TUPLES_EXTENSION_ID || record.version != 1 {
         return false;
     }
-    serde_json::from_str::<NvencTuplesPlaceholderV1>(record.payload.get()).is_ok_and(
-        |placeholder| {
-            placeholder.schema == "replaydesktop.nvenc-tuples-observation.v1"
-                && placeholder.probe == "nvenc-tuples"
-                && placeholder.admission == "unproven"
-                && placeholder.worker_status == "observed"
-                && !placeholder.primitive_available
-                && placeholder.observation_class == "primitive-unavailable"
-        },
-    )
+
+    if let Ok(evidence) = serde_json::from_str::<NvencTuplesEvidenceV1>(record.payload.get()) {
+        let expected_status = match evidence.admission {
+            NvencAdmissionV1::Pass => G0ExtensionStatusV1::Pass,
+            NvencAdmissionV1::Rejected => G0ExtensionStatusV1::Fail,
+            NvencAdmissionV1::Unproven => G0ExtensionStatusV1::Unproven,
+        };
+        return record.status == expected_status
+            && crate::native_nvenc::validate_nvenc_tuples_evidence(&evidence);
+    }
+
+    record.status == G0ExtensionStatusV1::Unproven
+        && serde_json::from_str::<NvencTuplesPlaceholderV1>(record.payload.get()).is_ok_and(
+            |placeholder| {
+                placeholder.schema == "replaydesktop.nvenc-tuples-observation.v1"
+                    && placeholder.probe == "nvenc-tuples"
+                    && placeholder.admission == "unproven"
+                    && placeholder.worker_status == "observed"
+                    && !placeholder.primitive_available
+                    && placeholder.observation_class == "primitive-unavailable"
+            },
+        )
 }
 
 fn unique_record<'a>(

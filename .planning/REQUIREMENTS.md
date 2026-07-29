@@ -59,11 +59,15 @@ with immersive control and working clipboard synchronization.
   origin.
 
 - [x] **HOST-03**: The host proves creation of the selected NvFBC shared-CUDA
-  capture path and reports every GPU-to-GPU, GPU-to-CPU, and cross-GPU copy
-  between scanout capture and the encoder.
+  capture path and reports every conversion, GPU-to-GPU, GPU-to-CPU, and
+  cross-GPU copy from scanout through an application-owned surface suitable
+  for encoder registration. The NVENC registration/mapping/input boundary
+  remains explicitly unproven until HOST-04.
 
-- [ ] **HOST-04**: The host queries and successfully probes each advertised
-  NVENC codec/profile/chroma/bit-depth tuple on the actual GPU and driver before
+- [ ] **HOST-04**: The host accounts for the complete
+  registration/mapping/input/copy boundary from the application-owned capture
+  surface into NVENC, then queries and successfully probes each advertised
+  codec/profile/chroma/bit-depth tuple on the actual GPU and driver before
   offering it to a client.
 
 - [ ] **HOST-05**: A session aborts if NvFBC or NVENC cannot run the negotiated

@@ -6,7 +6,7 @@ current_phase: 01
 current_phase_name: host-readiness-gate
 status: executing
 stopped_at: Completed 01-08-PLAN.md
-last_updated: "2026-07-29T22:03:36Z"
+last_updated: "2026-07-29T22:06:21Z"
 last_activity: 2026-07-29
 last_activity_desc: Completed Plan 01-08 live selected-output NvFBC proof
 progress:
@@ -105,6 +105,7 @@ Recent decisions affecting current work:
 - [Phase 01]: Bind live NvFBC capture to exact XRandR XID, NV-CONTROL GPU, NVML BDF/UUID, and the source identity compiled into the current executable.
 - [Phase 01]: Admit HOST-03 only after one fresh selected-output NV12 frame, one same-GPU device copy, zero host staging, and complete truthful cleanup.
 - [Phase 01]: Treat NvFBC cursor visibility and composition as independent facts; hidden-but-composited is valid.
+- [Phase 01]: HOST-03 ends at the proven application-owned capture surface; HOST-04 owns NVENC registration, mapping, input, internal-copy, and tuple proof.
 
 ### Pending Todos
 

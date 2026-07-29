@@ -147,7 +147,10 @@ pub fn validate_nvfbc_capture_record(record: &G0ExtensionRecordV1) -> bool {
     }
     if let Ok(evidence) = serde_json::from_str::<CapturePathEvidenceV1>(record.payload.get()) {
         return match record.status {
-            G0ExtensionStatusV1::Pass => false,
+            G0ExtensionStatusV1::Pass => {
+                evidence.admission == CaptureAdmissionV1::Pass
+                    && crate::native_nvfbc::validate_capture_path_evidence(&evidence)
+            }
             G0ExtensionStatusV1::Fail => {
                 evidence.admission == CaptureAdmissionV1::Rejected
                     && crate::native_nvfbc::validate_capture_path_evidence(&evidence)

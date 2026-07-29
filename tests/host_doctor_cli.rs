@@ -2239,3 +2239,183 @@ fn host03_diagnostic_no_source_provider_cannot_claim_capture() {
     assert!(evidence.lease.is_none());
     assert!(evidence.copy_ledger.is_none());
 }
+
+#[test]
+fn host03_process_fixture_tracer_forwards_selected_output_without_live_authority() {
+    let directory = temp_dir("host03-process-fixture");
+    let evidence_path = directory.join("evidence.json");
+    let fixture_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host03-nvfbc-capture.json");
+    let run = Command::new(binary())
+        .args([
+            "diagnose",
+            "--fixture",
+            fixture_path
+                .to_str()
+                .expect("HOST-03 fixture path must be UTF-8"),
+            "--fixture-case",
+            "valid-zero-copy",
+            "--output",
+            "DP-0.3",
+            "--evidence",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            "500",
+        ])
+        .output()
+        .expect("fixture doctor process must launch");
+    assert_eq!(run.status.code(), Some(2));
+    assert!(run.stderr.is_empty());
+
+    let envelope = read_envelope(&evidence_path);
+    assert_eq!(
+        extension(&envelope, "selected-output.v1").status,
+        G0ExtensionStatusV1::Pass
+    );
+    let capture = extension(&envelope, "nvfbc-capture.v1");
+    assert_eq!(capture.status, G0ExtensionStatusV1::Unproven);
+    assert!(replay_host_doctor::evidence::validate_nvfbc_capture_record(
+        capture
+    ));
+    assert_eq!(extension_payload(capture)["admission"], "unproven");
+    assert_eq!(
+        extension(&envelope, "nvenc-tuples.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+#[ignore = "requires the operator-authorized NvFBC/CUDA sources and current NVIDIA X11 host"]
+fn host03_live_one_frame_current_selected_output() {
+    let nvfbc_root = std::env::var("REPLAY_NVFBC_SDK_ROOT")
+        .expect("REPLAY_NVFBC_SDK_ROOT must name the authorized Capture SDK include root");
+    let cuda_root = std::env::var("REPLAY_CUDA_SDK_ROOT")
+        .expect("REPLAY_CUDA_SDK_ROOT must name the authorized CUDA Driver API include root");
+    let output_name =
+        std::env::var("REPLAY_HOST_OUTPUT").expect("REPLAY_HOST_OUTPUT must be selected");
+    assert!(Path::new(&nvfbc_root).join("NvFBC.h").is_file());
+    assert!(Path::new(&cuda_root).join("cuda.h").is_file());
+    assert!(Path::new(&cuda_root).join("cudaTypedefs.h").is_file());
+
+    let directory = temp_dir("host03-live-one-frame");
+    let evidence_path = directory.join("evidence.json");
+    let run = Command::new(binary())
+        .args([
+            "run",
+            "--output",
+            &output_name,
+            "--evidence",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            "10000",
+        ])
+        .output()
+        .expect("live doctor process must launch");
+    assert_eq!(run.status.code(), Some(2));
+    assert!(
+        run.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(stdout_json(&run)["status"], "fail");
+
+    let envelope = read_envelope(&evidence_path);
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Live);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Fail);
+    for identifier in [
+        "host-foundation.v1",
+        "selected-output.v1",
+        "nvfbc-capture.v1",
+    ] {
+        assert_eq!(
+            extension(&envelope, identifier).status,
+            G0ExtensionStatusV1::Pass,
+            "{identifier}"
+        );
+    }
+    assert_eq!(
+        extension(&envelope, "nvenc-tuples.v1").status,
+        G0ExtensionStatusV1::Unproven
+    );
+
+    let capture_record = extension(&envelope, "nvfbc-capture.v1");
+    assert!(replay_host_doctor::evidence::validate_nvfbc_capture_record(
+        capture_record
+    ));
+    let capture = extension_payload(capture_record);
+    assert_eq!(capture["admission"], "pass");
+    assert_eq!(capture["provider"], "source-authenticated");
+    assert_eq!(capture["source"]["status"], "authenticated");
+    assert_eq!(
+        capture["source"]["identity"],
+        "nvidia-nvfbc-api-1.9-cuda-driver-api-13.3"
+    );
+    assert_eq!(capture["source"]["api_version"], 0x109);
+    assert!(capture["source"]["nvfbc_header_sha256"].is_string());
+    assert!(capture["source"]["cuda_header_sha256"].is_string());
+    assert!(capture["source"]["cuda_typedefs_header_sha256"].is_string());
+    assert!(capture["source"]["nvfbc_runtime_library"].is_string());
+    assert!(capture["source"]["cuda_runtime_library"].is_string());
+    assert!(
+        capture["source"]["cuda_driver_version"]
+            .as_u64()
+            .is_some_and(|version| version >= 12_000)
+    );
+    assert_eq!(capture["binding"]["output_name"]["display"], output_name);
+    assert_eq!(capture["lease"]["width_px"], 3840);
+    assert_eq!(capture["lease"]["height_px"], 2160);
+    assert_eq!(capture["lease"]["pixel_format"], "nv12");
+    assert_eq!(capture["lease"]["requested_pixel_format"], "nv12");
+    assert_eq!(capture["lease"]["byte_size"], 12_441_600);
+    assert_eq!(capture["lease"]["required_post_processing"], true);
+    assert_eq!(capture["lease"]["direct_capture"], false);
+    assert_eq!(capture["lease"]["cursor_requested"], true);
+    assert!(capture["lease"]["cursor_visible"].is_boolean());
+    assert!(capture["lease"]["cursor_composited"].is_boolean());
+    assert_eq!(capture["lease"]["grab_flags"], 4);
+    assert_eq!(capture["lease"]["grab_timeout_ms"], 750);
+    assert_eq!(capture["copy_ledger"]["conversion_edges"], 1);
+    assert_eq!(capture["copy_ledger"]["device_copy_edges"], 1);
+    assert_eq!(capture["copy_ledger"]["host_staged_edges"], 0);
+    assert_eq!(capture["cleanup"]["complete"], true);
+    assert_eq!(capture["nvfbc_status_raw"], 0);
+    assert_eq!(capture["nvenc_boundary"], "unproven");
+
+    let persisted =
+        std::fs::read_to_string(&evidence_path).expect("live evidence must be UTF-8 JSON");
+    assert!(!persisted.contains(&nvfbc_root));
+    assert!(!persisted.contains(&cuda_root));
+    assert!(!persisted.contains("pCUDADeviceBuffer"));
+
+    let verified = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--require-host01",
+            "pass",
+            "--require-host02",
+            "pass",
+            "--require-host03",
+            "pass",
+            "--require-host04",
+            "unproven",
+            "--validate-extension",
+            "nvfbc-capture.v1",
+        ])
+        .output()
+        .expect("persisted live evidence verifier must launch");
+    assert_eq!(verified.status.code(), Some(0));
+    assert!(verified.stderr.is_empty());
+
+    std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}

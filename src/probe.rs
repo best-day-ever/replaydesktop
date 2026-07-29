@@ -18,6 +18,7 @@ const MAX_STDERR_BYTES: usize = 8 * 1024;
 const MAX_FIXTURE_BYTES: usize = 1024 * 1024;
 const MAX_OBSERVATION_CODE_BYTES: usize = 256;
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
+const MIN_LIVE_NVFBC_WORKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -140,9 +141,6 @@ impl ProbeBackend for LiveProbeBackend {
         parent_nonce: &str,
         requested_output: Option<&crate::model::OutputNameV1>,
     ) -> ProbeOutcome {
-        if probe == ProbeId::NvfbcCapture {
-            return ProbeOutcome::observed(probe, unavailable_capture_observation());
-        }
         let request = ProbeRequestV1 {
             schema: REQUEST_SCHEMA.to_owned(),
             nonce: parent_nonce.to_owned(),
@@ -264,7 +262,7 @@ impl BoundedProbeRunner {
             return Err(ProbeFailure::ProtocolMismatch);
         }
         let deadline = Instant::now()
-            .checked_add(self.timeout)
+            .checked_add(self.effective_timeout(request))
             .ok_or(ProbeFailure::Timeout)?;
 
         let mut command = Command::new(&self.executable);
@@ -298,7 +296,7 @@ impl BoundedProbeRunner {
         if matches!(request.source, ProbeSourceV1::Live)
             && matches!(
                 request.probe,
-                ProbeId::HostFoundation | ProbeId::SelectedOutput
+                ProbeId::HostFoundation | ProbeId::SelectedOutput | ProbeId::NvfbcCapture
             )
         {
             // The worker starts from an empty environment. Forward only the
@@ -361,6 +359,14 @@ impl BoundedProbeRunner {
             .join()
             .map_err(|_| ProbeFailure::MalformedResponse)?;
         self.validate_completed(request, status, stdout, stderr)
+    }
+
+    fn effective_timeout(&self, request: &ProbeRequestV1) -> Duration {
+        if matches!(request.source, ProbeSourceV1::Live) && request.probe == ProbeId::NvfbcCapture {
+            self.timeout.max(MIN_LIVE_NVFBC_WORKER_TIMEOUT)
+        } else {
+            self.timeout
+        }
     }
 
     fn validate_completed(
@@ -517,7 +523,12 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
     if request.schema != REQUEST_SCHEMA
         || !valid_nonce(&request.nonce)
         || std::env::var_os("REPLAY_HOST_DOCTOR_WORKER").as_deref() != Some("1".as_ref())
-        || (request.requested_output.is_some() && request.probe != ProbeId::SelectedOutput)
+        || (request.requested_output.is_some()
+            && !matches!(
+                request.probe,
+                ProbeId::SelectedOutput | ProbeId::NvfbcCapture
+            ))
+        || (request.probe == ProbeId::NvfbcCapture && request.requested_output.is_none())
         || request
             .requested_output
             .as_ref()
@@ -556,7 +567,25 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
             )
         }
         ProbeSourceV1::Live if request.probe == ProbeId::NvfbcCapture => {
-            normal_worker_output(&request, unavailable_capture_observation())
+            let requested_output = request
+                .requested_output
+                .as_ref()
+                .ok_or(WorkerRequestError)?;
+            let capture = crate::native_nvfbc::observe_live_selected_capture(requested_output);
+            normal_worker_output(
+                &request,
+                PrimitiveObservationV1 {
+                    available: capture.failure.is_none(),
+                    code: if capture.failure.is_none() {
+                        "nvfbc-live-one-frame-observed".to_owned()
+                    } else {
+                        "nvfbc-live-one-frame-rejected".to_owned()
+                    },
+                    host_foundation: None,
+                    selected_output: None,
+                    capture: Some(capture),
+                },
+            )
         }
         ProbeSourceV1::Live => normal_worker_output(
             &request,
@@ -1210,7 +1239,7 @@ pub fn collect_probes(
             backend.observe(
                 probe,
                 &nonce,
-                (probe == ProbeId::SelectedOutput)
+                matches!(probe, ProbeId::SelectedOutput | ProbeId::NvfbcCapture)
                     .then_some(requested_output)
                     .flatten(),
             )
@@ -1222,6 +1251,65 @@ pub fn collect_probes(
 mod tests {
     use super::*;
     use crate::model::CaptureFailureV1;
+
+    #[test]
+    fn host03_process_selected_output_is_forwarded_only_to_bound_probes() {
+        struct BindingBackend;
+
+        impl ProbeBackend for BindingBackend {
+            fn observe(
+                &self,
+                probe: ProbeId,
+                _parent_nonce: &str,
+                requested_output: Option<&crate::model::OutputNameV1>,
+            ) -> ProbeOutcome {
+                assert_eq!(
+                    requested_output.is_some(),
+                    matches!(probe, ProbeId::SelectedOutput | ProbeId::NvfbcCapture),
+                    "probe {probe:?}"
+                );
+                ProbeOutcome::failed(probe, ProbeFailure::Spawn)
+            }
+        }
+
+        let output = crate::model::OutputNameV1 {
+            hex: "44502d302e33".to_owned(),
+            display: Some("DP-0.3".to_owned()),
+        };
+        let outcomes = collect_probes(&BindingBackend, "run-binding-test", Some(&output));
+        assert_eq!(outcomes.len(), ProbeId::ALL.len());
+    }
+
+    #[test]
+    fn host03_process_live_capture_outer_deadline_exceeds_native_grab() {
+        let runner = BoundedProbeRunner::current(Duration::from_millis(40));
+        let live_capture = ProbeRequestV1 {
+            schema: REQUEST_SCHEMA.to_owned(),
+            nonce: "nonce-deadline-test".to_owned(),
+            probe: ProbeId::NvfbcCapture,
+            source: ProbeSourceV1::Live,
+            requested_output: Some(crate::model::OutputNameV1 {
+                hex: "44502d302e33".to_owned(),
+                display: Some("DP-0.3".to_owned()),
+            }),
+        };
+        assert_eq!(
+            runner.effective_timeout(&live_capture),
+            MIN_LIVE_NVFBC_WORKER_TIMEOUT
+        );
+
+        let fixture_capture = ProbeRequestV1 {
+            source: ProbeSourceV1::Fixture {
+                path: PathBuf::from("fixture.json"),
+                case_id: "timeout".to_owned(),
+            },
+            ..live_capture
+        };
+        assert_eq!(
+            runner.effective_timeout(&fixture_capture),
+            Duration::from_millis(40)
+        );
+    }
 
     #[test]
     fn bounded_probe_duplicate_keys_are_rejected() {

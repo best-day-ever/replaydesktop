@@ -519,6 +519,8 @@ fn probe_extension_records(
                     G0ExtensionStatusV1::Unproven
                 } else if evidence.failure.is_some() {
                     G0ExtensionStatusV1::Fail
+                } else if evidence.admission == model::CaptureAdmissionV1::Pass {
+                    G0ExtensionStatusV1::Pass
                 } else {
                     G0ExtensionStatusV1::Unproven
                 };

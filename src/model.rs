@@ -903,6 +903,14 @@ pub struct CaptureSourceEvidenceV1 {
     pub api_version: Option<u32>,
     pub nvfbc_header_sha256: Option<Sha256DigestV1>,
     pub cuda_header_sha256: Option<Sha256DigestV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_typedefs_header_sha256: Option<Sha256DigestV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvfbc_runtime_library: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_runtime_library: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_driver_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -937,6 +945,7 @@ pub enum CaptureGrabStatusV1 {
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CapturePixelFormatV1 {
+    Bgra,
     Nv12,
     Yuv444p,
 }
@@ -1001,20 +1010,49 @@ pub struct CaptureFrameObservationV1 {
     pub source_surface: String,
     pub lease_surface: String,
     pub edges: Vec<CopyLedgerEdgeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_pixel_format: Option<CapturePixelFormatV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missed_frames: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_capture: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_requested: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_visible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_composited: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_flags: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_timeout_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_elapsed_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CaptureLifecycleEventV1 {
+    CudaLibraryLoaded,
+    CudaContextCreated,
     LibraryLoaded,
+    HandleCreated,
     StatusQueried,
     ContextBound,
     SessionCreated,
+    ToCudaSetup,
+    ApplicationBufferAllocated,
     FrameGrabbed,
     FrameReleased,
+    ApplicationBufferFreed,
     SessionDestroyed,
+    HandleDestroyed,
     ContextReleased,
     LibraryUnloaded,
+    CudaContextDestroyed,
+    CudaLibraryUnloaded,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -1045,6 +1083,8 @@ pub struct CapturePrimitiveObservationV1 {
     pub frame: Option<CaptureFrameObservationV1>,
     pub lifecycle: Vec<CaptureLifecycleEventV1>,
     pub failure: Option<CaptureFailureV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvfbc_status_raw: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -1063,6 +1103,26 @@ pub struct CaptureFrameLeaseV1 {
     pub cursor_mode: CaptureCursorModeV1,
     pub source_surface: String,
     pub lease_surface: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_pixel_format: Option<CapturePixelFormatV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missed_frames: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_capture: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_requested: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_visible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_composited: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_flags: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_timeout_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab_elapsed_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -1087,6 +1147,7 @@ pub struct CaptureCleanupLedgerV1 {
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CaptureAdmissionV1 {
+    Pass,
     Unproven,
     Rejected,
 }
@@ -1110,6 +1171,8 @@ pub struct CapturePathEvidenceV1 {
     pub cleanup: CaptureCleanupLedgerV1,
     pub failure: Option<CaptureFailureV1>,
     pub nvenc_boundary: CaptureBoundaryStatusV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvfbc_status_raw: Option<i32>,
 }
 
 #[cfg(test)]

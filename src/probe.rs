@@ -12,6 +12,7 @@ const REQUEST_SCHEMA: &str = "replaydesktop.host-probe-request.v1";
 const RESPONSE_SCHEMA: &str = "replaydesktop.host-probe-response.v1";
 const FIXTURE_SCHEMA: &str = "replaydesktop.host01-diagnostic-fixtures.v1";
 const HOST03_FIXTURE_SCHEMA: &str = "replaydesktop.host03-nvfbc-capture-fixtures.v1";
+const HOST04_FIXTURE_SCHEMA: &str = "replaydesktop.host04-nvenc-fixtures.v1";
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 8 * 1024;
@@ -58,6 +59,8 @@ pub struct PrimitiveObservationV1 {
     pub selected_output: Option<crate::output_mapping::OutputCollectorObservationV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<crate::model::CapturePrimitiveObservationV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvenc: Option<crate::model::NvencTuplesEvidenceV1>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -211,6 +214,7 @@ fn unavailable_capture_observation() -> PrimitiveObservationV1 {
         host_foundation: None,
         selected_output: None,
         capture: Some(crate::native_nvfbc::CaptureProvider::observe(&provider)),
+        nvenc: None,
     }
 }
 
@@ -409,6 +413,7 @@ impl BoundedProbeRunner {
             || (response.observation.selected_output.is_some()
                 && request.probe != ProbeId::SelectedOutput)
             || (response.observation.capture.is_some() && request.probe != ProbeId::NvfbcCapture)
+            || (response.observation.nvenc.is_some() && request.probe != ProbeId::NvencTuples)
         {
             return Err(ProbeFailure::ProtocolMismatch);
         }
@@ -547,6 +552,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                 host_foundation: Some(crate::local_xorg::observe_live_host_foundation()),
                 selected_output: None,
                 capture: None,
+                nvenc: None,
             },
         ),
         ProbeSourceV1::Live if request.probe == ProbeId::SelectedOutput => {
@@ -564,6 +570,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                     host_foundation: None,
                     selected_output: Some(selected_output),
                     capture: None,
+                    nvenc: None,
                 },
             )
         }
@@ -585,6 +592,27 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                     host_foundation: None,
                     selected_output: None,
                     capture: Some(capture),
+                    nvenc: None,
+                },
+            )
+        }
+        ProbeSourceV1::Live if request.probe == ProbeId::NvencTuples => {
+            let mut provider = crate::native_nvenc::LiveUnavailableNvencProvider::new(
+                crate::model::NvencApiVersionV1::new(13, 1),
+            );
+            let nvenc = crate::native_nvenc::evaluate_nvenc_policy(
+                crate::model::NvencGpuGenerationV1::Unknown,
+                &mut provider,
+            );
+            normal_worker_output(
+                &request,
+                PrimitiveObservationV1 {
+                    available: false,
+                    code: "nvenc-live-provider-unavailable".to_owned(),
+                    host_foundation: None,
+                    selected_output: None,
+                    capture: None,
+                    nvenc: Some(nvenc),
                 },
             )
         }
@@ -596,6 +624,7 @@ fn worker_output_inner(request_json: &str) -> Result<WorkerOutput, WorkerRequest
                 host_foundation: None,
                 selected_output: None,
                 capture: None,
+                nvenc: None,
             },
         ),
         ProbeSourceV1::Fixture { path, case_id } => fixture_worker_output(&request, path, case_id),
@@ -623,6 +652,9 @@ fn fixture_worker_output(
     }
     if schema == HOST03_FIXTURE_SCHEMA {
         return fixture_nvfbc_worker(request, path, case_id);
+    }
+    if schema == HOST04_FIXTURE_SCHEMA {
+        return fixture_nvenc_worker(request, path, case_id);
     }
     let fixture: FixtureDocument =
         serde_json::from_slice(&bytes).map_err(|_| WorkerRequestError)?;
@@ -658,6 +690,7 @@ fn fixture_worker_output(
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
                     capture: None,
+                    nvenc: None,
                 })
                 .map_err(|_| WorkerRequestError)?;
             }
@@ -671,6 +704,7 @@ fn fixture_worker_output(
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
                     capture: None,
+                    nvenc: None,
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
@@ -678,6 +712,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 });
             normal_worker_output(request, observation)
         }
@@ -691,6 +726,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 },
             )
         }
@@ -723,6 +759,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -742,6 +779,7 @@ fn fixture_worker_output(
                     host_foundation: observation.host_foundation.clone(),
                     selected_output: observation.selected_output.clone(),
                     capture: None,
+                    nvenc: None,
                 })
                 .unwrap_or_else(|| PrimitiveObservationV1 {
                     available: false,
@@ -749,6 +787,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 });
             let response = ProbeResponseV1 {
                 schema: RESPONSE_SCHEMA.to_owned(),
@@ -789,6 +828,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 },
             )
         }
@@ -805,6 +845,7 @@ fn fixture_worker_output(
                     host_foundation: None,
                     selected_output: None,
                     capture: None,
+                    nvenc: None,
                 },
             )?;
             Ok(WorkerOutput {
@@ -830,6 +871,7 @@ fn fixture_output_mapping_worker(
                 host_foundation: None,
                 selected_output: None,
                 capture: None,
+                nvenc: None,
             },
         );
     }
@@ -848,6 +890,7 @@ fn fixture_output_mapping_worker(
             host_foundation: None,
             selected_output: Some(selected_output),
             capture: None,
+            nvenc: None,
         },
     )
 }
@@ -905,6 +948,7 @@ fn fixture_nvfbc_worker(
                 host_foundation: None,
                 selected_output: Some(selected_output),
                 capture: None,
+                nvenc: None,
             },
         );
     }
@@ -917,6 +961,7 @@ fn fixture_nvfbc_worker(
                 host_foundation: None,
                 selected_output: None,
                 capture: None,
+                nvenc: None,
             },
         );
     }
@@ -941,6 +986,7 @@ fn fixture_nvfbc_worker(
                     host_foundation: None,
                     selected_output: None,
                     capture: Some(capture),
+                    nvenc: None,
                 },
             )
         }
@@ -958,6 +1004,72 @@ fn fixture_nvfbc_worker(
             stderr: String::new(),
             exit_code: 0,
         }),
+    }
+}
+
+fn fixture_nvenc_worker(
+    request: &ProbeRequestV1,
+    path: &Path,
+    case_id: &str,
+) -> Result<WorkerOutput, WorkerRequestError> {
+    let bytes = read_bounded_file(path, MAX_FIXTURE_BYTES)?;
+    let fixture: Host04FixtureDocument =
+        serde_json::from_slice(&bytes).map_err(|_| WorkerRequestError)?;
+    if fixture.schema != HOST04_FIXTURE_SCHEMA || fixture.provenance != "diagnostic" {
+        return Err(WorkerRequestError);
+    }
+    let mut identifiers = HashSet::with_capacity(fixture.process_cases.len());
+    if fixture
+        .process_cases
+        .iter()
+        .any(|case| case.id.is_empty() || !identifiers.insert(case.id.as_str()))
+    {
+        return Err(WorkerRequestError);
+    }
+    let case = fixture
+        .process_cases
+        .iter()
+        .find(|case| case.id == case_id)
+        .ok_or(WorkerRequestError)?;
+
+    if request.probe != ProbeId::NvencTuples {
+        return normal_worker_output(
+            request,
+            PrimitiveObservationV1 {
+                available: false,
+                code: "fixture-observation-missing".to_owned(),
+                host_foundation: None,
+                selected_output: None,
+                capture: None,
+                nvenc: None,
+            },
+        );
+    }
+
+    match case.behavior {
+        Host04FixtureBehavior::Normal => {
+            if case.api_version.major == 0 {
+                return Err(WorkerRequestError);
+            }
+            let mut provider = crate::native_nvenc::DiagnosticNvencProvider::new(case.api_version);
+            let nvenc =
+                crate::native_nvenc::evaluate_nvenc_policy(case.gpu_generation, &mut provider);
+            normal_worker_output(
+                request,
+                PrimitiveObservationV1 {
+                    available: false,
+                    code: "nvenc-diagnostic-policy-observed".to_owned(),
+                    host_foundation: None,
+                    selected_output: None,
+                    capture: None,
+                    nvenc: Some(nvenc),
+                },
+            )
+        }
+        Host04FixtureBehavior::Timeout => {
+            thread::sleep(Duration::from_secs(120));
+            Err(WorkerRequestError)
+        }
     }
 }
 
@@ -1027,9 +1139,15 @@ fn validate_observation(observation: &PrimitiveObservationV1) -> Result<(), ()> 
     {
         return Err(());
     }
+    if let Some(nvenc) = &observation.nvenc
+        && !crate::native_nvenc::validate_nvenc_tuples_evidence(nvenc)
+    {
+        return Err(());
+    }
     if usize::from(observation.host_foundation.is_some())
         + usize::from(observation.selected_output.is_some())
         + usize::from(observation.capture.is_some())
+        + usize::from(observation.nvenc.is_some())
         > 1
     {
         return Err(());
@@ -1042,6 +1160,30 @@ fn validate_observation_for_request(
     observation: &PrimitiveObservationV1,
 ) -> Result<(), ()> {
     validate_observation(observation)?;
+    if (observation.host_foundation.is_some() && request.probe != ProbeId::HostFoundation)
+        || (observation.selected_output.is_some() && request.probe != ProbeId::SelectedOutput)
+        || (observation.capture.is_some() && request.probe != ProbeId::NvfbcCapture)
+        || (observation.nvenc.is_some() && request.probe != ProbeId::NvencTuples)
+    {
+        return Err(());
+    }
+    if request.probe == ProbeId::NvencTuples {
+        let Some(nvenc) = observation.nvenc.as_ref() else {
+            return Ok(());
+        };
+        if observation.available {
+            return Err(());
+        }
+        let valid_provider = match request.source {
+            ProbeSourceV1::Live => {
+                nvenc.provider == crate::model::NvencProviderKindV1::LiveUnavailable
+            }
+            ProbeSourceV1::Fixture { .. } => {
+                nvenc.provider == crate::model::NvencProviderKindV1::DiagnosticFixture
+            }
+        };
+        return valid_provider.then_some(()).ok_or(());
+    }
     if request.probe != ProbeId::NvfbcCapture {
         return observation.capture.is_none().then_some(()).ok_or(());
     }
@@ -1165,6 +1307,42 @@ enum Host03FixtureBehavior {
     Timeout,
     ChildCrash,
     MalformedResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Host04FixtureDocument {
+    schema: String,
+    provenance: String,
+    #[serde(rename = "sdk_contract")]
+    _sdk_contract: serde_json::Value,
+    #[serde(rename = "copy_boundary_cases")]
+    _copy_boundary_cases: Vec<serde_json::Value>,
+    #[serde(rename = "tuple_cases")]
+    _tuple_cases: Vec<serde_json::Value>,
+    #[serde(rename = "api_version_cases")]
+    _api_version_cases: Vec<serde_json::Value>,
+    #[serde(rename = "complete_attempt")]
+    _complete_attempt: serde_json::Value,
+    #[serde(rename = "bitstream_cases")]
+    _bitstream_cases: Vec<serde_json::Value>,
+    process_cases: Vec<Host04ProcessCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Host04ProcessCase {
+    id: String,
+    behavior: Host04FixtureBehavior,
+    api_version: crate::model::NvencApiVersionV1,
+    gpu_generation: crate::model::NvencGpuGenerationV1,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Host04FixtureBehavior {
+    Normal,
+    Timeout,
 }
 
 #[derive(Debug)]
@@ -1396,6 +1574,7 @@ mod tests {
             host_foundation: None,
             selected_output: None,
             capture: Some(fixture_capture.clone()),
+            nvenc: None,
         };
         assert!(validate_observation_for_request(&fixture_request, &fixture_observation).is_ok());
 
@@ -1446,6 +1625,7 @@ mod tests {
             host_foundation: None,
             selected_output: None,
             capture: Some(capture),
+            nvenc: None,
         };
 
         let mut runtime_path = base.clone();

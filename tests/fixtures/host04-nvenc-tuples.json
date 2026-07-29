@@ -236,6 +236,112 @@
       "complete": true
     }
   },
-  "bitstream_cases": [],
-  "process_cases": []
+  "bitstream_cases": [
+    {
+      "id": "h264-high-420-8-keyframe",
+      "position": "h264-high-yuv420-eight-bit",
+      "framing": "annex-b",
+      "expected": "pass"
+    },
+    {
+      "id": "hevc-main-420-8-keyframe",
+      "position": "hevc-main-yuv420-eight-bit",
+      "framing": "annex-b",
+      "expected": "pass"
+    },
+    {
+      "id": "hevc-main10-420-10-keyframe",
+      "position": "hevc-main10-yuv420-ten-bit",
+      "framing": "annex-b",
+      "expected": "pass"
+    },
+    {
+      "id": "hevc-frext-444-8-keyframe",
+      "position": "hevc-frext-yuv444-eight-bit",
+      "framing": "annex-b",
+      "expected": "pass"
+    },
+    {
+      "id": "hevc-frext-444-10-keyframe",
+      "position": "hevc-frext-yuv444-ten-bit",
+      "framing": "annex-b",
+      "expected": "pass"
+    },
+    {
+      "id": "av1-main-420-8-keyframe",
+      "position": "av1-main-yuv420-eight-bit",
+      "framing": "low-overhead-obu",
+      "expected": "pass"
+    },
+    {
+      "id": "av1-main-420-10-keyframe",
+      "position": "av1-main-yuv420-ten-bit",
+      "framing": "low-overhead-obu",
+      "expected": "pass"
+    },
+    {
+      "id": "empty-stream",
+      "expected": "empty"
+    },
+    {
+      "id": "oversized-stream",
+      "expected": "input-too-large"
+    },
+    {
+      "id": "unterminated-av1-leb128",
+      "expected": "malformed"
+    },
+    {
+      "id": "truncated-hevc-sps",
+      "expected": "malformed"
+    },
+    {
+      "id": "exp-golomb-loop-bound",
+      "expected": "malformed"
+    },
+    {
+      "id": "obu-loop-bound",
+      "expected": "malformed"
+    },
+    {
+      "id": "non-keyframe",
+      "expected": "not-keyframe"
+    },
+    {
+      "id": "tuple-mismatch",
+      "expected": "tuple-mismatch"
+    }
+  ],
+  "process_cases": [
+    {
+      "id": "sdk-12-2-ampere",
+      "behavior": "normal",
+      "api_version": { "major": 12, "minor": 2 },
+      "gpu_generation": "ampere"
+    },
+    {
+      "id": "sdk-13-0-ada",
+      "behavior": "normal",
+      "api_version": { "major": 13, "minor": 0 },
+      "gpu_generation": "ada"
+    },
+    {
+      "id": "sdk-13-1-ada",
+      "behavior": "normal",
+      "api_version": { "major": 13, "minor": 1 },
+      "gpu_generation": "ada"
+    },
+    {
+      "id": "sdk-14-0-ada",
+      "behavior": "normal",
+      "api_version": { "major": 14, "minor": 0 },
+      "gpu_generation": "ada"
+    },
+    {
+      "id": "worker-timeout",
+      "behavior": "timeout",
+      "api_version": { "major": 13, "minor": 1 },
+      "gpu_generation": "ada"
+    }
+  ]
 }

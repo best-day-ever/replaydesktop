@@ -8,6 +8,7 @@ pub mod model;
 pub mod native_nvenc;
 pub mod native_nvfbc;
 pub mod native_nvml;
+pub mod nvenc_bitstream;
 pub mod output_mapping;
 pub mod probe;
 
@@ -50,6 +51,9 @@ pub use native_nvfbc::{
 pub use native_nvml::{
     LiveUnavailableNvmlProvider, NativeNvmlProvider, NvmlDeviceObservationV1, NvmlEvidenceV1,
     NvmlObservationV1, NvmlProvider, NvmlRuntimeFailureV1, NvmlSourceFailureV1,
+};
+pub use nvenc_bitstream::{
+    MAX_NVENC_BITSTREAM_BYTES_V1, NvencBitstreamError, inspect_nvenc_bitstream,
 };
 pub use output_mapping::{
     NvControlTargetListErrorV1, OutputCollectionFailureV1, OutputCollectorObservationV1,
@@ -528,6 +532,32 @@ fn probe_extension_records(
                     NVFBC_CAPTURE_EXTENSION_ID,
                     status,
                     serde_json::to_value(evidence).map_err(|_| DoctorError::Internal)?,
+                )
+                .map_err(|_| DoctorError::Internal);
+            }
+            if outcome.probe == ProbeId::NvencTuples
+                && let Some(nvenc) = outcome
+                    .observation
+                    .as_ref()
+                    .and_then(|observation| observation.nvenc.as_ref())
+            {
+                let provider_matches_provenance = match provenance {
+                    G0EvidenceProvenanceV1::Diagnostic => {
+                        nvenc.provider == model::NvencProviderKindV1::DiagnosticFixture
+                    }
+                    G0EvidenceProvenanceV1::Live => {
+                        nvenc.provider == model::NvencProviderKindV1::LiveUnavailable
+                    }
+                };
+                if !provider_matches_provenance
+                    || !native_nvenc::validate_nvenc_tuples_evidence(nvenc)
+                {
+                    return Err(DoctorError::Internal);
+                }
+                return extension_record(
+                    NVENC_TUPLES_EXTENSION_ID,
+                    G0ExtensionStatusV1::Unproven,
+                    serde_json::to_value(nvenc).map_err(|_| DoctorError::Internal)?,
                 )
                 .map_err(|_| DoctorError::Internal);
             }

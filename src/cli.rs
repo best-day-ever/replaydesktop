@@ -39,6 +39,10 @@ pub enum DoctorCommand {
         evidence: PathBuf,
         archive_root: PathBuf,
     },
+    ArchivePostRepair {
+        evidence: PathBuf,
+        archive_root: PathBuf,
+    },
     VerifyArchive {
         index: PathBuf,
     },
@@ -171,7 +175,8 @@ pub fn parse(argv: Vec<String>) -> Result<DoctorOptions, CliError> {
         "run" => parse_run(&argv[2..])?,
         "diagnose" => parse_diagnose(&argv[2..])?,
         "verify-evidence" => parse_verify(&argv[2..])?,
-        "archive-pre-reboot" => parse_archive(&argv[2..])?,
+        "archive-pre-reboot" => parse_archive(&argv[2..], false)?,
+        "archive-post-repair" => parse_archive(&argv[2..], true)?,
         "verify-archive" => parse_verify_archive(&argv[2..])?,
         "__probe-worker" => parse_worker(&argv[2..])?,
         _ => return Err(CliError::UnknownCommand),
@@ -316,7 +321,7 @@ fn parse_verify(arguments: &[String]) -> Result<DoctorCommand, CliError> {
     })
 }
 
-fn parse_archive(arguments: &[String]) -> Result<DoctorCommand, CliError> {
+fn parse_archive(arguments: &[String], post_repair: bool) -> Result<DoctorCommand, CliError> {
     let mut evidence = None;
     let mut archive_root = None;
     let mut index = 0;
@@ -334,9 +339,19 @@ fn parse_archive(arguments: &[String]) -> Result<DoctorCommand, CliError> {
         }
         index += 1;
     }
-    Ok(DoctorCommand::ArchivePreReboot {
-        evidence: PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?),
-        archive_root: PathBuf::from(archive_root.ok_or(CliError::MissingOption("--archive-root"))?),
+    let evidence = PathBuf::from(evidence.ok_or(CliError::MissingOption("--evidence"))?);
+    let archive_root =
+        PathBuf::from(archive_root.ok_or(CliError::MissingOption("--archive-root"))?);
+    Ok(if post_repair {
+        DoctorCommand::ArchivePostRepair {
+            evidence,
+            archive_root,
+        }
+    } else {
+        DoctorCommand::ArchivePreReboot {
+            evidence,
+            archive_root,
+        }
     })
 }
 
@@ -422,7 +437,7 @@ fn valid_fixture_case(value: &str) -> bool {
 }
 
 pub fn public_usage() -> &'static str {
-    "usage:\n  replay-host-doctor run [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> [--run-id <ID>] [--require-host01 <STATUS>] [--require-host02 <STATUS>] [--require-host03 <STATUS>] [--require-host04 <STATUS>] [--validate-extension <ID>]\n  replay-host-doctor archive-pre-reboot --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor verify-archive --index <PATH>\n"
+    "usage:\n  replay-host-doctor run [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor diagnose --fixture <PATH> [--fixture-case <ID>] [--output <XRANDR_NAME>] --evidence <PATH> [--probe-timeout-ms <N>]\n  replay-host-doctor verify-evidence --evidence <PATH> [--run-id <ID>] [--require-host01 <STATUS>] [--require-host02 <STATUS>] [--require-host03 <STATUS>] [--require-host04 <STATUS>] [--validate-extension <ID>]\n  replay-host-doctor archive-pre-reboot --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor archive-post-repair --evidence <PATH> --archive-root <PATH>\n  replay-host-doctor verify-archive --index <PATH>\n"
 }
 
 #[cfg(test)]

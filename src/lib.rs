@@ -13,7 +13,8 @@ pub mod output_mapping;
 pub mod probe;
 
 pub use archive::{
-    ArchiveError, ArchivedG0V1, G0ArchiveManifestV1, archive_pre_reboot, verify_archive,
+    ArchiveError, ArchivedG0V1, G0ArchiveManifestV1, archive_post_repair, archive_pre_reboot,
+    verify_archive,
 };
 pub use cli::{DoctorCommand, DoctorExit, DoctorOptions, RequiredExtensionStatuses};
 pub use currentness::{CurrentnessPolicy, RunIdentityV1, verify_current_run};
@@ -222,10 +223,38 @@ fn execute_doctor_inner(options: &DoctorOptions) -> Result<DoctorOutput, DoctorE
                 stderr: String::new(),
             })
         }
+        DoctorCommand::ArchivePostRepair {
+            evidence,
+            archive_root,
+        } => {
+            let archived = archive_post_repair(archive_root, evidence)?;
+            let value = serde_json::json!({
+                "schema": "replaydesktop.g0-post-repair-archive-result.v1",
+                "command": "archive-post-repair",
+                "run_id": archived.manifest.run_id,
+                "status": "archived",
+                "index": archived.index_path,
+                "manifest_sha256": archived.manifest_sha256,
+            });
+            Ok(DoctorOutput {
+                exit: DoctorExit::Success,
+                stdout: format!(
+                    "{}\n",
+                    serde_json::to_string(&value).expect("result JSON must serialize")
+                ),
+                stderr: String::new(),
+            })
+        }
         DoctorCommand::VerifyArchive { index } => {
             let manifest = verify_archive(index)?;
+            let result_schema =
+                if manifest.schema == archive::POST_REPAIR_ARCHIVE_MANIFEST_SCHEMA_V1 {
+                    "replaydesktop.g0-post-repair-archive-result.v1"
+                } else {
+                    "replaydesktop.g0-pre-reboot-archive-result.v1"
+                };
             let value = serde_json::json!({
-                "schema": "replaydesktop.g0-pre-reboot-archive-result.v1",
+                "schema": result_schema,
                 "command": "verify-archive",
                 "run_id": manifest.run_id,
                 "status": "verified",

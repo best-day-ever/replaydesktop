@@ -797,6 +797,40 @@ fn post_repair_archive_rejects_diagnostic_provenance() {
 }
 
 #[test]
+fn post_repair_archive_rejects_cross_schema_substitution() {
+    let directory = temp_dir("post-repair-cross-schema");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2)
+    );
+    let archive_root = directory.join("post-repair");
+    assert_eq!(
+        archive_post_repair_with_executable(&executable, &evidence, &archive_root)
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let index_path = archive_root.join("index.json");
+    let mut index = read_json(&index_path);
+    index["schema"] = json!("replaydesktop.g0-pre-reboot-archive-index.v1");
+    std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o600))
+        .expect("index must become writable for adversarial test");
+    std::fs::write(
+        &index_path,
+        serde_json::to_vec(&index).expect("mutated index must serialize"),
+    )
+    .expect("mutated index must write");
+    std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o400))
+        .expect("index mode must be restored");
+    assert_private_error(&verify_archive(&index_path), 74, "ARCHIVE_PERSISTENCE");
+
+    remove_archive_test_dir(&directory);
+}
+
+#[test]
 fn archive_create_once_rejects_symlink_wrong_mode_stale_and_pass_sources() {
     let directory = temp_dir("archive-source-attacks");
     let executable = copied_executable(&directory, "running-doctor");

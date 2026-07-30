@@ -6,6 +6,7 @@ use std::fmt;
 
 pub const MAX_NVENC_BITSTREAM_BYTES_V1: usize = 32 * 1024 * 1024;
 const MAX_PARAMETER_SET_BYTES_V1: usize = 64 * 1024;
+const MAX_SLICE_HEADER_RBSP_BYTES_V1: usize = 64;
 const MAX_STREAM_UNITS_V1: usize = 64;
 const MAX_EXP_GOLOMB_ZERO_BITS_V1: u8 = 31;
 const MAX_AV1_LEB128_BYTES_V1: usize = 8;
@@ -305,7 +306,7 @@ fn parse_h264_sps(ebsp: &[u8]) -> Result<ParsedIdentity, NvencBitstreamError> {
 }
 
 fn parse_h264_idr(ebsp: &[u8]) -> Result<(), NvencBitstreamError> {
-    let rbsp = decode_ebsp(ebsp)?;
+    let rbsp = decode_slice_header_ebsp(ebsp)?;
     let mut bits = BitReader::new(&rbsp);
     if bits.read_ue()? != 0 || bits.read_ue()? % 5 != 2 || bits.read_ue()? > 255 {
         return Err(NvencBitstreamError::NotKeyframe);
@@ -484,7 +485,7 @@ fn parse_hevc_profile_tier_level(
 }
 
 fn parse_hevc_idr(ebsp: &[u8]) -> Result<(), NvencBitstreamError> {
-    let rbsp = decode_ebsp(ebsp)?;
+    let rbsp = decode_slice_header_ebsp(ebsp)?;
     let mut bits = BitReader::new(&rbsp);
     if !bits.read_bit()? {
         return Err(NvencBitstreamError::NotKeyframe);
@@ -754,7 +755,13 @@ fn annex_b_units(bytes: &[u8]) -> Result<Vec<&[u8]>, NvencBitstreamError> {
     let mut units = Vec::with_capacity(8);
     loop {
         let next = find_start_code(bytes, cursor);
-        let end = next.map_or(bytes.len(), |(start, _)| start);
+        let mut end = next.map_or(bytes.len(), |(start, _)| start);
+        // Annex B permits trailing_zero_8bits after a NAL unit. NVENC may
+        // append them to align a locked output buffer; they are framing, not
+        // EBSP payload, and must not be passed to emulation-prevention checks.
+        while end > cursor && bytes[end - 1] == 0 {
+            end -= 1;
+        }
         if end <= cursor {
             return Err(NvencBitstreamError::Malformed);
         }
@@ -793,10 +800,24 @@ fn decode_ebsp(bytes: &[u8]) -> Result<Vec<u8>, NvencBitstreamError> {
     if bytes.is_empty() || bytes.len() > MAX_PARAMETER_SET_BYTES_V1 {
         return Err(NvencBitstreamError::Malformed);
     }
-    let mut rbsp = Vec::with_capacity(bytes.len());
+    decode_ebsp_prefix(bytes, bytes.len())
+}
+
+fn decode_slice_header_ebsp(bytes: &[u8]) -> Result<Vec<u8>, NvencBitstreamError> {
+    if bytes.is_empty() || bytes.len() > MAX_NVENC_BITSTREAM_BYTES_V1 {
+        return Err(NvencBitstreamError::Malformed);
+    }
+    decode_ebsp_prefix(bytes, MAX_SLICE_HEADER_RBSP_BYTES_V1)
+}
+
+fn decode_ebsp_prefix(
+    bytes: &[u8],
+    maximum_output_bytes: usize,
+) -> Result<Vec<u8>, NvencBitstreamError> {
+    let mut rbsp = Vec::with_capacity(bytes.len().min(maximum_output_bytes));
     let mut index = 0_usize;
     let mut zero_count = 0_u8;
-    while index < bytes.len() {
+    while index < bytes.len() && rbsp.len() < maximum_output_bytes {
         let byte = bytes[index];
         if zero_count >= 2 {
             if byte == 3 {

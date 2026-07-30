@@ -18,6 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const ARCHIVE_MANIFEST_SCHEMA_V1: &str = "replaydesktop.g0-pre-reboot-archive-manifest.v1";
 pub const ARCHIVE_INDEX_SCHEMA_V1: &str = "replaydesktop.g0-pre-reboot-archive-index.v1";
+pub const POST_REPAIR_ARCHIVE_MANIFEST_SCHEMA_V1: &str =
+    "replaydesktop.g0-post-repair-archive-manifest.v1";
+pub const POST_REPAIR_ARCHIVE_INDEX_SCHEMA_V1: &str =
+    "replaydesktop.g0-post-repair-archive-index.v1";
 pub const ARCHIVE_VERSION_V1: u32 = 1;
 
 const ARCHIVED_BINARY_NAME: &str = "replay-host-doctor";
@@ -35,6 +39,53 @@ const IMMUTABLE_BINARY_MODE: Mode = Mode::RUSR.union(Mode::XUSR);
 const IMMUTABLE_DATA_MODE: Mode = Mode::RUSR;
 
 static ARCHIVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ArchiveEvidencePolicy {
+    FailOnly,
+    PassOrFail,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct ArchiveContract {
+    index_schema: &'static str,
+    manifest_schema: &'static str,
+    evidence_policy: ArchiveEvidencePolicy,
+    validate_persisted_envelope: bool,
+}
+
+const PRE_REBOOT_ARCHIVE_CONTRACT: ArchiveContract = ArchiveContract {
+    index_schema: ARCHIVE_INDEX_SCHEMA_V1,
+    manifest_schema: ARCHIVE_MANIFEST_SCHEMA_V1,
+    evidence_policy: ArchiveEvidencePolicy::FailOnly,
+    validate_persisted_envelope: false,
+};
+
+const POST_REPAIR_ARCHIVE_CONTRACT: ArchiveContract = ArchiveContract {
+    index_schema: POST_REPAIR_ARCHIVE_INDEX_SCHEMA_V1,
+    manifest_schema: POST_REPAIR_ARCHIVE_MANIFEST_SCHEMA_V1,
+    evidence_policy: ArchiveEvidencePolicy::PassOrFail,
+    validate_persisted_envelope: true,
+};
+
+impl ArchiveContract {
+    fn from_index_schema(schema: &str) -> Option<Self> {
+        match schema {
+            ARCHIVE_INDEX_SCHEMA_V1 => Some(PRE_REBOOT_ARCHIVE_CONTRACT),
+            POST_REPAIR_ARCHIVE_INDEX_SCHEMA_V1 => Some(POST_REPAIR_ARCHIVE_CONTRACT),
+            _ => None,
+        }
+    }
+
+    fn accepts_status(self, status: G0GateStatusV1) -> bool {
+        match self.evidence_policy {
+            ArchiveEvidencePolicy::FailOnly => status == G0GateStatusV1::Fail,
+            ArchiveEvidencePolicy::PassOrFail => {
+                matches!(status, G0GateStatusV1::Pass | G0GateStatusV1::Fail)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +149,11 @@ struct G0ArchiveIndexV1 {
     manifest_sha256: Sha256DigestV1,
 }
 
+#[derive(Debug, Deserialize)]
+struct G0ArchiveIndexDispatch {
+    schema: String,
+}
+
 #[derive(Debug)]
 pub struct ArchivedG0V1 {
     pub index_path: PathBuf,
@@ -157,6 +213,21 @@ pub fn archive_pre_reboot(
     archive_root: &Path,
     evidence_path: &Path,
 ) -> Result<ArchivedG0V1, ArchiveError> {
+    archive_with_contract(archive_root, evidence_path, PRE_REBOOT_ARCHIVE_CONTRACT)
+}
+
+pub fn archive_post_repair(
+    archive_root: &Path,
+    evidence_path: &Path,
+) -> Result<ArchivedG0V1, ArchiveError> {
+    archive_with_contract(archive_root, evidence_path, POST_REPAIR_ARCHIVE_CONTRACT)
+}
+
+fn archive_with_contract(
+    archive_root: &Path,
+    evidence_path: &Path,
+    contract: ArchiveContract,
+) -> Result<ArchivedG0V1, ArchiveError> {
     let root = open_directory_path(archive_root, true)?;
     require_absent(&root, OsStr::new(ARCHIVE_INDEX_NAME))?;
 
@@ -174,6 +245,13 @@ pub fn archive_pre_reboot(
     let envelope = decode_g0_evidence(&evidence_bytes)
         .map_err(|_| ArchiveError::Decode)?
         .into_v1();
+    if contract.validate_persisted_envelope
+        && !crate::evidence::validate_persisted_envelope(&envelope)
+    {
+        return Err(ArchiveError::InvalidSource(
+            "evidence fails persisted semantic validation",
+        ));
+    }
 
     let executable_fd = rustix::fs::open(
         "/proc/self/exe",
@@ -200,7 +278,7 @@ pub fn archive_pre_reboot(
         size_bytes: executable_metadata.len(),
     };
 
-    verify_fresh_live_fail(&envelope, None)?;
+    verify_fresh_live(&envelope, None, contract)?;
     if !safe_run_id(&envelope.base.run_id) {
         return Err(ArchiveError::InvalidSource(
             "run identity cannot name an archive directory",
@@ -268,7 +346,7 @@ pub fn archive_pre_reboot(
             evidence_bytes.len() as u64,
         )?;
 
-        verify_fresh_live_fail(&envelope, Some(source_binary_digest))?;
+        verify_fresh_live(&envelope, Some(source_binary_digest), contract)?;
         let manifest = manifest_from_envelope(
             &envelope,
             source_descriptor,
@@ -276,6 +354,7 @@ pub fn archive_pre_reboot(
             source_binary_digest,
             evidence_bytes.len() as u64,
             evidence_digest,
+            contract.manifest_schema,
         );
         let manifest_bytes = serde_json::to_vec(&manifest).map_err(|_| ArchiveError::Encode)?;
         if manifest_bytes.len() > MAX_ARCHIVE_METADATA_BYTES {
@@ -329,7 +408,7 @@ pub fn archive_pre_reboot(
 
     let manifest_path = format!("{run_directory_name}/{ARCHIVE_MANIFEST_NAME}");
     let index = G0ArchiveIndexV1 {
-        schema: ARCHIVE_INDEX_SCHEMA_V1.to_owned(),
+        schema: contract.index_schema.to_owned(),
         version: ARCHIVE_VERSION_V1,
         manifest_path: manifest_path.clone(),
         manifest_sha256,
@@ -387,9 +466,13 @@ pub fn verify_archive(index_path: &Path) -> Result<G0ArchiveManifestV1, ArchiveE
         MAX_ARCHIVE_METADATA_BYTES,
         "index",
     )?;
+    let dispatch: G0ArchiveIndexDispatch =
+        serde_json::from_slice(&index_bytes).map_err(|_| ArchiveError::InvalidArchive("index"))?;
+    let contract = ArchiveContract::from_index_schema(&dispatch.schema)
+        .ok_or(ArchiveError::InvalidArchive("index schema"))?;
     let index: G0ArchiveIndexV1 =
         serde_json::from_slice(&index_bytes).map_err(|_| ArchiveError::InvalidArchive("index"))?;
-    if index.schema != ARCHIVE_INDEX_SCHEMA_V1 || index.version != ARCHIVE_VERSION_V1 {
+    if index.schema != contract.index_schema || index.version != ARCHIVE_VERSION_V1 {
         return Err(ArchiveError::InvalidArchive("index schema"));
     }
     let (run_name, manifest_name) = contained_manifest_path(&index.manifest_path)?;
@@ -420,7 +503,7 @@ pub fn verify_archive(index_path: &Path) -> Result<G0ArchiveManifestV1, ArchiveE
     }
     let manifest: G0ArchiveManifestV1 = serde_json::from_slice(&manifest_bytes)
         .map_err(|_| ArchiveError::InvalidArchive("manifest"))?;
-    validate_manifest_shape(&manifest, &run_name)?;
+    validate_manifest_shape(&manifest, &run_name, contract)?;
 
     let binary_name = contained_file_name(&manifest.archived_binary.path)?;
     let binary_digest = hash_archived_file_at(
@@ -451,7 +534,12 @@ pub fn verify_archive(index_path: &Path) -> Result<G0ArchiveManifestV1, ArchiveE
     let envelope = decode_g0_evidence(&evidence_bytes)
         .map_err(|_| ArchiveError::Decode)?
         .into_v1();
-    verify_manifest_evidence(&manifest, &envelope, binary_digest)?;
+    if contract.validate_persisted_envelope
+        && !crate::evidence::validate_persisted_envelope(&envelope)
+    {
+        return Err(ArchiveError::InvalidArchive("evidence semantic validation"));
+    }
+    verify_manifest_evidence(&manifest, &envelope, binary_digest, contract)?;
     Ok(manifest)
 }
 
@@ -462,9 +550,10 @@ fn manifest_from_envelope(
     binary_sha256: Sha256DigestV1,
     evidence_size: u64,
     evidence_sha256: Sha256DigestV1,
+    manifest_schema: &str,
 ) -> G0ArchiveManifestV1 {
     G0ArchiveManifestV1 {
-        schema: ARCHIVE_MANIFEST_SCHEMA_V1.to_owned(),
+        schema: manifest_schema.to_owned(),
         version: ARCHIVE_VERSION_V1,
         run_id: envelope.base.run_id.clone(),
         boot_id: envelope.base.boot_id.clone(),
@@ -509,6 +598,7 @@ fn verify_manifest_evidence(
     manifest: &G0ArchiveManifestV1,
     envelope: &G0EvidenceEnvelopeV1,
     binary_digest: Sha256DigestV1,
+    contract: ArchiveContract,
 ) -> Result<(), ArchiveError> {
     if manifest.run_id != envelope.base.run_id
         || manifest.boot_id != envelope.base.boot_id
@@ -539,7 +629,7 @@ fn verify_manifest_evidence(
         }
     }
     if envelope.base.provenance != G0EvidenceProvenanceV1::Live
-        || envelope.base.status != G0GateStatusV1::Fail
+        || !contract.accepts_status(envelope.base.status)
     {
         return Err(ArchiveError::NotFreshLiveFail);
     }
@@ -549,8 +639,9 @@ fn verify_manifest_evidence(
 fn validate_manifest_shape(
     manifest: &G0ArchiveManifestV1,
     run_name: &str,
+    contract: ArchiveContract,
 ) -> Result<(), ArchiveError> {
-    if manifest.schema != ARCHIVE_MANIFEST_SCHEMA_V1
+    if manifest.schema != contract.manifest_schema
         || manifest.version != ARCHIVE_VERSION_V1
         || manifest.archived_binary.path != ARCHIVED_BINARY_NAME
         || manifest.archived_binary.mode != 0o500
@@ -573,12 +664,13 @@ fn validate_manifest_shape(
     Ok(())
 }
 
-fn verify_fresh_live_fail(
+fn verify_fresh_live(
     envelope: &G0EvidenceEnvelopeV1,
     executable_digest: Option<Sha256DigestV1>,
+    contract: ArchiveContract,
 ) -> Result<(), ArchiveError> {
     if envelope.base.provenance != G0EvidenceProvenanceV1::Live
-        || envelope.base.status != G0GateStatusV1::Fail
+        || !contract.accepts_status(envelope.base.status)
     {
         return Err(ArchiveError::NotFreshLiveFail);
     }

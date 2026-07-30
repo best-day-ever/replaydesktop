@@ -281,18 +281,66 @@ exactly one frame on the GPU, and releases every acquired resource in reverse
 order. It never persists frame pixels. The requested evidence file and its
 owned same-directory temporary sibling are the only durable writes.
 
-## Remaining native blockers
+## Qualification boundary
 
-This skeleton reports rather than hides the remaining work:
+HOST-01 through HOST-04 now pass on the qualified current host, and the final
+G0 decision is PASS. The standalone HOST-04 probe does not claim that the
+pinned Kyber/Kymedia `nv-codec-headers n12.1.14.0` integration has been
+rebuilt or qualified; that compatibility boundary remains explicitly
+unclaimed. Diagnostic fixtures, cached evidence, and child-supplied claims can
+never substitute for a live gate.
 
-- retain the now-proven real Xorg/NVML HOST-01 foundation and exact
-  `DP-0.3` NV-CONTROL/NVML HOST-02 identity;
-- retain the now-proven one-frame NvFBC shared-CUDA HOST-03 path, including
-  its exact output/GPU binding, conversion/copy ledger, and cleanup;
-- open the required NVENC codec/chroma tuples for HOST-04 and record their exact
-  capabilities.
+## Final HOST-04 and G0 qualification
 
-HOST-01, HOST-02, and HOST-03 now pass on the current host. HOST-04 remains
-`UNPROVEN`, so overall G0 remains FAIL. The encoder proof belongs to the next
-Phase 1 plans. Diagnostic fixtures, cached evidence, and child-supplied claims
-can never substitute for a live gate.
+The operator separately asserted that the supplied official NVIDIA Video
+Codec SDK 13.1 source was authentic, lawfully obtained, and accepted outside
+this workflow. The authenticated `nvEncodeAPI.h` digest is
+`75939d1b11cc3cbe7123c922903f2123644ea167b006207e5965c9fe2eab241a`.
+The source-derived oracle required Linux driver major 610 and CUDA Driver API
+13010; the live run observed driver `610.43.03`, CUDA 13030, and NVENC runtime
+API 13.1.
+
+Run the static, fixture, and live gates separately:
+
+```console
+cargo test --locked host04_source_abi_
+cargo test --locked host04_policy_
+cargo test --locked host04_bitstream_
+cargo test --locked --test host_doctor_cli host04_fixture_ -- --nocapture
+
+timeout 900s cargo test --locked --test host_doctor_cli \
+  host04_live_g0_current_output -- --ignored --exact --nocapture
+```
+
+The live gate produced seven terminal positions. H.264 High 4:2:0 8-bit and
+HEVC Main 4:2:0 8-bit were advertised from exact 3840×2160@60 P2/ULL
+one-frame attempts using the selected-output application-owned NV12 CUDA
+lease. Each advertisement has exact config/resource identity, a closed
+same-GPU copy predicate with zero host staging, a parsed forced keyframe
+digest, and complete reverse cleanup. The unavailable input formats and
+Ampere-ineligible AV1 positions are terminal and non-advertised.
+
+The final evidence was verified with all known extension validators, then
+archived through the distinct create-once command:
+
+```console
+target/debug/replay-host-doctor archive-post-repair \
+  --evidence target/g0-host04-final.json \
+  --archive-root artifacts/validation/g0/post-repair
+
+target/debug/replay-host-doctor verify-archive \
+  --index artifacts/validation/g0/post-repair/index.json
+```
+
+The archived run is
+`run-73c9e241c73e6672cf8e6e3169b5d7dc8f77f7d809037c84cd46dbf28d8f93e3`.
+Its contained executable digest is
+`865632ea0d0d7eecb2954bfa33647765c56cad7f616903e6264ce2f35caca14f`,
+evidence digest is
+`2dc751130f3322db0b73a16fe0cb997d30a03a79be657498c3a73ad8fc58cfcc`,
+manifest digest is
+`e661f12c9fd6c4e7dbf2a01ece9f6fd52be2fa72c60b5006702364d1f45d9a5f`,
+and index digest is
+`09ad18c811f8bd169ff9aae6eaa76097425a0ff7c20b8266cb3f2899d64f33c8`.
+The generic archive verifier dispatches on the exact pre-reboot or post-repair
+schema and does not loosen the original live-FAIL decoder.

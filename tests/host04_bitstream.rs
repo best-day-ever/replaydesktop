@@ -260,6 +260,48 @@ fn host04_bitstream_all_seven_policy_positions_prove_from_keyframes() {
 }
 
 #[test]
+fn host04_bitstream_accepts_annex_b_trailing_zero_bytes_from_nvenc() {
+    for (position, mut bytes) in [
+        (
+            NvencPolicyPositionV1::H264HighYuv420EightBit,
+            h264_high_420_8_keyframe(),
+        ),
+        (
+            NvencPolicyPositionV1::HevcMainYuv420EightBit,
+            hevc_keyframe(1, 1, 8),
+        ),
+    ] {
+        bytes.extend([0, 0, 0]);
+        let proof = inspect_nvenc_bitstream(position, &bytes)
+            .unwrap_or_else(|error| panic!("{position:?} padded keyframe must prove: {error:?}"));
+        assert_eq!(proof.parsed_tuple, position.tuple());
+        assert_eq!(proof.byte_len as usize, bytes.len());
+        assert_eq!(proof.bitstream_sha256, sha256_bytes(&bytes));
+    }
+}
+
+#[test]
+fn host04_bitstream_bounds_large_nvenc_idr_to_the_slice_header() {
+    for (position, mut bytes) in [
+        (
+            NvencPolicyPositionV1::H264HighYuv420EightBit,
+            h264_high_420_8_keyframe(),
+        ),
+        (
+            NvencPolicyPositionV1::HevcMainYuv420EightBit,
+            hevc_keyframe(1, 1, 8),
+        ),
+    ] {
+        bytes.extend(std::iter::repeat_n(0xff, 192 * 1024));
+        let proof = inspect_nvenc_bitstream(position, &bytes)
+            .unwrap_or_else(|error| panic!("{position:?} large keyframe must prove: {error:?}"));
+        assert_eq!(proof.parsed_tuple, position.tuple());
+        assert_eq!(proof.byte_len as usize, bytes.len());
+        assert_eq!(proof.bitstream_sha256, sha256_bytes(&bytes));
+    }
+}
+
+#[test]
 fn host04_bitstream_rejects_tuple_mismatch_and_non_keyframe() {
     let bytes = h264_high_420_8_keyframe();
     assert!(matches!(

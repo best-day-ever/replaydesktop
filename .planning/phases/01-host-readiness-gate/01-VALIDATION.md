@@ -358,3 +358,110 @@ rerun this pair.
 Known-extension validators are additional checks; they may not replace either
 the generic base/raw-extension compatibility test or the immutable archive
 verification.
+
+## Final HOST-04 and G0 qualification
+
+The operator separately asserted that the supplied NVIDIA Video Codec SDK
+13.1 source was authentic official NVIDIA material, lawfully obtained, and
+accepted outside this workflow. Automated path, digest, and ABI checks did not
+substitute for that assertion. The authenticated `nvEncodeAPI.h` SHA-256 is
+`75939d1b11cc3cbe7123c922903f2123644ea167b006207e5965c9fe2eab241a`.
+The standalone oracle derives every used native type/layout/GUID/enum,
+structure version, API encoding, and compatibility fact from that header.
+
+The static and fixture gates are separate from the live hardware timeout:
+
+```console
+export REPLAY_NVENC_SDK_ROOT=<official-sdk-13.1-include-root>
+export REPLAY_NVFBC_SDK_ROOT=<authorized-capture-sdk-include-root>
+export REPLAY_CUDA_SDK_ROOT=<cuda-driver-api-include-root>
+export REPLAY_NVML_SDK_ROOT=<nvml-include-root>
+export REPLAY_HOST_OUTPUT=DP-0.3
+
+cargo test --locked host04_source_abi_
+cargo test --locked host04_policy_
+cargo test --locked host04_bitstream_
+cargo test --locked --test host_doctor_cli host04_fixture_ -- --nocapture
+```
+
+The independent live gate is:
+
+```console
+timeout 900s cargo test --locked --test host_doctor_cli \
+  host04_live_g0_current_output -- --ignored --exact --nocapture
+```
+
+Result: one test passed. It re-proved HOST-01, selected-output HOST-02, and
+NvFBC/CUDA HOST-03 before allocating NVENC resources. All seven policy
+positions were terminal. H.264 High 4:2:0 8-bit and HEVC Main 4:2:0 8-bit
+succeeded and were advertised. The three lease-incompatible HEVC 10-bit/4:4:4
+positions were unsupported, and both AV1 positions were generation-ineligible
+on the Ampere host. No tuple silently substituted another input format,
+output, GPU, context, codec, profile, or software path.
+
+Each advertised attempt records exact 3840×2160 at 60/1, P2, ultra-low-latency
+tuning, synchronous Linux encode, PTD, forced IDR plus parameter sets, zero B
+frames/lookahead/reorder, one-frame VBV, the exact application-owned NV12
+lease and topology/GPU identity, closed copy edges with no host staging, a
+bounded parsed keyframe digest, and complete reverse cleanup. The parser
+accepts valid Annex-B trailing zero bytes and reads only a bounded slice-header
+prefix from large NVENC IDRs; the full bitstream remains capped, hashed, and
+cleared without persistence.
+
+The final production run and same-binary readback were:
+
+```console
+target/debug/replay-host-doctor run \
+  --output "$REPLAY_HOST_OUTPUT" \
+  --evidence target/g0-host04-final.json \
+  --probe-timeout-ms 60000
+
+target/debug/replay-host-doctor verify-evidence \
+  --evidence target/g0-host04-final.json \
+  --require-host01 pass \
+  --require-host02 pass \
+  --require-host03 pass \
+  --require-host04 pass \
+  --validate-extension host-foundation.v1 \
+  --validate-extension selected-output.v1 \
+  --validate-extension nvfbc-capture.v1 \
+  --validate-extension nvenc-tuples.v1
+```
+
+Both commands exited 0. The final run ID is
+`run-73c9e241c73e6672cf8e6e3169b5d7dc8f77f7d809037c84cd46dbf28d8f93e3`
+and the evidence SHA-256 is
+`2dc751130f3322db0b73a16fe0cb997d30a03a79be657498c3a73ad8fc58cfcc`.
+
+The current result was archived separately without modifying
+`artifacts/validation/g0/pre-reboot/`:
+
+```console
+target/debug/replay-host-doctor archive-post-repair \
+  --evidence target/g0-host04-final.json \
+  --archive-root artifacts/validation/g0/post-repair
+
+target/debug/replay-host-doctor verify-archive \
+  --index artifacts/validation/g0/post-repair/index.json
+```
+
+The post-repair index, manifest, evidence, and contained executable use modes
+0400, 0400, 0400, and 0500 respectively; the run directory is 0500. Recorded
+digests:
+
+| Contained object | SHA-256 |
+|---|---|
+| archived executable | `865632ea0d0d7eecb2954bfa33647765c56cad7f616903e6264ce2f35caca14f` |
+| archived evidence | `2dc751130f3322db0b73a16fe0cb997d30a03a79be657498c3a73ad8fc58cfcc` |
+| post-repair manifest | `e661f12c9fd6c4e7dbf2a01ece9f6fd52be2fa72c60b5006702364d1f45d9a5f` |
+| post-repair index | `09ad18c811f8bd169ff9aae6eaa76097425a0ff7c20b8266cb3f2899d64f33c8` |
+
+The original foundation fixture and immutable pre-reboot archive both verified
+with the final code. The verifier dispatches on the exact index schema and
+requires the matching manifest schema, so post-repair PASS support cannot
+loosen the original pre-reboot live-FAIL-only decoder.
+
+This plan proves the standalone official SDK 13.1 HOST-04 path only. The
+Kyber/Kymedia dependency remains pinned to
+`nv-codec-headers n12.1.14.0`; compatibility of that pinned integration with
+the standalone probe is unclaimed and no Kyber tree or lockfile was changed.

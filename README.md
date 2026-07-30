@@ -42,11 +42,14 @@ ad-hoc signing without notarization for this spike. Those exceptions are not
 production-safe and do not apply to a public release.
 
 The tracked `prototype/macos/engine-baseline.lock` binds packaging to the exact
-known raw `kyclient` SHA-256 and pinned Kyber/Kysdk commits. Packaging fails if
-those engine bytes or source pins differ. The bundle also records and verifies
-its explicit package version, ReplayDesktop source range and digest, Xcode
-version/build, Swift version, SDK version/build, macOS deployment target, and
-raw-engine digest.
+known raw-input `kyclient` SHA-256, executable-payload SHA-256, code-signature
+boundary, and pinned Kyber/Kysdk commits. Packaging fails if those engine bytes
+or source pins differ. The copied executable payload is verified unchanged,
+while its mutable signature envelope is regenerated so the finished app has a
+valid ad-hoc deep signature. The bundle also records and verifies its explicit
+package version, ReplayDesktop source range and digest, Xcode version/build,
+Swift version, SDK version/build, macOS deployment target, and raw-engine
+provenance.
 
 The original known-good CLI-only prerelease remains available and is not
 replaced:

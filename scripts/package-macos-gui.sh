@@ -32,6 +32,18 @@ lock_value() {
     printf '%s\n' "$lock_result"
 }
 
+code_signature_offset() {
+    otool -l "$1" |
+        awk '$1 == "cmd" && $2 == "LC_CODE_SIGNATURE" {
+                 signature = 1
+                 next
+             }
+             signature && $1 == "dataoff" {
+                 print $2
+                 exit
+             }'
+}
+
 usage() {
     printf '%s\n' \
         "Usage: $0 [--dry-run] --package-version VERSION" \
@@ -132,6 +144,8 @@ LOCK_KYBER_COMMIT=$(lock_value kyber_commit)
 LOCK_KYSDK_COMMIT=$(lock_value kysdk_commit)
 LOCK_RAW_PATH=$(lock_value raw_kyclient_bundle_path)
 LOCK_RAW_SHA256=$(lock_value raw_kyclient_sha256)
+LOCK_RAW_PAYLOAD_SHA256=$(lock_value raw_kyclient_payload_sha256)
+LOCK_RAW_CODE_SIGNATURE_OFFSET=$(lock_value raw_kyclient_code_signature_offset)
 LOCK_RAW_MINIMUM_MACOS=$(lock_value raw_kyclient_minimum_macos)
 [ "$LOCK_FORMAT" = 1 ] || fail "unsupported engine baseline lock format: $LOCK_FORMAT"
 printf '%s\n' "$LOCK_KYBER_COMMIT" | grep -Eq '^[0-9a-f]{40}$' ||
@@ -140,6 +154,10 @@ printf '%s\n' "$LOCK_KYSDK_COMMIT" | grep -Eq '^[0-9a-f]{40}$' ||
     fail 'engine baseline lock contains an invalid source commit'
 printf '%s\n' "$LOCK_RAW_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
     fail 'engine baseline lock contains an invalid raw kyclient digest'
+printf '%s\n' "$LOCK_RAW_PAYLOAD_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
+    fail 'engine baseline lock contains an invalid raw kyclient payload digest'
+printf '%s\n' "$LOCK_RAW_CODE_SIGNATURE_OFFSET" | grep -Eq '^[1-9][0-9]*$' ||
+    fail 'engine baseline lock contains an invalid code-signature offset'
 [ "$LOCK_RAW_PATH" = Contents/MacOS/kyclient ] ||
     fail "unsupported raw engine bundle path: $LOCK_RAW_PATH"
 [ "$LOCK_RAW_MINIMUM_MACOS" = "$DEPLOYMENT_TARGET" ] ||
@@ -174,7 +192,8 @@ if [ "$DRY_RUN" = true ]; then
         "  source range: $SOURCE_BASE..$SOURCE_COMMIT" \
         "  source-boundary SHA256: $SOURCE_BOUNDARY_DIGEST" \
         "  engine: Kyber $LOCK_KYBER_RELEASE @ $LOCK_KYBER_COMMIT" \
-        "  raw kyclient SHA256: $LOCK_RAW_SHA256" \
+        "  raw kyclient input SHA256: $LOCK_RAW_SHA256" \
+        "  raw kyclient payload SHA256: $LOCK_RAW_PAYLOAD_SHA256" \
         "  launcher: $LAUNCHER_SOURCE" \
         "  compile: xcrun --sdk macosx swiftc -parse-as-library -target arm64-apple-macos${DEPLOYMENT_TARGET} <launcher> -framework AppKit" \
         "  bundle executable: ReplayDesktopLauncher" \
@@ -266,9 +285,19 @@ git -C "$REPO_ROOT" diff --cached --quiet -- \
     fail 'packaging inputs have staged changes outside the source commit'
 
 SOURCE_RAW_CLIENT="$SOURCE_APP/$LOCK_RAW_PATH"
+ACTUAL_RAW_CODE_SIGNATURE_OFFSET=$(code_signature_offset "$SOURCE_RAW_CLIENT")
+[ "$ACTUAL_RAW_CODE_SIGNATURE_OFFSET" = "$LOCK_RAW_CODE_SIGNATURE_OFFSET" ] ||
+    fail "raw kyclient code-signature boundary mismatch: $ACTUAL_RAW_CODE_SIGNATURE_OFFSET"
 ACTUAL_RAW_SHA256=$(shasum -a 256 "$SOURCE_RAW_CLIENT" | awk '{print $1}')
 [ "$ACTUAL_RAW_SHA256" = "$LOCK_RAW_SHA256" ] ||
     fail "raw kyclient digest mismatch: $ACTUAL_RAW_SHA256"
+ACTUAL_RAW_PAYLOAD_SHA256=$(
+    dd if="$SOURCE_RAW_CLIENT" bs="$LOCK_RAW_CODE_SIGNATURE_OFFSET" count=1 2>/dev/null |
+        shasum -a 256 |
+        awk '{print $1}'
+)
+[ "$ACTUAL_RAW_PAYLOAD_SHA256" = "$LOCK_RAW_PAYLOAD_SHA256" ] ||
+    fail "raw kyclient executable payload mismatch: $ACTUAL_RAW_PAYLOAD_SHA256"
 codesign --verify --strict "$SOURCE_RAW_CLIENT" ||
     fail 'baseline raw kyclient signature is invalid'
 
@@ -344,6 +373,9 @@ set_plist_string ReplayDesktopKyberRelease "$LOCK_KYBER_RELEASE"
 set_plist_string ReplayDesktopKyberCommit "$LOCK_KYBER_COMMIT"
 set_plist_string ReplayDesktopKysdkCommit "$LOCK_KYSDK_COMMIT"
 set_plist_string ReplayDesktopRawKyclientSHA256 "$LOCK_RAW_SHA256"
+set_plist_string ReplayDesktopRawKyclientPayloadSHA256 "$LOCK_RAW_PAYLOAD_SHA256"
+set_plist_string ReplayDesktopRawKyclientCodeSignatureOffset \
+    "$LOCK_RAW_CODE_SIGNATURE_OFFSET"
 set_plist_string ReplayDesktopXcodeVersion "$XCODE_VERSION"
 set_plist_string ReplayDesktopXcodeBuildVersion "$XCODE_BUILD_VERSION"
 set_plist_string ReplayDesktopSwiftVersion "$SWIFT_VERSION"
@@ -359,17 +391,26 @@ plutil -lint "$PLIST"
 "$STAGED_APP/Contents/MacOS/ReplayDesktopLauncher" --self-test
 
 find "$STAGED_APP" -type f -print | LC_ALL=C sort | while IFS= read -r candidate; do
-    if [ "$candidate" != "$STAGED_APP/$LOCK_RAW_PATH" ] &&
-        file "$candidate" | grep -q 'Mach-O'
-    then
+    if file "$candidate" | grep -q 'Mach-O'; then
         codesign --force --sign - --timestamp=none "$candidate"
     fi
 done
 codesign --force --sign - --timestamp=none "$STAGED_APP"
 codesign --verify --deep --strict "$STAGED_APP"
+PACKAGED_RAW_CODE_SIGNATURE_OFFSET=$(
+    code_signature_offset "$STAGED_APP/$LOCK_RAW_PATH"
+)
+[ "$PACKAGED_RAW_CODE_SIGNATURE_OFFSET" = "$LOCK_RAW_CODE_SIGNATURE_OFFSET" ] ||
+    fail "packaging moved the raw kyclient code-signature boundary: $PACKAGED_RAW_CODE_SIGNATURE_OFFSET"
 PACKAGED_RAW_SHA256=$(shasum -a 256 "$STAGED_APP/$LOCK_RAW_PATH" | awk '{print $1}')
-[ "$PACKAGED_RAW_SHA256" = "$LOCK_RAW_SHA256" ] ||
-    fail "packaging mutated raw kyclient bytes: $PACKAGED_RAW_SHA256"
+PACKAGED_RAW_PAYLOAD_SHA256=$(
+    dd if="$STAGED_APP/$LOCK_RAW_PATH" \
+        bs="$LOCK_RAW_CODE_SIGNATURE_OFFSET" count=1 2>/dev/null |
+        shasum -a 256 |
+        awk '{print $1}'
+)
+[ "$PACKAGED_RAW_PAYLOAD_SHA256" = "$LOCK_RAW_PAYLOAD_SHA256" ] ||
+    fail "packaging mutated the raw kyclient executable payload: $PACKAGED_RAW_PAYLOAD_SHA256"
 codesign --verify --strict "$STAGED_APP/$LOCK_RAW_PATH" ||
     fail 'packaged raw kyclient signature is invalid'
 
@@ -401,6 +442,8 @@ printf 'APP=%s\n' "$FINAL_APP"
 printf 'ARCHIVE=%s\n' "$FINAL_ARCHIVE"
 printf 'PACKAGE_VERSION=%s\n' "$PACKAGE_VERSION"
 printf 'SOURCE_COMMIT=%s\n' "$SOURCE_COMMIT"
-printf 'RAW_KYCLIENT_SHA256=%s\n' "$LOCK_RAW_SHA256"
+printf 'RAW_KYCLIENT_INPUT_SHA256=%s\n' "$LOCK_RAW_SHA256"
+printf 'RAW_KYCLIENT_PAYLOAD_SHA256=%s\n' "$LOCK_RAW_PAYLOAD_SHA256"
+printf 'RAW_KYCLIENT_PACKAGED_SHA256=%s\n' "$PACKAGED_RAW_SHA256"
 printf 'SHA256='
 shasum -a 256 "$FINAL_ARCHIVE" | awk '{print $1}'

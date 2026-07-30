@@ -139,6 +139,18 @@ lock_value() {
     printf '%s\n' "$lock_result"
 }
 
+code_signature_offset() {
+    otool -l "$1" |
+        awk '$1 == "cmd" && $2 == "LC_CODE_SIGNATURE" {
+                 signature = 1
+                 next
+             }
+             signature && $1 == "dataoff" {
+                 print $2
+                 exit
+             }'
+}
+
 verify_source_boundary() {
     cd "$REPO_ROOT"
     git rev-parse --show-toplevel >/dev/null 2>&1 ||
@@ -328,6 +340,8 @@ verify_bundle() {
     lock_kysdk_commit=$(lock_value kysdk_commit)
     lock_raw_path=$(lock_value raw_kyclient_bundle_path)
     lock_raw_sha256=$(lock_value raw_kyclient_sha256)
+    lock_raw_payload_sha256=$(lock_value raw_kyclient_payload_sha256)
+    lock_raw_code_signature_offset=$(lock_value raw_kyclient_code_signature_offset)
     lock_raw_minimum_macos=$(lock_value raw_kyclient_minimum_macos)
     [ "$lock_format" = 1 ] ||
         fail "unsupported engine baseline lock format: $lock_format"
@@ -339,8 +353,12 @@ verify_bundle() {
         fail 'engine baseline lock contains an invalid Kysdk commit'
     printf '%s\n' "$lock_raw_sha256" | grep -Eq '^[0-9a-f]{64}$' ||
         fail 'engine baseline lock contains an invalid raw kyclient digest'
+    printf '%s\n' "$lock_raw_payload_sha256" | grep -Eq '^[0-9a-f]{64}$' ||
+        fail 'engine baseline lock contains an invalid raw kyclient payload digest'
+    printf '%s\n' "$lock_raw_code_signature_offset" | grep -Eq '^[1-9][0-9]*$' ||
+        fail 'engine baseline lock contains an invalid code-signature offset'
 
-    for tool in plutil file otool codesign unzip zipinfo shasum stat readlink cmp diff; do
+    for tool in plutil file otool codesign unzip zipinfo shasum stat readlink cmp diff dd; do
         command -v "$tool" >/dev/null 2>&1 ||
             fail "required macOS verification tool not found: $tool"
     done
@@ -380,6 +398,12 @@ verify_bundle() {
     metadata_kyber_commit=$(plist_string ReplayDesktopKyberCommit)
     metadata_kysdk_commit=$(plist_string ReplayDesktopKysdkCommit)
     metadata_raw_sha256=$(plist_string ReplayDesktopRawKyclientSHA256)
+    metadata_raw_payload_sha256=$(
+        plist_string ReplayDesktopRawKyclientPayloadSHA256
+    )
+    metadata_raw_code_signature_offset=$(
+        plist_string ReplayDesktopRawKyclientCodeSignatureOffset
+    )
     metadata_xcode_version=$(plist_string ReplayDesktopXcodeVersion)
     metadata_xcode_build=$(plist_string ReplayDesktopXcodeBuildVersion)
     metadata_swift_version=$(plist_string ReplayDesktopSwiftVersion)
@@ -429,6 +453,10 @@ verify_bundle() {
         fail "Kysdk commit metadata mismatch: $metadata_kysdk_commit"
     [ "$metadata_raw_sha256" = "$lock_raw_sha256" ] ||
         fail "raw kyclient digest metadata mismatch: $metadata_raw_sha256"
+    [ "$metadata_raw_payload_sha256" = "$lock_raw_payload_sha256" ] ||
+        fail "raw kyclient payload metadata mismatch: $metadata_raw_payload_sha256"
+    [ "$metadata_raw_code_signature_offset" = "$lock_raw_code_signature_offset" ] ||
+        fail "raw kyclient signature-offset metadata mismatch: $metadata_raw_code_signature_offset"
     [ "$metadata_deployment_target" = "$minimum_os" ] &&
         [ "$metadata_deployment_target" = "$lock_raw_minimum_macos" ] ||
         fail "deployment-target metadata mismatch: $metadata_deployment_target"
@@ -447,8 +475,16 @@ verify_bundle() {
         fail "deployment target metadata mismatch: $metadata_deployment_target"
 
     raw_client_sha256=$(shasum -a 256 "$raw_client" | awk '{print $1}')
-    [ "$raw_client_sha256" = "$lock_raw_sha256" ] ||
-        fail "raw kyclient bytes differ from the baseline lock: $raw_client_sha256"
+    raw_client_code_signature_offset=$(code_signature_offset "$raw_client")
+    [ "$raw_client_code_signature_offset" = "$lock_raw_code_signature_offset" ] ||
+        fail "raw kyclient code-signature boundary differs from baseline: $raw_client_code_signature_offset"
+    raw_client_payload_sha256=$(
+        dd if="$raw_client" bs="$lock_raw_code_signature_offset" count=1 2>/dev/null |
+            shasum -a 256 |
+            awk '{print $1}'
+    )
+    [ "$raw_client_payload_sha256" = "$lock_raw_payload_sha256" ] ||
+        fail "raw kyclient executable payload differs from baseline: $raw_client_payload_sha256"
 
     temp_root=${TMPDIR:-/tmp}
     inventory=$(mktemp "$temp_root/replaydesktop-inventory.XXXXXX")
@@ -659,7 +695,10 @@ EOF
         "PASS: LSMinimumSystemVersion=$minimum_os" \
         "PASS: arm64 Mach-O count=$macho_count" \
         "PASS: launcher minos=$launcher_minos sdk=$launcher_sdk" \
-        "PASS: raw kyclient SHA256=$raw_client_sha256 minos=$raw_minos and arm64-only" \
+        "PASS: raw kyclient input SHA256=$lock_raw_sha256" \
+        "PASS: raw kyclient payload SHA256=$raw_client_payload_sha256 packaged SHA256=$raw_client_sha256" \
+        "PASS: raw kyclient code-signature offset=$raw_client_code_signature_offset" \
+        "PASS: raw kyclient minos=$raw_minos and arm64-only" \
         "PASS: Xcode=$metadata_xcode_version ($metadata_xcode_build), SDK=$metadata_sdk_version ($metadata_sdk_build)" \
         "PASS: Swift=$metadata_swift_version" \
         'PASS: ad-hoc signature, raw CLI fallback, runtime directory, and exact archive manifest' \

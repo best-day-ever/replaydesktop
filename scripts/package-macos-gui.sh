@@ -9,7 +9,7 @@ ENGINE_LOCK="$REPO_ROOT/prototype/macos/engine-baseline.lock"
 SOURCE_APP=""
 ENGINE_SOURCE_ROOT=""
 OUTPUT_DIR="$PWD"
-ARCHIVE_NAME="ReplayDesktop-arm64-gui-spike.zip"
+ARCHIVE_NAME="ReplayDesktop-arm64-clipboard-spike.zip"
 DRY_RUN=false
 PACKAGE_TIMESTAMP="${PACKAGE_TIMESTAMP:-202001010000}"
 PACKAGE_VERSION=""
@@ -53,7 +53,7 @@ usage() {
         "" \
         "Builds an arm64 macOS 15 AppKit launcher, injects it into a recoverable" \
         "copy of ReplayDesktop.app, ad-hoc signs the complete internal prototype," \
-        "and creates ReplayDesktop-arm64-gui-spike.zip."
+        "and creates ReplayDesktop-arm64-clipboard-spike.zip."
 }
 
 while [ "$#" -gt 0 ]; do

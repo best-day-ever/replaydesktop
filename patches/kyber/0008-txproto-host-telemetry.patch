@@ -347,7 +347,7 @@ index ecc7fb9..0f7fd95 100644
  /* Modify */
  void RENAME(fifo_set_max_queued)(AVBufferRef *dst, int max_queued);
 diff --git a/src/include/libtxproto/metrics.h b/src/include/libtxproto/metrics.h
-index 29eac4f..3e5350f 100644
+index 29eac4f..c1a1b06 100644
 --- a/src/include/libtxproto/metrics.h
 +++ b/src/include/libtxproto/metrics.h
 @@ -18,9 +18,12 @@
@@ -363,7 +363,7 @@ index 29eac4f..3e5350f 100644
  typedef struct tx_metrics_entry {
      const char *key;
      int64_t value;
-@@ -30,7 +33,59 @@ typedef int (*tx_metrics_cb)(const struct tx_metrics_entry *entries,
+@@ -30,7 +33,88 @@ typedef int (*tx_metrics_cb)(const struct tx_metrics_entry *entries,
                               size_t count,
                               void *userdata);
  
@@ -389,9 +389,38 @@ index 29eac4f..3e5350f 100644
  struct tx_metrics {
      tx_metrics_cb cb;
      void *userdata;
++    atomic_uint_fast64_t callback_loss_publication;
 +    atomic_uint_fast64_t callback_lost_batches;
 +    atomic_uint_fast64_t callback_lost_entries;
  };
++
++/*
++ * The low bits count active loss writers and the upper bits count completed
++ * loss updates. A writer increments the active count before touching either
++ * cumulative field, then advances the generation and decrements the active
++ * count with one atomic operation. A reader accepts one bounded snapshot only
++ * when this word is unchanged and has no active writer. Sixteen active bits
++ * cover the fixed producer-thread set; the remaining 48 bits defer generation
++ * wrap beyond any practical session lifetime.
++ */
++#define TX_METRICS_LOSS_ACTIVE_BITS 16
++#define TX_METRICS_LOSS_ACTIVE_MASK \
++    ((((uint_fast64_t)1) << TX_METRICS_LOSS_ACTIVE_BITS) - 1)
++#define TX_METRICS_LOSS_COMPLETION \
++    (((uint_fast64_t)1) << TX_METRICS_LOSS_ACTIVE_BITS)
++
++static inline void tx_metrics_loss_update_begin(struct tx_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication, 1,
++                              memory_order_seq_cst);
++}
++
++static inline void tx_metrics_loss_update_end(struct tx_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication,
++                              TX_METRICS_LOSS_COMPLETION - 1,
++                              memory_order_seq_cst);
++}
 +
 +int tx_metrics_emit_payload(struct tx_metrics *metrics,
 +                            int64_t pts,
@@ -487,10 +516,10 @@ index e0fee54..7e5c891 100644
      }
  
 diff --git a/src/metrics.c b/src/metrics.c
-index 4c4bf6e..7287c23 100644
+index 4c4bf6e..5ac0650 100644
 --- a/src/metrics.c
 +++ b/src/metrics.c
-@@ -19,13 +19,190 @@
+@@ -19,13 +19,226 @@
  #include "metrics.h"
  
  #include <assert.h>
@@ -502,15 +531,15 @@ index 4c4bf6e..7287c23 100644
 +static uint_fast64_t atomic_saturating_add(atomic_uint_fast64_t *value,
 +                                           uint_fast64_t increment)
 +{
-+    uint_fast64_t current = atomic_load_explicit(value, memory_order_relaxed);
++    uint_fast64_t current = atomic_load_explicit(value, memory_order_seq_cst);
 +
 +    for (;;) {
 +        uint_fast64_t next = UINT_FAST64_MAX - current < increment
 +                           ? UINT_FAST64_MAX
 +                           : current + increment;
 +        if (atomic_compare_exchange_weak_explicit(value, &current, next,
-+                                                  memory_order_relaxed,
-+                                                  memory_order_relaxed))
++                                                  memory_order_seq_cst,
++                                                  memory_order_seq_cst))
 +            return next;
 +    }
 +}
@@ -522,13 +551,50 @@ index 4c4bf6e..7287c23 100644
 +
 +static void record_callback_loss(struct tx_metrics *metrics, size_t count)
 +{
++    /* An empty call contains no telemetry entry to account as lost. */
++    if (count == 0)
++        return;
++
++    tx_metrics_loss_update_begin(metrics);
 +    atomic_saturating_add(&metrics->callback_lost_entries, count);
 +    atomic_saturating_add(&metrics->callback_lost_batches, 1);
++    tx_metrics_loss_update_end(metrics);
++}
++
++static int snapshot_callback_loss(struct tx_metrics *metrics,
++                                  uint_fast64_t *lost_batches,
++                                  uint_fast64_t *lost_entries)
++{
++    uint_fast64_t publication_before =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++    if (publication_before & TX_METRICS_LOSS_ACTIVE_MASK)
++        return 0;
++
++    uint_fast64_t batches =
++        atomic_load_explicit(&metrics->callback_lost_batches,
++                             memory_order_seq_cst);
++    uint_fast64_t entries =
++        atomic_load_explicit(&metrics->callback_lost_entries,
++                             memory_order_seq_cst);
++    uint_fast64_t publication_after =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++
++    if (publication_before != publication_after ||
++        (publication_after & TX_METRICS_LOSS_ACTIVE_MASK) ||
++        ((batches == 0) != (entries == 0)))
++        return 0;
++
++    *lost_batches = batches;
++    *lost_entries = entries;
++    return 1;
 +}
  
  void tx_metrics_init(struct tx_metrics *metrics) {
      metrics->cb = NULL;
 +    metrics->userdata = NULL;
++    atomic_init(&metrics->callback_loss_publication, 0);
 +    atomic_init(&metrics->callback_lost_batches, 0);
 +    atomic_init(&metrics->callback_lost_entries, 0);
  }
@@ -540,12 +606,11 @@ index 4c4bf6e..7287c23 100644
 +
 +    tx_metrics_entry batch[TX_METRICS_MAX_BATCH_ENTRIES];
 +    size_t batch_count = 0;
-+    uint_fast64_t lost_batches =
-+        atomic_load_explicit(&metrics->callback_lost_batches, memory_order_relaxed);
-+    uint_fast64_t lost_entries =
-+        atomic_load_explicit(&metrics->callback_lost_entries, memory_order_relaxed);
++    uint_fast64_t lost_batches;
++    uint_fast64_t lost_entries;
 +
-+    if (lost_batches || lost_entries) {
++    if (snapshot_callback_loss(metrics, &lost_batches, &lost_entries) &&
++        lost_batches != 0) {
 +        batch[batch_count++] = (tx_metrics_entry) {
 +            .key = "telemetry_callback_lost_batches_total",
 +            .value = metrics_counter_value(lost_batches),
@@ -717,10 +782,10 @@ index 3ce3d2e..3935f76 100644
          av_packet_free(&in_pkt);
 diff --git a/test/host_metrics.c b/test/host_metrics.c
 new file mode 100644
-index 0000000..320bc84
+index 0000000..5a082e0
 --- /dev/null
 +++ b/test/host_metrics.c
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,524 @@
 +/*
 + * This file is part of txproto.
 + *
@@ -760,6 +825,27 @@ index 0000000..320bc84
 +    int result;
 +} Producer;
 +
++typedef struct ForcedLossPublisher {
++    struct tx_metrics *metrics;
++    atomic_int phase;
++} ForcedLossPublisher;
++
++typedef struct LossStressCapture {
++    atomic_uint_fast64_t rejected_batches;
++    atomic_uint_fast64_t rejected_entries;
++    atomic_uint_fast64_t observer_last_batches[2];
++    atomic_uint_fast64_t observer_last_entries[2];
++    atomic_int invalid_snapshots;
++} LossStressCapture;
++
++typedef struct LossStressWorker {
++    struct tx_metrics *metrics;
++    atomic_int *ready;
++    atomic_int *go;
++    int observer_id;
++    int iterations;
++} LossStressWorker;
++
 +static int capture_metrics(const tx_metrics_entry *entries, size_t count,
 +                           void *userdata)
 +{
@@ -769,6 +855,57 @@ index 0000000..320bc84
 +    capture->count = count;
 +    memcpy(capture->entries, entries, count * sizeof(*entries));
 +    return capture->reject;
++}
++
++static int capture_concurrent_metrics(const tx_metrics_entry *entries,
++                                      size_t count, void *userdata)
++{
++    LossStressCapture *capture = userdata;
++    int reject = 0;
++    int observer_id = -1;
++    int have_lost_batches = 0;
++    int have_lost_entries = 0;
++    uint_fast64_t lost_batches = 0;
++    uint_fast64_t lost_entries = 0;
++
++    assert(count <= TX_METRICS_MAX_BATCH_ENTRIES);
++    for (size_t i = 0; i < count; i++) {
++        if (strcmp(entries[i].key, "force_reject") == 0)
++            reject = 1;
++        else if (strcmp(entries[i].key, "observer_id") == 0)
++            observer_id = (int)entries[i].value;
++        else if (strcmp(entries[i].key,
++                        "telemetry_callback_lost_batches_total") == 0) {
++            have_lost_batches = 1;
++            lost_batches = (uint_fast64_t)entries[i].value;
++        } else if (strcmp(entries[i].key,
++                          "telemetry_callback_lost_entries_total") == 0) {
++            have_lost_entries = 1;
++            lost_entries = (uint_fast64_t)entries[i].value;
++        }
++    }
++
++    if (have_lost_batches != have_lost_entries ||
++        (have_lost_batches &&
++         (lost_batches == 0 || lost_entries == 0 ||
++          lost_entries < lost_batches)))
++        atomic_fetch_add(&capture->invalid_snapshots, 1);
++
++    if (have_lost_batches && observer_id >= 0 && observer_id < 2) {
++        uint_fast64_t previous_batches = atomic_exchange(
++            &capture->observer_last_batches[observer_id], lost_batches);
++        uint_fast64_t previous_entries = atomic_exchange(
++            &capture->observer_last_entries[observer_id], lost_entries);
++        if (lost_batches < previous_batches || lost_entries < previous_entries)
++            atomic_fetch_add(&capture->invalid_snapshots, 1);
++    }
++
++    if (reject) {
++        atomic_fetch_add(&capture->rejected_batches, 1);
++        atomic_fetch_add(&capture->rejected_entries, count);
++        return 1;
++    }
++    return 0;
 +}
 +
 +static const tx_metrics_entry *find_metric(const MetricsCapture *capture,
@@ -805,6 +942,38 @@ index 0000000..320bc84
 +    Producer *producer = userdata;
 +    producer->result = sp_packet_fifo_push(producer->fifo, producer->packet);
 +    atomic_fetch_add(producer->completed, 1);
++    return NULL;
++}
++
++static void *forced_loss_publisher(void *userdata)
++{
++    ForcedLossPublisher *publisher = userdata;
++
++    tx_metrics_loss_update_begin(publisher->metrics);
++    atomic_store(&publisher->metrics->callback_lost_batches, 1);
++    atomic_store(&publisher->phase, 1);
++    while (atomic_load(&publisher->phase) != 2)
++        sleep_ms(1);
++    atomic_store(&publisher->metrics->callback_lost_entries, 3);
++    tx_metrics_loss_update_end(publisher->metrics);
++    atomic_store(&publisher->phase, 3);
++    return NULL;
++}
++
++static void *loss_stress_worker(void *userdata)
++{
++    LossStressWorker *worker = userdata;
++    atomic_fetch_add(worker->ready, 1);
++    while (!atomic_load(worker->go))
++        sleep_ms(1);
++
++    for (int i = 0; i < worker->iterations; i++) {
++        tx_metrics_entry entry = {
++            .key = worker->observer_id < 0 ? "force_reject" : "observer_id",
++            .value = worker->observer_id,
++        };
++        tx_metrics_push(worker->metrics, &entry, 1);
++    }
 +    return NULL;
 +}
 +
@@ -1037,11 +1206,107 @@ index 0000000..320bc84
 +                        "telemetry_callback_lost_entries_total"));
 +}
 +
++static void test_metrics_forced_loss_publication(void)
++{
++    struct tx_metrics metrics;
++    MetricsCapture capture = { 0 };
++    ForcedLossPublisher publisher = {
++        .metrics = &metrics,
++        .phase = ATOMIC_VAR_INIT(0),
++    };
++    pthread_t thread;
++
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_metrics;
++    metrics.userdata = &capture;
++    assert(pthread_create(&thread, NULL, forced_loss_publisher, &publisher) == 0);
++    assert(wait_for_completed(&publisher.phase, 1) == 0);
++
++    assert(tx_metrics_emit_payload(&metrics, 1, "encoded", 2,
++                                   "encoded_payload_bytes", 3) == 0);
++    assert(!find_metric(&capture,
++                        "telemetry_callback_lost_batches_total"));
++    assert(!find_metric(&capture,
++                        "telemetry_callback_lost_entries_total"));
++
++    atomic_store(&publisher.phase, 2);
++    assert(wait_for_completed(&publisher.phase, 3) == 0);
++    assert(pthread_join(thread, NULL) == 0);
++
++    assert(tx_metrics_emit_queue(&metrics, 1,
++                                 TX_METRICS_QUEUE_STAGE_CAPTURE,
++                                 1, 1) == 0);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_batches_total")->value == 1);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_entries_total")->value == 3);
++}
++
++static void test_metrics_concurrent_loss_publication(void)
++{
++    enum {
++        REJECTERS = 4,
++        OBSERVERS = 2,
++        ITERATIONS = 4000,
++        WORKERS = REJECTERS + OBSERVERS,
++    };
++    struct tx_metrics metrics;
++    LossStressCapture stress = { 0 };
++    LossStressWorker workers[WORKERS];
++    pthread_t threads[WORKERS];
++    atomic_int ready = ATOMIC_VAR_INIT(0);
++    atomic_int go = ATOMIC_VAR_INIT(0);
++
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_concurrent_metrics;
++    metrics.userdata = &stress;
++
++    for (int i = 0; i < WORKERS; i++) {
++        workers[i] = (LossStressWorker) {
++            .metrics = &metrics,
++            .ready = &ready,
++            .go = &go,
++            .observer_id = i < REJECTERS ? -1 : i - REJECTERS,
++            .iterations = ITERATIONS,
++        };
++        assert(pthread_create(&threads[i], NULL, loss_stress_worker,
++                              &workers[i]) == 0);
++    }
++    assert(wait_for_completed(&ready, WORKERS) == 0);
++    atomic_store(&go, 1);
++    for (int i = 0; i < WORKERS; i++)
++        assert(pthread_join(threads[i], NULL) == 0);
++
++    uint_fast64_t expected_batches = atomic_load(&stress.rejected_batches);
++    uint_fast64_t expected_entries = atomic_load(&stress.rejected_entries);
++    assert(expected_batches == REJECTERS * ITERATIONS);
++    assert(expected_entries >= expected_batches);
++    assert(atomic_load(&metrics.callback_lost_batches) == expected_batches);
++    assert(atomic_load(&metrics.callback_lost_entries) == expected_entries);
++    assert(atomic_load(&metrics.callback_loss_publication) ==
++           expected_batches * TX_METRICS_LOSS_COMPLETION);
++    assert(atomic_load(&stress.invalid_snapshots) == 0);
++
++    MetricsCapture final_capture = { 0 };
++    metrics.cb = capture_metrics;
++    metrics.userdata = &final_capture;
++    tx_metrics_entry final_entry = { .key = "observer_id", .value = 0 };
++    tx_metrics_push(&metrics, &final_entry, 1);
++    assert(find_metric(&final_capture,
++                       "telemetry_callback_lost_batches_total")->value ==
++           (int64_t)expected_batches);
++    assert(find_metric(&final_capture,
++                       "telemetry_callback_lost_entries_total")->value ==
++           (int64_t)expected_entries);
++}
++
 +int main(void)
 +{
 +    test_fifo_limit_and_owner();
 +    test_fifo_special_and_blocking_semantics();
 +    test_metrics_loss_and_helpers();
++    test_metrics_forced_loss_publication();
++    test_metrics_concurrent_loss_publication();
 +    puts("host_metrics: ok");
 +    return 0;
 +}

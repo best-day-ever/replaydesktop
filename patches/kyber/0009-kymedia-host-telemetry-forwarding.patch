@@ -1,8 +1,8 @@
 diff --git a/kyavservice/src/metrics.rs b/kyavservice/src/metrics.rs
-index 2cef077..7809838 100644
+index 2cef077..2737159 100644
 --- a/kyavservice/src/metrics.rs
 +++ b/kyavservice/src/metrics.rs
-@@ -20,17 +20,166 @@
+@@ -20,17 +20,238 @@
  
  use log::warn;
  use serde::Serialize;
@@ -28,21 +28,50 @@ index 2cef077..7809838 100644
 +    last_sequence: u64,
 +}
 +
-+#[derive(Default)]
++#[derive(Clone, Copy, Debug, PartialEq)]
++struct PublishedLoss {
++    publication: u64,
++    loss: LossSnapshot,
++}
++
 +struct ForwarderState {
 +    next_sequence: AtomicU64,
++    loss_publication: AtomicU64,
 +    rejected_batches: AtomicU64,
 +    rejected_entries: AtomicU64,
 +    first_rejected_sequence: AtomicU64,
 +    last_rejected_sequence: AtomicU64,
-+    reported_batches: AtomicU64,
-+    reported_entries: AtomicU64,
++    reported_publication: AtomicU64,
++}
++
++impl Default for ForwarderState {
++    fn default() -> Self {
++        Self {
++            next_sequence: AtomicU64::new(0),
++            loss_publication: AtomicU64::new(0),
++            rejected_batches: AtomicU64::new(0),
++            rejected_entries: AtomicU64::new(0),
++            first_rejected_sequence: AtomicU64::new(u64::MAX),
++            last_rejected_sequence: AtomicU64::new(0),
++            reported_publication: AtomicU64::new(0),
++        }
++    }
 +}
 +
 +impl ForwarderState {
++    // The low bits count active writers; the upper bits count completed loss
++    // updates. Writers never wait for each other. A reader makes one bounded
++    // attempt and accepts the tuple only when this word is unchanged with no
++    // active writer, so separately stored fields cannot escape partially.
++    // Sixteen active bits cover the fixed producer-thread set, while the
++    // 48-bit generation cannot wrap during a practical session.
++    const LOSS_ACTIVE_BITS: u32 = 16;
++    const LOSS_ACTIVE_MASK: u64 = (1 << Self::LOSS_ACTIVE_BITS) - 1;
++    const LOSS_COMPLETION: u64 = 1 << Self::LOSS_ACTIVE_BITS;
++
 +    fn saturating_add(counter: &AtomicU64, increment: u64) -> u64 {
 +        let previous = counter
-+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
++            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
 +                Some(value.saturating_add(increment))
 +            })
 +            .expect("saturating update always succeeds");
@@ -54,40 +83,79 @@ index 2cef077..7809838 100644
 +    }
 +
 +    fn record_rejection(&self, sequence: u64, entries: usize) {
-+        Self::saturating_add(&self.rejected_batches, 1);
-+        Self::saturating_add(&self.rejected_entries, entries as u64);
-+        let _ = self.first_rejected_sequence.compare_exchange(
-+            0,
-+            sequence,
-+            Ordering::Relaxed,
-+            Ordering::Relaxed,
-+        );
-+        self.last_rejected_sequence
-+            .fetch_max(sequence, Ordering::Relaxed);
++        self.record_rejection_with(sequence, entries, || {});
 +    }
 +
-+    fn snapshot(&self) -> LossSnapshot {
-+        LossSnapshot {
-+            batches: self.rejected_batches.load(Ordering::Relaxed),
-+            entries: self.rejected_entries.load(Ordering::Relaxed),
-+            first_sequence: self.first_rejected_sequence.load(Ordering::Relaxed),
-+            last_sequence: self.last_rejected_sequence.load(Ordering::Relaxed),
++    fn record_rejection_with<F>(&self, sequence: u64, entries: usize, after_batches: F)
++    where
++        F: FnOnce(),
++    {
++        // txproto-rs rejects an empty native batch before this callback.
++        if entries == 0 {
++            return;
 +        }
++
++        self.loss_publication.fetch_add(1, Ordering::SeqCst);
++        Self::saturating_add(&self.rejected_batches, 1);
++        after_batches();
++        Self::saturating_add(&self.rejected_entries, entries as u64);
++        self.first_rejected_sequence
++            .fetch_min(sequence, Ordering::SeqCst);
++        self.last_rejected_sequence
++            .fetch_max(sequence, Ordering::SeqCst);
++        self.loss_publication
++            .fetch_add(Self::LOSS_COMPLETION - 1, Ordering::SeqCst);
 +    }
 +
-+    fn mark_reported(&self, snapshot: LossSnapshot) {
-+        self.reported_batches
-+            .fetch_max(snapshot.batches, Ordering::Relaxed);
-+        self.reported_entries
-+            .fetch_max(snapshot.entries, Ordering::Relaxed);
++    fn snapshot(&self) -> Option<PublishedLoss> {
++        let publication_before = self.loss_publication.load(Ordering::SeqCst);
++        if publication_before & Self::LOSS_ACTIVE_MASK != 0 {
++            return None;
++        }
++
++        let batches = self.rejected_batches.load(Ordering::SeqCst);
++        let entries = self.rejected_entries.load(Ordering::SeqCst);
++        let first_sequence = self.first_rejected_sequence.load(Ordering::SeqCst);
++        let last_sequence = self.last_rejected_sequence.load(Ordering::SeqCst);
++        let publication_after = self.loss_publication.load(Ordering::SeqCst);
++
++        if publication_before != publication_after
++            || publication_after & Self::LOSS_ACTIVE_MASK != 0
++            || (batches == 0) != (entries == 0)
++            || (batches != 0
++                && (first_sequence == u64::MAX
++                    || last_sequence == 0
++                    || first_sequence > last_sequence))
++        {
++            return None;
++        }
++
++        Some(PublishedLoss {
++            publication: publication_after,
++            loss: if batches == 0 {
++                LossSnapshot::default()
++            } else {
++                LossSnapshot {
++                    batches,
++                    entries,
++                    first_sequence,
++                    last_sequence,
++                }
++            },
++        })
++    }
++
++    fn mark_reported(&self, publication: u64) {
++        self.reported_publication
++            .fetch_max(publication, Ordering::SeqCst);
 +    }
 +
 +    fn unflushed_loss(&self) -> Option<LossSnapshot> {
-+        let snapshot = self.snapshot();
-+        let reported_batches = self.reported_batches.load(Ordering::Relaxed);
-+        let reported_entries = self.reported_entries.load(Ordering::Relaxed);
-+        if snapshot.batches > reported_batches || snapshot.entries > reported_entries {
-+            Some(snapshot)
++        let snapshot = self.snapshot()?;
++        if snapshot.loss.batches != 0
++            && snapshot.publication > self.reported_publication.load(Ordering::SeqCst)
++        {
++            Some(snapshot.loss)
 +        } else {
 +            None
 +        }
@@ -150,15 +218,19 @@ index 2cef077..7809838 100644
 +    fn try_forward(&self, source: &[txproto_rs::Metrics<'_>]) -> bool {
 +        let sequence = self.state.next_sequence();
 +        let loss = self.state.snapshot();
-+        let mut metrics = Vec::with_capacity(source.len() + 4);
++        let mut metrics = Vec::with_capacity(source.len() + usize::from(loss.is_some()) * 4);
 +        metrics.extend(source.iter().map(|metric| Metrics {
 +            key: metric.key.into(),
 +            value: metric.value,
 +        }));
-+        Self::push_loss_metrics(&mut metrics, loss);
++        if let Some(loss) = loss {
++            Self::push_loss_metrics(&mut metrics, loss.loss);
++        }
 +
 +        if self.tx.try_send(metrics).is_ok() {
-+            self.state.mark_reported(loss);
++            if let Some(loss) = loss {
++                self.state.mark_reported(loss.publication);
++            }
 +            true
 +        } else {
 +            self.state.record_rejection(sequence, source.len());
@@ -170,7 +242,7 @@ index 2cef077..7809838 100644
  async fn forward_task(mut rx: mpsc::Receiver<Vec<Metrics>>, uri: String) -> Result<()> {
      let addr = uri.parse::<kycom::KyComAddr>()?;
      let kycom_client = kycom::Channel::connect(addr).into_metrics_server_endpoint();
-@@ -49,21 +198,9 @@ async fn forward_task(mut rx: mpsc::Receiver<Vec<Metrics>>, uri: String) -> Resu
+@@ -49,21 +270,9 @@ async fn forward_task(mut rx: mpsc::Receiver<Vec<Metrics>>, uri: String) -> Resu
  
  pub(crate) fn forward(ctx: &txproto_rs::Txproto, uri: &str) -> Result<()> {
      let (tx, rx) = mpsc::channel::<Vec<Metrics>>(32);
@@ -194,7 +266,7 @@ index 2cef077..7809838 100644
  
      let uri = uri.to_string();
      task::spawn(async move {
-@@ -75,3 +212,126 @@ pub(crate) fn forward(ctx: &txproto_rs::Txproto, uri: &str) -> Result<()> {
+@@ -75,3 +284,302 @@ pub(crate) fn forward(ctx: &txproto_rs::Txproto, uri: &str) -> Result<()> {
  
      Ok(())
  }
@@ -202,9 +274,18 @@ index 2cef077..7809838 100644
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    use std::{
++        hint,
++        sync::{atomic::AtomicBool, Barrier},
++        thread,
++    };
 +
 +    fn source(key: &'static str, value: i64) -> txproto_rs::Metrics<'static> {
 +        txproto_rs::Metrics { key, value }
++    }
++
++    fn loss_snapshot(state: &ForwarderState) -> LossSnapshot {
++        state.snapshot().expect("coherent loss snapshot").loss
 +    }
 +
 +    fn value(metrics: &[Metrics], key: &str) -> Option<i64> {
@@ -241,7 +322,7 @@ index 2cef077..7809838 100644
 +        assert!(!forwarder.try_forward(&batch));
 +        assert!(!forwarder.try_forward(&batch));
 +        assert_eq!(
-+            forwarder.state.snapshot(),
++            loss_snapshot(&forwarder.state),
 +            LossSnapshot {
 +                batches: 2,
 +                entries: 4,
@@ -270,6 +351,173 @@ index 2cef077..7809838 100644
 +            Some(3)
 +        );
 +        assert!(forwarder.state.unflushed_loss().is_none());
++    }
++
++    #[test]
++    fn in_progress_loss_is_omitted_until_the_tuple_is_coherent() {
++        let (tx, mut rx) = mpsc::channel(2);
++        let forwarder = MetricsForwarder::new(tx);
++        let entered = Arc::new(Barrier::new(2));
++        let release = Arc::new(Barrier::new(2));
++        let state = Arc::clone(&forwarder.state);
++        let writer = {
++            let entered = Arc::clone(&entered);
++            let release = Arc::clone(&release);
++            thread::spawn(move || {
++                state.record_rejection_with(17, 3, || {
++                    entered.wait();
++                    release.wait();
++                });
++            })
++        };
++
++        entered.wait();
++        assert!(forwarder.state.snapshot().is_none());
++        assert!(forwarder.try_forward(&[source("pts", 1)]));
++        let while_in_progress = rx.try_recv().expect("in-progress batch");
++        assert_eq!(
++            value(&while_in_progress, "telemetry_forwarder_lost_batches_total"),
++            None
++        );
++        assert_eq!(
++            value(&while_in_progress, "telemetry_forwarder_lost_entries_total"),
++            None
++        );
++
++        release.wait();
++        writer.join().expect("loss publisher");
++        assert!(forwarder.try_forward(&[source("pts", 2)]));
++        let recovered = rx.try_recv().expect("coherent recovery batch");
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_lost_batches_total"),
++            Some(1)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_lost_entries_total"),
++            Some(3)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_first_lost_sequence"),
++            Some(17)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_last_lost_sequence"),
++            Some(17)
++        );
++        assert!(forwarder.state.unflushed_loss().is_none());
++    }
++
++    #[test]
++    fn first_and_last_sequences_use_minimum_and_maximum_not_completion_order() {
++        let state = Arc::new(ForwarderState::default());
++        let start = Arc::new(Barrier::new(8));
++        let non_minimum_done = Arc::new(AtomicU64::new(0));
++        let sequences = [90, 30, 70, 10, 110, 50, 20, 80];
++        let mut writers = Vec::new();
++
++        for sequence in sequences {
++            let state = Arc::clone(&state);
++            let start = Arc::clone(&start);
++            let non_minimum_done = Arc::clone(&non_minimum_done);
++            writers.push(thread::spawn(move || {
++                start.wait();
++                if sequence == 10 {
++                    while non_minimum_done.load(Ordering::SeqCst) != 7 {
++                        hint::spin_loop();
++                    }
++                }
++                state.record_rejection(sequence, 1);
++                if sequence != 10 {
++                    non_minimum_done.fetch_add(1, Ordering::SeqCst);
++                }
++            }));
++        }
++        for writer in writers {
++            writer.join().expect("sequence writer");
++        }
++
++        assert_eq!(
++            loss_snapshot(&state),
++            LossSnapshot {
++                batches: 8,
++                entries: 8,
++                first_sequence: 10,
++                last_sequence: 110,
++            }
++        );
++    }
++
++    #[test]
++    fn concurrent_loss_snapshots_are_coherent_and_totals_exact() {
++        const WRITERS: usize = 6;
++        const OBSERVERS: usize = 2;
++        const ITERATIONS: usize = 2000;
++
++        let state = Arc::new(ForwarderState::default());
++        let start = Arc::new(Barrier::new(WRITERS + OBSERVERS));
++        let invalid_snapshots = Arc::new(AtomicU64::new(0));
++        let writers_done = Arc::new(AtomicBool::new(false));
++        let mut writers = Vec::new();
++        let mut observers = Vec::new();
++
++        for writer_id in 0..WRITERS {
++            let state = Arc::clone(&state);
++            let start = Arc::clone(&start);
++            writers.push(thread::spawn(move || {
++                start.wait();
++                for _ in 0..ITERATIONS {
++                    let sequence = state.next_sequence();
++                    state.record_rejection(sequence, writer_id + 1);
++                }
++            }));
++        }
++        for _ in 0..OBSERVERS {
++            let state = Arc::clone(&state);
++            let start = Arc::clone(&start);
++            let invalid_snapshots = Arc::clone(&invalid_snapshots);
++            let writers_done = Arc::clone(&writers_done);
++            observers.push(thread::spawn(move || {
++                start.wait();
++                while !writers_done.load(Ordering::SeqCst) {
++                    if let Some(snapshot) = state.snapshot() {
++                        let loss = snapshot.loss;
++                        if (loss.batches == 0) != (loss.entries == 0)
++                            || (loss.batches != 0
++                                && (loss.first_sequence == 0
++                                    || loss.first_sequence > loss.last_sequence))
++                        {
++                            invalid_snapshots.fetch_add(1, Ordering::SeqCst);
++                        }
++                    }
++                    hint::spin_loop();
++                }
++            }));
++        }
++        for writer in writers {
++            writer.join().expect("loss writer");
++        }
++        writers_done.store(true, Ordering::SeqCst);
++        for observer in observers {
++            observer.join().expect("loss observer");
++        }
++
++        let expected_batches = (WRITERS * ITERATIONS) as u64;
++        let expected_entries = (ITERATIONS * (1..=WRITERS).sum::<usize>()) as u64;
++        let published = state.snapshot().expect("final coherent snapshot");
++        assert_eq!(invalid_snapshots.load(Ordering::SeqCst), 0);
++        assert_eq!(
++            published.publication,
++            expected_batches * ForwarderState::LOSS_COMPLETION
++        );
++        assert_eq!(
++            published.loss,
++            LossSnapshot {
++                batches: expected_batches,
++                entries: expected_entries,
++                first_sequence: 1,
++                last_sequence: expected_batches,
++            }
++        );
 +    }
 +
 +    #[test]

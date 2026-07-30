@@ -108,6 +108,10 @@ git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
   ../../../../../../patches/kyber/0008-txproto-host-telemetry.patch
 git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0009-kymedia-host-telemetry-forwarding.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
+  ../../../../../../patches/kyber/0010-vlc-video-path-telemetry-abi.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
+  ../../../../../../patches/kyber/0011-vlc-macos-decoder-telemetry.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
   ../../../../patches/kyber/0004-linux-hires-wheel.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
@@ -141,6 +145,47 @@ The separate `--live` mode is an explicit, bounded host-service probe: it
 records the current service/config state, checks deployed NvFBC, NVENC, and
 telemetry evidence, and restores the original active state without printing
 configuration contents.
+
+Patch 0010 adds a separate, versioned, fixed-capacity video-path callback
+without changing the existing scalar metrics callback, keys, or meanings. It
+reports the compressed H.264/HEVC/AV1 codec, profile, chroma, and bit depth
+parsed from the received Kymux configuration, followed by the decoder module
+that VLC actually selected. Callback rejection is observable through coherent
+cumulative loss counts and producer sequence bounds; the native publisher
+does not serialize media or log event payloads.
+
+Patch 0011 adds the macOS-owned facts. Hardware use comes from
+`kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder` on the
+created VideoToolbox session; enable/require requests remain separate policy
+flags, and an unreadable or non-boolean property is explicitly Unknown.
+Compressed chroma is not inferred from the decoded surface:
+`decoded_fourcc` is the real `CVPixelBuffer` pixel format and IOSurface
+presence is observed independently. Decoder callbacks produce one typed
+terminal outcome for each correlated frame. The sample-buffer renderer
+separately reports failures, observable backpressure, and successful enqueue.
+
+The existing scalar `displayed` value remains unchanged, but means only
+`legacy_display_callback_returned`: VLC core can emit it after renderer
+early-return paths. It is not evidence of enqueue, physical presentation, or
+scanout. `renderer_sample_enqueued` is the distinct enqueue fact. Physical
+presentation, scanout timestamp, and layer queue depth remain explicitly
+Unknown because the current API path exposes no authoritative observation.
+
+Verify the native boundary in order:
+
+```console
+scripts/verify-macos-native-telemetry.sh --source
+scripts/verify-macos-native-telemetry.sh --tests
+scripts/verify-macos-native-telemetry.sh --replay
+scripts/verify-macos-native-telemetry.sh --mac-smoke finn@100.119.34.79
+```
+
+The Mac smoke copies only the verifier and exact patches, works under a
+mode-0700 temporary directory, builds/tests the pinned source without
+installing or replacing `ReplayDesktop.app`, returns a versioned manifest, and
+removes only its validated scratch directory. Its recorded Xcode version must
+be interpreted literally: Xcode 26.2 is compatibility evidence, not the
+project's Xcode 26.6 release qualification.
 
 The prototype retains Kyber's existing clipboard event set. Requests are
 serialized and local Mac changes win over an in-flight remote fetch, but fully

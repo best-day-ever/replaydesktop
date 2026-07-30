@@ -239,6 +239,25 @@ fn archive_with_executable(executable: &Path, evidence: &Path, archive_root: &Pa
         .expect("archive process must launch")
 }
 
+fn archive_post_repair_with_executable(
+    executable: &Path,
+    evidence: &Path,
+    archive_root: &Path,
+) -> Output {
+    Command::new(executable)
+        .args([
+            "archive-post-repair",
+            "--evidence",
+            evidence.to_str().expect("evidence path must be UTF-8"),
+            "--archive-root",
+            archive_root
+                .to_str()
+                .expect("archive root path must be UTF-8"),
+        ])
+        .output()
+        .expect("post-repair archive process must launch")
+}
+
 fn verify_archive(index: &Path) -> Output {
     Command::new(binary())
         .args([
@@ -681,6 +700,99 @@ fn archive_create_once_rejects_collision_and_symlink_root() {
             .is_none()
     );
 
+    remove_archive_test_dir(&directory);
+}
+
+#[test]
+fn post_repair_archive_is_distinct_create_once_and_verifiable() {
+    let original_index_path = pre_reboot_archive_root().join("index.json");
+    let original_index =
+        std::fs::read(&original_index_path).expect("original archive index must remain readable");
+    let original_manifest_path = archived_manifest_path(&pre_reboot_archive_root());
+    let original_manifest = std::fs::read(&original_manifest_path)
+        .expect("original archive manifest must remain readable");
+
+    let directory = temp_dir("post-repair-archive");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("fresh-live.json");
+    assert_eq!(
+        run_with_executable(&executable, &evidence).status.code(),
+        Some(2),
+        "a fresh current live FAIL is an honest post-repair result"
+    );
+    let archive_root = directory.join("post-repair");
+    let archived = archive_post_repair_with_executable(&executable, &evidence, &archive_root);
+    assert_eq!(archived.status.code(), Some(0));
+    let result = stdout_json(&archived);
+    assert_eq!(result["command"], "archive-post-repair");
+    assert_eq!(
+        result["schema"],
+        "replaydesktop.g0-post-repair-archive-result.v1"
+    );
+
+    let index = read_json(&archive_root.join("index.json"));
+    assert_eq!(
+        index["schema"],
+        "replaydesktop.g0-post-repair-archive-index.v1"
+    );
+    let manifest = read_json(&archived_manifest_path(&archive_root));
+    assert_eq!(
+        manifest["schema"],
+        "replaydesktop.g0-post-repair-archive-manifest.v1"
+    );
+    assert_eq!(manifest["provenance"], "live");
+    assert_eq!(manifest["evidence_status"], "fail");
+    assert_eq!(
+        verify_archive(&archive_root.join("index.json"))
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let index_before =
+        std::fs::read(archive_root.join("index.json")).expect("post-repair index must be readable");
+    assert_private_error(
+        &archive_post_repair_with_executable(&executable, &evidence, &archive_root),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
+    assert_eq!(
+        std::fs::read(archive_root.join("index.json"))
+            .expect("post-repair index must remain readable"),
+        index_before
+    );
+
+    assert_eq!(
+        std::fs::read(&original_index_path).expect("original index must remain readable"),
+        original_index
+    );
+    assert_eq!(
+        std::fs::read(&original_manifest_path).expect("original manifest must remain readable"),
+        original_manifest
+    );
+    remove_archive_test_dir(&directory);
+}
+
+#[test]
+fn post_repair_archive_rejects_diagnostic_provenance() {
+    let directory = temp_dir("post-repair-diagnostic");
+    let executable = copied_executable(&directory, "running-doctor");
+    let evidence = directory.join("diagnostic.json");
+    assert_eq!(
+        diagnose_with_fixture(&host04_fixture(), "positive", &evidence, 500)
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_private_error(
+        &archive_post_repair_with_executable(
+            &executable,
+            &evidence,
+            &directory.join("post-repair"),
+        ),
+        74,
+        "ARCHIVE_PERSISTENCE",
+    );
     remove_archive_test_dir(&directory);
 }
 
@@ -2778,4 +2890,192 @@ fn host03_live_one_frame_current_selected_output() {
     assert!(verified.stderr.is_empty());
 
     std::fs::remove_dir_all(&directory).expect("test directory must be removable");
+}
+
+#[test]
+fn host04_final_docs_separate_static_fixture_live_and_kyber_boundaries() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme =
+        std::fs::read_to_string(root.join("README.md")).expect("README must remain readable");
+    let validation = std::fs::read_to_string(
+        root.join(".planning/phases/01-host-readiness-gate/01-VALIDATION.md"),
+    )
+    .expect("validation guide must remain readable");
+    let combined = format!("{readme}\n{validation}");
+    for required in [
+        "archive-post-repair",
+        "artifacts/validation/g0/post-repair",
+        "host04_source_abi_",
+        "host04_fixture_",
+        "host04_live_g0_current_output",
+        "900",
+        "n12.1.14.0",
+        "unclaimed",
+        "static",
+        "fixture",
+        "live",
+    ] {
+        assert!(
+            combined.contains(required),
+            "final HOST-04 operator docs missing {required}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires authenticated SDK 13.1/NvFBC/CUDA sources and the current NVIDIA X11 host"]
+fn host04_live_g0_current_output() {
+    let nvenc_root = std::env::var("REPLAY_NVENC_SDK_ROOT")
+        .expect("REPLAY_NVENC_SDK_ROOT must name the asserted SDK 13.1 include root");
+    let nvfbc_root = std::env::var("REPLAY_NVFBC_SDK_ROOT")
+        .expect("REPLAY_NVFBC_SDK_ROOT must name the authorized Capture SDK include root");
+    let cuda_root = std::env::var("REPLAY_CUDA_SDK_ROOT")
+        .expect("REPLAY_CUDA_SDK_ROOT must name the authorized CUDA Driver API include root");
+    let output_name =
+        std::env::var("REPLAY_HOST_OUTPUT").expect("REPLAY_HOST_OUTPUT must be selected");
+    assert!(Path::new(&nvenc_root).join("nvEncodeAPI.h").is_file());
+    assert!(Path::new(&nvfbc_root).join("NvFBC.h").is_file());
+    assert!(Path::new(&cuda_root).join("cuda.h").is_file());
+    assert!(Path::new(&cuda_root).join("cudaTypedefs.h").is_file());
+
+    let directory = temp_dir("host04-live-g0");
+    let evidence_path = directory.join("g0-evidence.json");
+    let live = Command::new(binary())
+        .args([
+            "run",
+            "--output",
+            &output_name,
+            "--evidence",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--probe-timeout-ms",
+            "60000",
+        ])
+        .output()
+        .expect("live doctor process must launch");
+    assert_eq!(
+        live.status.code(),
+        Some(0),
+        "current G0 must pass: stdout={} stderr={}",
+        String::from_utf8_lossy(&live.stdout),
+        String::from_utf8_lossy(&live.stderr)
+    );
+    assert_eq!(stdout_json(&live)["status"], "pass");
+
+    let envelope = read_envelope(&evidence_path);
+    assert_eq!(envelope.base.provenance, G0EvidenceProvenanceV1::Live);
+    assert_eq!(envelope.base.status, G0GateStatusV1::Pass);
+    for identifier in [
+        "host-foundation.v1",
+        "selected-output.v1",
+        "nvfbc-capture.v1",
+        "nvenc-tuples.v1",
+    ] {
+        assert_eq!(
+            extension(&envelope, identifier).status,
+            G0ExtensionStatusV1::Pass,
+            "{identifier}"
+        );
+    }
+
+    let nvenc_record = extension(&envelope, "nvenc-tuples.v1");
+    assert!(replay_host_doctor::evidence::validate_nvenc_tuples_record(
+        nvenc_record
+    ));
+    let nvenc = extension_payload(nvenc_record);
+    assert_eq!(nvenc["provider"], "source-authenticated");
+    assert_eq!(nvenc["admission"], "pass");
+    let attempts = nvenc["attempts"]
+        .as_array()
+        .expect("NVENC attempts must be an array");
+    assert_eq!(attempts.len(), 7);
+    assert!(attempts.iter().all(|attempt| attempt["terminal"] == true));
+    let advertisements = nvenc["advertised"]
+        .as_array()
+        .expect("NVENC advertisements must be an array");
+    assert!(!advertisements.is_empty());
+    for advertised in advertisements {
+        let attempt = attempts
+            .iter()
+            .find(|attempt| attempt["position"] == advertised["position"])
+            .expect("every advertisement must have one terminal attempt");
+        assert_eq!(attempt["outcome"], "success");
+        assert_eq!(attempt["config_proof"]["width_px"], 3840);
+        assert_eq!(attempt["config_proof"]["height_px"], 2160);
+        assert_eq!(attempt["config_proof"]["frame_rate"]["numerator"], 60);
+        assert_eq!(attempt["config_proof"]["frame_rate"]["denominator"], 1);
+        assert_eq!(
+            attempt["resource_proof"]["output_name"]["display"],
+            output_name
+        );
+        assert_eq!(attempt["resource_proof"]["same_cuda_context"], true);
+        assert_eq!(attempt["resource_proof"]["same_gpu"], true);
+        assert_eq!(attempt["copy_proof"]["status"], "pass");
+        assert_eq!(attempt["stream_proof"]["keyframe"], true);
+        assert_eq!(attempt["cleanup"]["complete"], true);
+        assert_eq!(
+            attempt["stream_proof"]["bitstream_sha256"],
+            advertised["bitstream_sha256"]
+        );
+    }
+
+    let verified = Command::new(binary())
+        .args([
+            "verify-evidence",
+            "--evidence",
+            evidence_path
+                .to_str()
+                .expect("temporary evidence path must be UTF-8"),
+            "--require-host01",
+            "pass",
+            "--require-host02",
+            "pass",
+            "--require-host03",
+            "pass",
+            "--require-host04",
+            "pass",
+            "--validate-extension",
+            "host-foundation.v1",
+            "--validate-extension",
+            "selected-output.v1",
+            "--validate-extension",
+            "nvfbc-capture.v1",
+            "--validate-extension",
+            "nvenc-tuples.v1",
+        ])
+        .output()
+        .expect("persisted final G0 verifier must launch");
+    assert_eq!(
+        verified.status.code(),
+        Some(0),
+        "final G0 readback must verify: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+
+    let archive_root = directory.join("post-repair");
+    let archived =
+        archive_post_repair_with_executable(Path::new(binary()), &evidence_path, &archive_root);
+    assert_eq!(
+        archived.status.code(),
+        Some(0),
+        "post-repair archive must succeed: {}",
+        String::from_utf8_lossy(&archived.stderr)
+    );
+    assert_eq!(
+        verify_archive(&archive_root.join("index.json"))
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let persisted =
+        std::fs::read_to_string(&evidence_path).expect("live evidence must be UTF-8 JSON");
+    for forbidden in [&nvenc_root, &nvfbc_root, &cuda_root, "0xDEADBEEF"] {
+        assert!(
+            !persisted.contains(forbidden),
+            "persisted secret: {forbidden}"
+        );
+    }
+    remove_archive_test_dir(&directory);
 }

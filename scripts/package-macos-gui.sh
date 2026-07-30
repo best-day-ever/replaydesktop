@@ -184,6 +184,9 @@ find "$STAGED_APP" -exec touch -h -t "$PACKAGE_TIMESTAMP" {} +
         zip -X -y -q "$STAGED_ARCHIVE" -@
 )
 unzip -tq "$STAGED_ARCHIVE"
+"$SCRIPT_DIR/verify-gui-spike.sh" \
+    --app "$STAGED_APP" \
+    --archive "$STAGED_ARCHIVE"
 
 mv "$STAGED_APP" "$FINAL_APP"
 mv "$STAGED_ARCHIVE" "$FINAL_ARCHIVE"

@@ -148,6 +148,11 @@ private struct LauncherConfiguration {
         guard !result.host.isEmpty else {
             throw LauncherError(message: "Enter a directly reachable host name or IP address.")
         }
+        guard !result.host.hasPrefix("-") else {
+            throw LauncherError(
+                message: "Host names and IP addresses cannot begin with '-'."
+            )
+        }
         guard result.host.unicodeScalars.allSatisfy({
             !CharacterSet.whitespacesAndNewlines.contains($0)
                 && !CharacterSet.controlCharacters.contains($0)
@@ -244,6 +249,7 @@ private enum KyclientArguments {
 
         // Clipboard is intentionally omitted: this macOS kyclient build does
         // not expose a working clipboard pipeline.
+        arguments.append("--")
         arguments.append(configuration.host)
         return arguments
     }
@@ -1370,6 +1376,10 @@ private func runSelfTest() -> Int32 {
                             arguments.contains("--protocol=kymux"),
                             "multi-monitor and all GUI sessions must use Kymux"
                         )
+                        try require(
+                            Array(arguments.suffix(2)) == ["--", "test-host.invalid"],
+                            "positional host was not protected by the option delimiter"
+                        )
                     }
                 }
             }
@@ -1393,9 +1403,19 @@ private func runSelfTest() -> Int32 {
             "GUI port did not replace the baseline slot cleanly"
         )
 
+        var rejectedOptionHost = false
+        do {
+            var optionHost = LauncherConfiguration()
+            optionHost.host = "--clipboard=true"
+            _ = try KyclientArguments.build(for: optionHost)
+        } catch {
+            rejectedOptionHost = true
+        }
+        try require(rejectedOptionHost, "option-shaped host was not rejected")
+
         print(
             "SELF-TEST PASS: \(combinations) codec/display/audio/transport combinations; "
-                + "AV1 4:4:4 rejected; clipboard omitted"
+                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard omitted"
         )
         return 0
     } catch {

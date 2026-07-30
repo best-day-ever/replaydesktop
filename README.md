@@ -7,7 +7,7 @@ prototype built on the pinned Kyber/Kymux stack.
 
 The native technical GUI spike is published as a private GitHub prerelease:
 
-<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.1>
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.2>
 
 Download `ReplayDesktop-arm64-gui-spike.zip`, expand it, and move
 `ReplayDesktop.app` to `/Applications`. Finder launch opens an AppKit control
@@ -61,6 +61,8 @@ rendered pixels/input, short trackpad scrolling, system audio, two-screen
 mode, and visibly changing telemetry remain explicit physical human UAT.
 The package was compiled with Xcode 26.2, the newest Xcode installed on the
 builder, rather than the planned Xcode 26.6 qualification lane.
+The superseded `v0.2.0-spike.1` asset remains immutable for audit; Spike 2
+adds a strict positional-host boundary and exact app/archive verification.
 
 ## Pinned Kyber source
 

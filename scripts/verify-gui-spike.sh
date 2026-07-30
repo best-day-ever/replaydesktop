@@ -90,7 +90,7 @@ verify_source_boundary() {
 
         case "$path" in
             README.md|\
-            prototype/macos/*|\
+            prototype/macos/ReplayDesktopLauncher.swift|\
             scripts/package-macos-gui.sh|\
             scripts/verify-gui-spike.sh|\
             patches/kyber/0004-linux-hires-wheel.patch|\
@@ -157,7 +157,7 @@ verify_bundle() {
     [ "$(uname -s)" = "Darwin" ] ||
         fail 'bundle verification requires macOS tools'
 
-    for tool in plutil file otool codesign unzip zipinfo shasum; do
+    for tool in plutil file otool codesign unzip zipinfo shasum stat readlink cmp diff; do
         command -v "$tool" >/dev/null 2>&1 ||
             fail "required macOS verification tool not found: $tool"
     done
@@ -180,10 +180,13 @@ verify_bundle() {
 
     temp_root=${TMPDIR:-/tmp}
     inventory=$(mktemp "$temp_root/replaydesktop-inventory.XXXXXX")
+    app_manifest=$(mktemp "$temp_root/replaydesktop-app-manifest.XXXXXX")
+    archive_manifest=$(mktemp "$temp_root/replaydesktop-archive-manifest.XXXXXX")
     runtime_probe=$(mktemp -d "$temp_root/replaydesktop-runtime.XXXXXX")
     archive_probe=$(mktemp -d "$temp_root/replaydesktop-archive.XXXXXX")
     cleanup_bundle() {
         rm -f -- "$inventory"
+        rm -f -- "$app_manifest" "$archive_manifest"
         case "$runtime_probe" in
             "$temp_root"/replaydesktop-runtime.*) rm -rf -- "$runtime_probe" ;;
         esac
@@ -210,21 +213,66 @@ verify_bundle() {
                 esac
 
                 minos=$(otool -l "$candidate" |
-                    awk '$1 == "cmd" && $2 == "LC_BUILD_VERSION" { build = 1; next }
-                         build && $1 == "minos" { print $2; exit }')
-                if [ -n "$minos" ]; then
-                    printf '  minos %s: %s\n' "$minos" "$candidate"
-                fi
+                    awk '$1 == "cmd" &&
+                             ($2 == "LC_BUILD_VERSION" ||
+                              $2 == "LC_VERSION_MIN_MACOSX") {
+                             build = 1
+                             next
+                         }
+                         build && ($1 == "minos" || $1 == "version") {
+                             print $2
+                             exit
+                         }')
+                [ -n "$minos" ] ||
+                    fail "Mach-O has no macOS minimum-version load command: $candidate"
+                awk -v version="$minos" 'BEGIN {
+                    split(version, component, ".")
+                    major = component[1] + 0
+                    minor = component[2] + 0
+                    exit ((major < 15) || (major == 15 && minor <= 0)) ? 0 : 1
+                }' </dev/null ||
+                    fail "Mach-O requires macOS $minos, newer than supported 15.0: $candidate"
+                printf '  minos %s: %s\n' "$minos" "$candidate"
                 ;;
         esac
     done <"$inventory"
     [ "$macho_count" -gt 1 ] || fail 'Mach-O inventory did not include launcher and raw client'
 
     launcher_minos=$(otool -l "$launcher" |
-        awk '$1 == "cmd" && $2 == "LC_BUILD_VERSION" { build = 1; next }
-             build && $1 == "minos" { print $2; exit }')
+        awk '$1 == "cmd" &&
+                 ($2 == "LC_BUILD_VERSION" ||
+                  $2 == "LC_VERSION_MIN_MACOSX") {
+                 build = 1
+                 next
+             }
+             build && ($1 == "minos" || $1 == "version") {
+                 print $2
+                 exit
+             }')
     [ "$launcher_minos" = 15.0 ] ||
         fail "launcher deployment target is $launcher_minos, expected 15.0"
+
+    raw_description=$(file "$raw_client")
+    case "$raw_description" in
+        *Mach-O*arm64*) ;;
+        *) fail "raw kyclient is not an arm64 Mach-O: $raw_description" ;;
+    esac
+    case "$raw_description" in
+        *x86_64*|*universal*) fail "raw kyclient is not arm64-only: $raw_description" ;;
+    esac
+    raw_minos=$(otool -l "$raw_client" |
+        awk '$1 == "cmd" &&
+                 ($2 == "LC_BUILD_VERSION" ||
+                  $2 == "LC_VERSION_MIN_MACOSX") {
+                 build = 1
+                 next
+             }
+             build && ($1 == "minos" || $1 == "version") {
+                 print $2
+                 exit
+             }')
+    [ -n "$raw_minos" ] ||
+        fail 'raw kyclient has no macOS minimum-version load command'
 
     codesign --verify --deep --strict "$APP_PATH"
     codesign -d --verbose=4 "$APP_PATH" 2>&1 |
@@ -284,6 +332,36 @@ EOF
     [ "$archived_executable" = ReplayDesktopLauncher ] ||
         fail 'archived bundle metadata does not select ReplayDesktopLauncher'
 
+    bundle_manifest() {
+        manifest_app=$1
+        manifest_output=$2
+        (
+            cd "$manifest_app"
+            find . -print | LC_ALL=C sort | while IFS= read -r entry; do
+                permissions=$(stat -f '%Sp' "$entry")
+                if [ -L "$entry" ]; then
+                    printf 'L\t%s\t%s\t%s\n' \
+                        "$permissions" "$entry" "$(readlink "$entry")"
+                elif [ -f "$entry" ]; then
+                    checksum=$(shasum -a 256 "$entry" | awk '{print $1}')
+                    printf 'F\t%s\t%s\t%s\n' \
+                        "$permissions" "$entry" "$checksum"
+                elif [ -d "$entry" ]; then
+                    printf 'D\t%s\t%s\n' "$permissions" "$entry"
+                else
+                    fail "unsupported bundle entry type: $entry"
+                fi
+            done
+        ) >"$manifest_output"
+    }
+
+    bundle_manifest "$APP_PATH" "$app_manifest"
+    bundle_manifest "$archive_probe/ReplayDesktop.app" "$archive_manifest"
+    if ! cmp -s "$app_manifest" "$archive_manifest"; then
+        diff -u "$app_manifest" "$archive_manifest" >&2 || true
+        fail 'archived bundle differs from the fully verified source bundle'
+    fi
+
     checksum=$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')
     printf '%s\n' \
         "PASS: bundle=$APP_PATH" \
@@ -291,7 +369,8 @@ EOF
         "PASS: LSMinimumSystemVersion=$minimum_os" \
         "PASS: arm64 Mach-O count=$macho_count" \
         "PASS: launcher minos=$launcher_minos" \
-        'PASS: ad-hoc signature, raw CLI fallback, runtime directory, and archive integrity' \
+        "PASS: raw kyclient minos=$raw_minos and arm64-only" \
+        'PASS: ad-hoc signature, raw CLI fallback, runtime directory, and exact archive manifest' \
         "SHA256=$checksum"
 }
 

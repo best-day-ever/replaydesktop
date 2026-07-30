@@ -49,22 +49,22 @@ with immersive control and working clipboard synchronization.
 
 ### Linux Host Readiness and Capture
 
-- [x] **HOST-01**: An operator can run a host-doctor command that reports and
+- [ ] **HOST-01**: An operator can run a host-doctor command that reports and
   blocks on a non-Xorg session, NVIDIA kernel/userspace mismatch, failed NVML,
   missing connected XRandR output, missing `/dev/uinput`, or missing DRM
   render-node access. Public DRM connector scanout state is diagnostic only.
 
-- [x] **HOST-02**: An operator can select exactly one physical X11 output, and
+- [ ] **HOST-02**: An operator can select exactly one physical X11 output, and
   startup reports its XRandR name, dimensions, refresh rate, GPU, and desktop
   origin.
 
-- [x] **HOST-03**: The host proves creation of the selected NvFBC shared-CUDA
+- [ ] **HOST-03**: The host proves creation of the selected NvFBC shared-CUDA
   capture path and reports every conversion, GPU-to-GPU, GPU-to-CPU, and
   cross-GPU copy from scanout through an application-owned surface suitable
   for encoder registration. The NVENC registration/mapping/input boundary
   remains explicitly unproven until HOST-04.
 
-- [x] **HOST-04**: The host accounts for the complete
+- [ ] **HOST-04**: The host accounts for the complete
   registration/mapping/input/copy boundary from the application-owned capture
   surface into NVENC, then queries and successfully probes each advertised
   codec/profile/chroma/bit-depth tuple on the actual GPU and driver before
@@ -334,10 +334,10 @@ requirements are intentionally excluded.
 | CONN-03 | Phase 2 | Pending |
 | CONN-04 | Phase 2 | Pending |
 | CONN-05 | Phase 2 | Pending |
-| HOST-01 | Phase 1 | Complete |
-| HOST-02 | Phase 1 | Complete |
-| HOST-03 | Phase 1 | Complete |
-| HOST-04 | Phase 1 | Complete |
+| HOST-01 | Phase 1 | Gaps Found |
+| HOST-02 | Phase 1 | Gaps Found |
+| HOST-03 | Phase 1 | Gaps Found |
+| HOST-04 | Phase 1 | Gaps Found |
 | HOST-05 | Phase 3 | Pending |
 | HOST-06 | Phase 3 | Pending |
 | CODE-01 | Phase 4 | Pending |

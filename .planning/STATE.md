@@ -6,9 +6,9 @@ current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
 stopped_at: Completed 01-10-PLAN.md
-last_updated: "2026-07-30T00:18:29.338Z"
+last_updated: "2026-07-30T13:37:44+02:00"
 last_activity: 2026-07-30
-last_activity_desc: Completed 01-10-PLAN.md
+last_activity_desc: "Completed quick task 260730-iie: prototype LAN connection without user-managed trust"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-30 — Completed 01-10-PLAN.md
+Last activity: 2026-07-30 — Completed quick task 260730-iie: prototype LAN connection without user-managed trust
 
 Progress: [██████████] 100%
 
@@ -125,6 +125,12 @@ None yet.
 
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260730-iie | Prototype LAN connection without user-managed trust | 2026-07-30 | runtime-only | [260730-iie-make-prototype-lan-mode-require-no-user-](./quick/260730-iie-make-prototype-lan-mode-require-no-user-/) |
 
 ## Deferred Items
 

@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Completed 260730-swz-PLAN.md; live deployment probe remains human-needed
-last_updated: "2026-07-30T21:05:34Z"
+stopped_at: Completed 260730-w4b-PLAN.md; real decode/render event run remains human-needed
+last_updated: "2026-07-30T23:15:33Z"
 last_activity: 2026-07-30
-last_activity_desc: "Completed quick task 260730-swz: independently verified loss-aware Linux host telemetry"
+last_activity_desc: "Completed quick task 260730-w4b: truthful macOS native decoder telemetry"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-30 — Completed quick task 260730-swz: independently verified loss-aware Linux host telemetry
+Last activity: 2026-07-30 — Completed quick task 260730-w4b: truthful macOS native decoder telemetry
 
 Progress: [██████████] 100%
 
@@ -155,6 +155,7 @@ None yet.
 | 260730-j91 | macOS technical GUI, live telemetry panel, audio/multi-monitor controls, and high-resolution scrolling | 2026-07-30 | ecdff71 | Needs Review | [260730-j91-build-and-publish-a-macos-technical-gui-](./quick/260730-j91-build-and-publish-a-macos-technical-gui-/) |
 | 260730-mqr | Bidirectional Text+HTML clipboard, directional policy gates, and private v0.3.0-spike.1 prerelease | 2026-07-30 | c1f48ad | human_needed | [260730-mqr-implement-privacy-correct-bidirectional-](./quick/260730-mqr-implement-privacy-correct-bidirectional-/) |
 | 260730-swz | Loss-aware Linux host capture, encode, payload, queue, drop, and forwarding telemetry | 2026-07-30 | fd3a11f | human_needed | [260730-swz-implement-the-linux-host-native-telemetr](./quick/260730-swz-implement-the-linux-host-native-telemetr/) |
+| 260730-w4b | Truthful macOS native codec/chroma, decoder, VideoToolbox, surface, drop, and enqueue telemetry | 2026-07-30 | 8ba945d | human_needed | [260730-w4b-expose-truthful-macos-native-decoder-tel](./quick/260730-w4b-expose-truthful-macos-native-decoder-tel/) |
 
 ## Deferred Items
 
@@ -164,6 +165,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-30T21:05:34Z
-Stopped at: Completed 260730-swz-PLAN.md; live deployment probe remains human-needed
+Last session: 2026-07-30T23:15:33Z
+Stopped at: Completed 260730-w4b-PLAN.md; real decode/render event run remains human-needed
 Resume file: None

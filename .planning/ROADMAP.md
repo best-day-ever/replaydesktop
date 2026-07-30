@@ -244,3 +244,26 @@ phases.
 | 7. Native Immersive Input | 0/TBD | Not started | - |
 | 8. Authenticated Bidirectional Clipboard | 0/TBD | Not started | - |
 | 9. Compatibility and Transferable Proof | 0/TBD | Not started | - |
+| 10. Brokered Direct Access MVP | 1/1 | Implementation complete; live gate pending | - |
+
+### Phase 10: Brokered Direct Access MVP
+
+**Goal:** As a user, I want to open an authorized direct workstation session, so that I can connect without relaying media.
+**Mode:** mvp
+**Requirements:** AUTH-01, AUTH-02, AUTH-03, AUTH-04, GATE-01, GATE-02, GATE-03, GATE-04, GATE-05
+**Depends on:** Phase 2 for live Kymux integration; the control-server foundation can be built independently
+**Success Criteria** (what must be TRUE):
+
+  1. A server-local admin CLI persistently creates, disables, and grants local users to registered workstations without exposing a public administration endpoint.
+  2. A user can log in, rotate an opaque refresh session, and list only workstations they are authorized to use.
+  3. An authorized connection request remains pending until the Mac proves its actual IPv4 UDP source with a bounded one-use knock; only then does the gateway create a time-bounded UniFi External-to-Internal UDP policy for the workstation.
+  4. The ready response contains the direct public endpoint, enrolled workstation certificate fingerprint, and a strict Ed25519-signed Kymux ticket bound to user, workstation, session, source IPv4, audience, expiry, and single-use ID; invalid or oversized tickets fail closed.
+  5. The server never carries media, input, or clipboard packets; expired leases are reconciled, tests use a fake admission backend, and real UniFi operation requires verified TLS plus pre-provisioned static DNAT.
+
+**Gate:** Direct-admission MVP — the full login → grant → UDP proof → fake-UniFi lease → verifiable Kymux ticket tracer passes without any media relay or real-router mutation in automated tests.
+**Research flag:** Live UDM Pro SE policy activation time, post-DNAT destination matching, rule ordering, and local integration API URL remain hardware-gated.
+**Plans:** 1 plan
+
+Plans:
+
+- [x] 10-01-PLAN.md — Persistent single-org control server, UDP source proof, UniFi lease adapter, and Kymux tickets

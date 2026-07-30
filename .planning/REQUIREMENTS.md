@@ -287,6 +287,47 @@ Deferred until the v1 protocol and 4K60 proof pass.
 - **NAT-01**: User can establish peer-to-peer sessions across NAT with explicit
   relay fallback and equivalent authentication.
 
+### Single-Organization Direct Admission
+
+- **AUTH-01**: A server-local administrator can create and disable local users,
+  register workstations, and grant or revoke each user's workstation access
+  without exposing a public administrative mutation API.
+
+- **AUTH-02**: A local user password is stored only as a bounded Argon2id PHC
+  hash, login failures do not enumerate users, and API access uses short-lived
+  opaque access tokens plus rotating opaque refresh tokens stored only as
+  digests.
+
+- **AUTH-03**: A logged-in user can list only active workstations covered by an
+  active grant, and disabled users, workstations, or grants cannot create a
+  connection session.
+
+- **AUTH-04**: The identity schema keeps authorization attached to an internal
+  user ID so a later Google/OIDC identity can be linked without changing
+  workstation grants.
+
+- **GATE-01**: A connection request remains pending until an exact-size,
+  single-use UDP knock proves the client's actual public IPv4 source; the
+  HTTPS peer address alone never authorizes a firewall lease.
+
+- **GATE-02**: After source proof, the UniFi adapter creates only a bounded
+  External-to-Internal UDP allow policy for the selected workstation and
+  records the returned policy ID for expiry, disconnect, and crash
+  reconciliation. Automated tests never contact a real gateway.
+
+- **GATE-03**: The ready session returns the direct WAN endpoint and enrolled
+  workstation certificate SHA-256 fingerprint; the server never relays,
+  buffers, decodes, or terminates Kymux media, input, or clipboard traffic.
+
+- **GATE-04**: The Kymux connection ticket is Ed25519-signed, no larger than
+  Kymux's 1 KiB token limit, and strictly binds issuer, key ID, user,
+  workstation audience, session, proven source IPv4, issued/not-before/expiry
+  times, and a single-use token ID.
+
+- **GATE-05**: Ticket verification rejects wrong signatures, algorithms,
+  issuers, audiences, source addresses, expiry windows, oversized tokens, and
+  replayed token IDs before Kymux endpoints become available.
+
 - **PLAT-01**: User can host on macOS and Windows with native hardware capture,
   encoding, and input injection.
 
@@ -374,6 +415,15 @@ requirements are intentionally excluded.
 | COMP-04 | Phase 9 | Pending |
 | COMP-05 | Phase 9 | Pending |
 | COMP-06 | Phase 9 | Pending |
+| AUTH-01 | Phase 10 | Automated |
+| AUTH-02 | Phase 10 | Automated |
+| AUTH-03 | Phase 10 | Automated |
+| AUTH-04 | Phase 10 | Automated |
+| GATE-01 | Phase 10 | Automated |
+| GATE-02 | Phase 10 | Live UDM needed |
+| GATE-03 | Phase 10 | Integration needed |
+| GATE-04 | Phase 10 | Automated |
+| GATE-05 | Phase 10 | Kyber integration needed |
 
 **Coverage:**
 
@@ -381,8 +431,8 @@ requirements are intentionally excluded.
 - Mapped to phases: 49
 - Unmapped: 0
 - Duplicate mappings: 0
-- v2 requirements mapped: 0
+- v2 requirements mapped: 9
 
 ---
 *Requirements defined: 2026-07-26*
-*Last updated: 2026-07-29 after HOST-03 live proof*
+*Last updated: 2026-07-30 after Phase 10 control-server implementation*

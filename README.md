@@ -3,6 +3,18 @@
 ReplayDesktop is currently an internal Linux-to-macOS remote-desktop
 prototype built on the pinned Kyber/Kymux stack.
 
+## Direct-admission control server
+
+The repository now includes a standalone single-organization control server in
+[`server/`](server/README.md). It provides local user/workstation
+administration, login and grants, one-use UDP source proof, ephemeral UDM Pro
+SE firewall policies, and source-bound Ed25519 Kymux tickets. Kymux media stays
+on the direct client-to-workstation path; the server is not a relay.
+
+The fake-gateway tracer is implemented and tested. Public deployment remains
+blocked on the documented live UDM policy-order/DNAT spike and on wiring the
+included strict ticket verifier into the pinned Kyber workstation accept path.
+
 ## Apple Silicon prototype client
 
 The native technical clipboard spike is published as a private GitHub

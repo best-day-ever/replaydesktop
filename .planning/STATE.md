@@ -71,6 +71,13 @@ Progress: [██████████] 100%
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 10 added: Brokered Direct Access MVP
+- Phase 10 uses the public UDM Pro SE IPv4 fast path rather than a media relay:
+  Replay Control authorizes, a UDP knock proves the client source, UniFi opens
+  a temporary policy, and the workstation validates a second Kymux ticket.
+
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
@@ -121,6 +128,9 @@ Recent decisions affecting current work:
 - [Phase Quick 260730-mqr]: Keep the prototype ClipboardEvent wire serialized; request IDs and deterministic simultaneous-peer conflict resolution require a future version.
 - [Phase Quick 260730-mqr]: Treat matched new-controller/new-service positional MessagePack IPC as the prototype boundary; mixed internal versions are unsupported.
 - [Phase Quick 260730-mqr]: macOS hosting is a platform port because pinned Kyber has no working macOS capture/encode/input sender.
+- [Phase 10]: Keep Replay Control and the UniFi gateway adapter as separate trust boundaries even when they run in one process; only Replay Control signs workstation tickets.
+- [Phase 10]: Keep the UDM Pro SE in the media fast path through static DNAT and temporary source-IP policy; Replay server code never relays Kymux packets.
+- [Phase 10]: Treat the source-IP UniFi lease as exposure reduction only; enrolled workstation TLS and a strict one-use Kymux ticket remain the authorization boundary.
 
 ### Pending Todos
 
@@ -130,6 +140,12 @@ None yet.
 
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
+- [Phase 10]: The official UniFi adapter is implemented but real policy ordering,
+  pre/post-DNAT matching, source preservation, and activation latency remain
+  unverified on the target UDM Pro SE.
+- [Phase 10]: The strict Kymux ticket verifier is implemented and tested, but
+  the pinned Kyber workstation controller still uses its local pending-token
+  map and must be integrated before any workstation port is publicly exposed.
 
 ### Quick Tasks Completed
 

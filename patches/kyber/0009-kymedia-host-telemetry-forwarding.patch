@@ -1,0 +1,739 @@
+diff --git a/kyavservice/src/metrics.rs b/kyavservice/src/metrics.rs
+index 2cef077..7809838 100644
+--- a/kyavservice/src/metrics.rs
++++ b/kyavservice/src/metrics.rs
+@@ -20,17 +20,166 @@
+ 
+ use log::warn;
+ use serde::Serialize;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::Arc;
+ use tokio::{sync::mpsc, task};
+ 
+ use crate::Result;
+ 
+ // Must match struct Metrics in libclient::kymux_backend::metrics
+-#[derive(Debug, Serialize)]
++#[derive(Clone, Debug, PartialEq, Serialize)]
+ pub(crate) struct Metrics {
+     pub(crate) key: String,
+     pub(crate) value: i64,
+ }
+ 
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++struct LossSnapshot {
++    batches: u64,
++    entries: u64,
++    first_sequence: u64,
++    last_sequence: u64,
++}
++
++#[derive(Default)]
++struct ForwarderState {
++    next_sequence: AtomicU64,
++    rejected_batches: AtomicU64,
++    rejected_entries: AtomicU64,
++    first_rejected_sequence: AtomicU64,
++    last_rejected_sequence: AtomicU64,
++    reported_batches: AtomicU64,
++    reported_entries: AtomicU64,
++}
++
++impl ForwarderState {
++    fn saturating_add(counter: &AtomicU64, increment: u64) -> u64 {
++        let previous = counter
++            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
++                Some(value.saturating_add(increment))
++            })
++            .expect("saturating update always succeeds");
++        previous.saturating_add(increment)
++    }
++
++    fn next_sequence(&self) -> u64 {
++        Self::saturating_add(&self.next_sequence, 1)
++    }
++
++    fn record_rejection(&self, sequence: u64, entries: usize) {
++        Self::saturating_add(&self.rejected_batches, 1);
++        Self::saturating_add(&self.rejected_entries, entries as u64);
++        let _ = self.first_rejected_sequence.compare_exchange(
++            0,
++            sequence,
++            Ordering::Relaxed,
++            Ordering::Relaxed,
++        );
++        self.last_rejected_sequence
++            .fetch_max(sequence, Ordering::Relaxed);
++    }
++
++    fn snapshot(&self) -> LossSnapshot {
++        LossSnapshot {
++            batches: self.rejected_batches.load(Ordering::Relaxed),
++            entries: self.rejected_entries.load(Ordering::Relaxed),
++            first_sequence: self.first_rejected_sequence.load(Ordering::Relaxed),
++            last_sequence: self.last_rejected_sequence.load(Ordering::Relaxed),
++        }
++    }
++
++    fn mark_reported(&self, snapshot: LossSnapshot) {
++        self.reported_batches
++            .fetch_max(snapshot.batches, Ordering::Relaxed);
++        self.reported_entries
++            .fetch_max(snapshot.entries, Ordering::Relaxed);
++    }
++
++    fn unflushed_loss(&self) -> Option<LossSnapshot> {
++        let snapshot = self.snapshot();
++        let reported_batches = self.reported_batches.load(Ordering::Relaxed);
++        let reported_entries = self.reported_entries.load(Ordering::Relaxed);
++        if snapshot.batches > reported_batches || snapshot.entries > reported_entries {
++            Some(snapshot)
++        } else {
++            None
++        }
++    }
++}
++
++impl Drop for ForwarderState {
++    fn drop(&mut self) {
++        if let Some(loss) = self.unflushed_loss() {
++            warn!(
++                "Metrics forwarding ended with unflushed loss: \
++                 batches={}, entries={}, first_sequence={}, last_sequence={}",
++                loss.batches, loss.entries, loss.first_sequence, loss.last_sequence
++            );
++        }
++    }
++}
++
++struct MetricsForwarder {
++    tx: mpsc::Sender<Vec<Metrics>>,
++    state: Arc<ForwarderState>,
++}
++
++impl MetricsForwarder {
++    fn new(tx: mpsc::Sender<Vec<Metrics>>) -> Self {
++        Self {
++            tx,
++            state: Arc::new(ForwarderState::default()),
++        }
++    }
++
++    fn metric_value(value: u64) -> i64 {
++        i64::try_from(value).unwrap_or(i64::MAX)
++    }
++
++    fn push_loss_metrics(metrics: &mut Vec<Metrics>, loss: LossSnapshot) {
++        if loss.batches == 0 {
++            return;
++        }
++        metrics.extend([
++            Metrics {
++                key: "telemetry_forwarder_lost_batches_total".into(),
++                value: Self::metric_value(loss.batches),
++            },
++            Metrics {
++                key: "telemetry_forwarder_lost_entries_total".into(),
++                value: Self::metric_value(loss.entries),
++            },
++            Metrics {
++                key: "telemetry_forwarder_first_lost_sequence".into(),
++                value: Self::metric_value(loss.first_sequence),
++            },
++            Metrics {
++                key: "telemetry_forwarder_last_lost_sequence".into(),
++                value: Self::metric_value(loss.last_sequence),
++            },
++        ]);
++    }
++
++    fn try_forward(&self, source: &[txproto_rs::Metrics<'_>]) -> bool {
++        let sequence = self.state.next_sequence();
++        let loss = self.state.snapshot();
++        let mut metrics = Vec::with_capacity(source.len() + 4);
++        metrics.extend(source.iter().map(|metric| Metrics {
++            key: metric.key.into(),
++            value: metric.value,
++        }));
++        Self::push_loss_metrics(&mut metrics, loss);
++
++        if self.tx.try_send(metrics).is_ok() {
++            self.state.mark_reported(loss);
++            true
++        } else {
++            self.state.record_rejection(sequence, source.len());
++            false
++        }
++    }
++}
++
+ async fn forward_task(mut rx: mpsc::Receiver<Vec<Metrics>>, uri: String) -> Result<()> {
+     let addr = uri.parse::<kycom::KyComAddr>()?;
+     let kycom_client = kycom::Channel::connect(addr).into_metrics_server_endpoint();
+@@ -49,21 +198,9 @@ async fn forward_task(mut rx: mpsc::Receiver<Vec<Metrics>>, uri: String) -> Resu
+ 
+ pub(crate) fn forward(ctx: &txproto_rs::Txproto, uri: &str) -> Result<()> {
+     let (tx, rx) = mpsc::channel::<Vec<Metrics>>(32);
++    let forwarder = MetricsForwarder::new(tx);
+ 
+-    ctx.set_metrics_cb(move |metrics| {
+-        let metrics: Vec<_> = metrics
+-            .iter()
+-            .map(|metrics| Metrics {
+-                key: metrics.key.into(),
+-                value: metrics.value,
+-            })
+-            .collect();
+-
+-        let ret = tx.try_send(metrics);
+-        if let Err(err) = ret {
+-            warn!("Failed to send Metrics: {err:?}");
+-        }
+-    })?;
++    ctx.set_metrics_result_cb(move |metrics| forwarder.try_forward(metrics))?;
+ 
+     let uri = uri.to_string();
+     task::spawn(async move {
+@@ -75,3 +212,126 @@ pub(crate) fn forward(ctx: &txproto_rs::Txproto, uri: &str) -> Result<()> {
+ 
+     Ok(())
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn source(key: &'static str, value: i64) -> txproto_rs::Metrics<'static> {
++        txproto_rs::Metrics { key, value }
++    }
++
++    fn value(metrics: &[Metrics], key: &str) -> Option<i64> {
++        metrics
++            .iter()
++            .find(|metric| metric.key == key)
++            .map(|metric| metric.value)
++    }
++
++    #[test]
++    fn no_loss_success_does_not_fabricate_loss_metrics() {
++        let (tx, mut rx) = mpsc::channel(1);
++        let forwarder = MetricsForwarder::new(tx);
++        assert!(forwarder.try_forward(&[source("pts", 1)]));
++
++        let sent = rx.try_recv().expect("accepted batch");
++        assert_eq!(
++            sent,
++            [Metrics {
++                key: "pts".into(),
++                value: 1,
++            }]
++        );
++        assert!(forwarder.state.unflushed_loss().is_none());
++    }
++
++    #[test]
++    fn full_channel_tracks_consecutive_loss_and_piggybacks_recovery() {
++        let (tx, mut rx) = mpsc::channel(1);
++        let forwarder = MetricsForwarder::new(tx);
++        let batch = [source("pts", 1), source("encoded", 2)];
++
++        assert!(forwarder.try_forward(&batch));
++        assert!(!forwarder.try_forward(&batch));
++        assert!(!forwarder.try_forward(&batch));
++        assert_eq!(
++            forwarder.state.snapshot(),
++            LossSnapshot {
++                batches: 2,
++                entries: 4,
++                first_sequence: 2,
++                last_sequence: 3,
++            }
++        );
++
++        rx.try_recv().expect("initial batch");
++        assert!(forwarder.try_forward(&batch));
++        let recovered = rx.try_recv().expect("recovery batch");
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_lost_batches_total"),
++            Some(2)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_lost_entries_total"),
++            Some(4)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_first_lost_sequence"),
++            Some(2)
++        );
++        assert_eq!(
++            value(&recovered, "telemetry_forwarder_last_lost_sequence"),
++            Some(3)
++        );
++        assert!(forwarder.state.unflushed_loss().is_none());
++    }
++
++    #[test]
++    fn loss_totals_remain_monotonic_after_recovery() {
++        let (tx, mut rx) = mpsc::channel(1);
++        let forwarder = MetricsForwarder::new(tx);
++        let batch = [source("pts", 1)];
++
++        assert!(forwarder.try_forward(&batch));
++        assert!(!forwarder.try_forward(&batch));
++        rx.try_recv().expect("initial batch");
++        assert!(forwarder.try_forward(&batch));
++        let first_recovery = rx.try_recv().expect("first recovery");
++        assert_eq!(
++            value(&first_recovery, "telemetry_forwarder_lost_batches_total"),
++            Some(1)
++        );
++
++        assert!(forwarder.try_forward(&batch));
++        assert!(!forwarder.try_forward(&batch));
++        rx.try_recv().expect("post-recovery accepted batch");
++        assert!(forwarder.try_forward(&batch));
++        let second_recovery = rx.try_recv().expect("second recovery");
++        assert_eq!(
++            value(&second_recovery, "telemetry_forwarder_lost_batches_total"),
++            Some(2)
++        );
++        assert_eq!(
++            value(&second_recovery, "telemetry_forwarder_lost_entries_total"),
++            Some(2)
++        );
++    }
++
++    #[test]
++    fn closed_channel_rejects_and_leaves_terminal_loss_unflushed() {
++        let (tx, rx) = mpsc::channel(1);
++        let forwarder = MetricsForwarder::new(tx);
++        drop(rx);
++
++        assert!(!forwarder.try_forward(&[source("pts", 1)]));
++        assert_eq!(
++            forwarder.state.unflushed_loss(),
++            Some(LossSnapshot {
++                batches: 1,
++                entries: 1,
++                first_sequence: 1,
++                last_sequence: 1,
++            })
++        );
++    }
++}
+diff --git a/txproto-rs/src/lib.rs b/txproto-rs/src/lib.rs
+index d099b1d..bda1b32 100644
+--- a/txproto-rs/src/lib.rs
++++ b/txproto-rs/src/lib.rs
+@@ -25,8 +25,10 @@ mod io;
+ mod logging;
+ 
+ use std::ffi::{CStr, CString};
++use std::panic::{catch_unwind, AssertUnwindSafe};
+ use std::ptr;
+ use std::sync::atomic::{AtomicPtr, Ordering};
++use std::sync::Mutex;
+ 
+ use libc::{c_int, c_void};
+ use log::warn;
+@@ -147,8 +149,117 @@ where
+     cb: F,
+ }
+ 
++struct MetricsResultCbData<F>
++where
++    F: Fn(&[Metrics]) -> bool + Send + Sync,
++{
++    cb: F,
++}
++
++struct MetricsCallbackRegistration {
++    data: usize,
++    drop_data: unsafe fn(usize),
++}
++
++const MAX_METRICS_BATCH_ENTRIES: usize = 32;
++const MAX_METRICS_KEY_BYTES: usize = 96;
++
++unsafe fn drop_metrics_callback_data<T>(data: usize) {
++    drop(unsafe { Box::from_raw(data as *mut T) });
++}
++
++fn metrics_key_is_valid(key: &str) -> bool {
++    !key.is_empty()
++        && key.len() <= MAX_METRICS_KEY_BYTES
++        && key
++            .bytes()
++            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
++}
++
++fn metrics_value_is_valid(key: &str, value: i64) -> bool {
++    match key {
++        "queue_limit" => value > 0,
++        "queue_depth"
++        | "drop_total"
++        | "telemetry_callback_lost_batches_total"
++        | "telemetry_callback_lost_entries_total"
++        | "telemetry_forwarder_lost_batches_total"
++        | "telemetry_forwarder_lost_entries_total" => value >= 0,
++        "telemetry_forwarder_first_lost_sequence" | "telemetry_forwarder_last_lost_sequence" => {
++            value > 0
++        }
++        "queue_stage" => (1..=3).contains(&value),
++        "drop_stage" => (1..=2).contains(&value),
++        "drop_reason" => value == 1,
++        "queue_owner_unavailable" => (2..=5).contains(&value),
++        _ if key.ends_with("_payload_bytes") => value >= 0,
++        _ => true,
++    }
++}
++
++unsafe fn decode_metrics_key<'a>(key: *const libc::c_char) -> Option<&'a str> {
++    if key.is_null() {
++        return None;
++    }
++
++    for length in 0..=MAX_METRICS_KEY_BYTES {
++        if unsafe { *key.cast::<u8>().add(length) } == 0 {
++            let bytes = unsafe { std::slice::from_raw_parts(key.cast::<u8>(), length) };
++            return std::str::from_utf8(bytes).ok();
++        }
++    }
++
++    None
++}
++
++unsafe fn decode_metrics<'a>(
++    entries: *const sys::tx_metrics_entry,
++    count: usize,
++) -> Option<Vec<Metrics<'a>>> {
++    if count > MAX_METRICS_BATCH_ENTRIES || (count > 0 && entries.is_null()) {
++        return None;
++    }
++
++    let entries = if count == 0 {
++        &[]
++    } else {
++        unsafe { std::slice::from_raw_parts(entries, count) }
++    };
++    let mut metrics = Vec::with_capacity(count);
++    let mut queue_depth = None;
++    let mut queue_limit = None;
++    for entry in entries {
++        let key = unsafe { decode_metrics_key(entry.key) }?;
++        if !metrics_key_is_valid(key) || !metrics_value_is_valid(key, entry.value) {
++            return None;
++        }
++        match key {
++            "queue_depth" => {
++                if queue_depth.replace(entry.value).is_some() {
++                    return None;
++                }
++            }
++            "queue_limit" => {
++                if queue_limit.replace(entry.value).is_some() {
++                    return None;
++                }
++            }
++            _ => {}
++        }
++        metrics.push(Metrics {
++            key,
++            value: entry.value,
++        });
++    }
++    if matches!((queue_depth, queue_limit), (Some(depth), Some(limit)) if depth > limit) {
++        return None;
++    }
++    Some(metrics)
++}
++
+ pub struct Txproto {
+     ctx: AtomicPtr<sys::TXMainContext>,
++    metrics_callbacks: Mutex<Vec<MetricsCallbackRegistration>>,
+ }
+ 
+ impl Txproto {
+@@ -163,6 +274,7 @@ impl Txproto {
+ 
+         Ok(Self {
+             ctx: AtomicPtr::new(ctx),
++            metrics_callbacks: Mutex::new(Vec::new()),
+         })
+     }
+ 
+@@ -511,24 +623,39 @@ impl Txproto {
+     where
+         Cb: FnMut(&[Metrics]),
+     {
++        if userdata.is_null() {
++            return 1;
++        }
++        let Some(metrics) = (unsafe { decode_metrics(entries, count) }) else {
++            return 1;
++        };
+         let data: &mut MetricsCbData<Cb> = unsafe { &mut *(userdata as *mut _) };
++        if catch_unwind(AssertUnwindSafe(|| (data.cb)(&metrics))).is_ok() {
++            0
++        } else {
++            1
++        }
++    }
+ 
+-        let slice = std::slice::from_raw_parts(entries, count);
+-
+-        let slice: Vec<_> = slice
+-            .iter()
+-            .map(|entry| {
+-                let key = CStr::from_ptr(entry.key).to_str().unwrap();
+-                Metrics {
+-                    key,
+-                    value: entry.value,
+-                }
+-            })
+-            .collect();
+-
+-        (data.cb)(&slice);
+-
+-        0
++    unsafe extern "C" fn metrics_result_cb<Cb>(
++        entries: *const sys::tx_metrics_entry,
++        count: usize,
++        userdata: *mut libc::c_void,
++    ) -> libc::c_int
++    where
++        Cb: Fn(&[Metrics]) -> bool + Send + Sync,
++    {
++        if userdata.is_null() {
++            return 1;
++        }
++        let Some(metrics) = (unsafe { decode_metrics(entries, count) }) else {
++            return 1;
++        };
++        let data: &MetricsResultCbData<Cb> = unsafe { &*(userdata as *const _) };
++        match catch_unwind(AssertUnwindSafe(|| (data.cb)(&metrics))) {
++            Ok(true) => 0,
++            Ok(false) | Err(_) => 1,
++        }
+     }
+ 
+     pub fn set_metrics_cb<Cb>(&self, cb: Cb) -> Result<()>
+@@ -541,8 +668,44 @@ impl Txproto {
+             sys::tx_set_metrics_cb(self.inner(), Some(Self::metrics_cb::<Cb>), data as *mut _)
+         };
+         if ret != 0 {
++            drop(unsafe { Box::from_raw(data) });
+             return Err(ret.into());
+         }
++        self.metrics_callbacks
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .push(MetricsCallbackRegistration {
++                data: data as usize,
++                drop_data: drop_metrics_callback_data::<MetricsCbData<Cb>>,
++            });
++
++        Ok(())
++    }
++
++    pub fn set_metrics_result_cb<Cb>(&self, cb: Cb) -> Result<()>
++    where
++        Cb: Fn(&[Metrics]) -> bool + Send + Sync + 'static,
++    {
++        let data = Box::into_raw(Box::new(MetricsResultCbData { cb }));
++
++        let ret = unsafe {
++            sys::tx_set_metrics_cb(
++                self.inner(),
++                Some(Self::metrics_result_cb::<Cb>),
++                data as *mut _,
++            )
++        };
++        if ret != 0 {
++            drop(unsafe { Box::from_raw(data) });
++            return Err(ret.into());
++        }
++        self.metrics_callbacks
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .push(MetricsCallbackRegistration {
++                data: data as usize,
++                drop_data: drop_metrics_callback_data::<MetricsResultCbData<Cb>>,
++            });
+ 
+         Ok(())
+     }
+@@ -551,5 +714,173 @@ impl Txproto {
+ impl Drop for Txproto {
+     fn drop(&mut self) {
+         unsafe { sys::tx_free(self.inner()) };
++        let callbacks = self
++            .metrics_callbacks
++            .get_mut()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        for registration in callbacks.drain(..) {
++            unsafe { (registration.drop_data)(registration.data) };
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::Arc;
++    use std::thread;
++
++    unsafe fn invoke_result<Cb>(
++        data: &MetricsResultCbData<Cb>,
++        entries: &[sys::tx_metrics_entry],
++    ) -> libc::c_int
++    where
++        Cb: Fn(&[Metrics]) -> bool + Send + Sync,
++    {
++        unsafe { invoke_result_raw(data, entries.as_ptr(), entries.len()) }
++    }
++
++    unsafe fn invoke_result_raw<Cb>(
++        data: &MetricsResultCbData<Cb>,
++        entries: *const sys::tx_metrics_entry,
++        count: usize,
++    ) -> libc::c_int
++    where
++        Cb: Fn(&[Metrics]) -> bool + Send + Sync,
++    {
++        unsafe {
++            Txproto::metrics_result_cb::<Cb>(entries, count, data as *const _ as *mut libc::c_void)
++        }
++    }
++
++    #[test]
++    fn result_callback_propagates_acceptance_and_rejection() {
++        let data = MetricsResultCbData {
++            cb: |metrics: &[Metrics]| metrics[0].value == 7,
++        };
++        let accepted = [sys::tx_metrics_entry {
++            key: c"pts".as_ptr(),
++            value: 7,
++        }];
++        let rejected = [sys::tx_metrics_entry {
++            key: c"pts".as_ptr(),
++            value: 8,
++        }];
++
++        assert_eq!(unsafe { invoke_result(&data, &accepted) }, 0);
++        assert_eq!(unsafe { invoke_result(&data, &rejected) }, 1);
++    }
++
++    #[test]
++    fn result_callback_rejects_invalid_batches_without_invoking_user_code() {
++        let calls = AtomicUsize::new(0);
++        let data = MetricsResultCbData {
++            cb: |_: &[Metrics]| {
++                calls.fetch_add(1, Ordering::Relaxed);
++                true
++            },
++        };
++
++        assert_eq!(
++            unsafe {
++                Txproto::metrics_result_cb::<fn(&[Metrics]) -> bool>(
++                    ptr::null(),
++                    0,
++                    ptr::null_mut(),
++                )
++            },
++            1
++        );
++        assert_eq!(unsafe { invoke_result_raw(&data, ptr::null(), 1) }, 1);
++        let null_key = [sys::tx_metrics_entry {
++            key: ptr::null(),
++            value: 1,
++        }];
++        assert_eq!(unsafe { invoke_result(&data, &null_key) }, 1);
++
++        let invalid_utf8 = [0xff_u8, 0];
++        let invalid_key = [sys::tx_metrics_entry {
++            key: invalid_utf8.as_ptr().cast(),
++            value: 1,
++        }];
++        assert_eq!(unsafe { invoke_result(&data, &invalid_key) }, 1);
++
++        let negative_payload = [sys::tx_metrics_entry {
++            key: c"encoded_payload_bytes".as_ptr(),
++            value: -1,
++        }];
++        assert_eq!(unsafe { invoke_result(&data, &negative_payload) }, 1);
++
++        let impossible_queue = [
++            sys::tx_metrics_entry {
++                key: c"queue_depth".as_ptr(),
++                value: 2,
++            },
++            sys::tx_metrics_entry {
++                key: c"queue_limit".as_ptr(),
++                value: 1,
++            },
++        ];
++        assert_eq!(unsafe { invoke_result(&data, &impossible_queue) }, 1);
++
++        let invalid_stage = [sys::tx_metrics_entry {
++            key: c"queue_stage".as_ptr(),
++            value: 4,
++        }];
++        assert_eq!(unsafe { invoke_result(&data, &invalid_stage) }, 1);
++
++        let mut oversized_key = [b'a'; MAX_METRICS_KEY_BYTES + 2];
++        oversized_key[MAX_METRICS_KEY_BYTES + 1] = 0;
++        let oversized_key_entry = [sys::tx_metrics_entry {
++            key: oversized_key.as_ptr().cast(),
++            value: 1,
++        }];
++        assert_eq!(unsafe { invoke_result(&data, &oversized_key_entry) }, 1);
++
++        let oversized: Vec<_> = (0..=MAX_METRICS_BATCH_ENTRIES)
++            .map(|value| sys::tx_metrics_entry {
++                key: c"pts".as_ptr(),
++                value: value as i64,
++            })
++            .collect();
++        assert_eq!(unsafe { invoke_result(&data, &oversized) }, 1);
++        assert_eq!(calls.load(Ordering::Relaxed), 0);
++    }
++
++    #[test]
++    fn result_callback_is_safe_under_concurrent_invocation() {
++        let accepted = Arc::new(AtomicUsize::new(0));
++        let rejected = Arc::new(AtomicUsize::new(0));
++        let accepted_cb = Arc::clone(&accepted);
++        let rejected_cb = Arc::clone(&rejected);
++        let data = Arc::new(MetricsResultCbData {
++            cb: move |metrics: &[Metrics]| {
++                if metrics[0].value % 2 == 0 {
++                    accepted_cb.fetch_add(1, Ordering::Relaxed);
++                    true
++                } else {
++                    rejected_cb.fetch_add(1, Ordering::Relaxed);
++                    false
++                }
++            },
++        });
++
++        thread::scope(|scope| {
++            for value in 0..64 {
++                let data = Arc::clone(&data);
++                scope.spawn(move || {
++                    let entries = [sys::tx_metrics_entry {
++                        key: c"pts".as_ptr(),
++                        value,
++                    }];
++                    let expected = if value % 2 == 0 { 0 } else { 1 };
++                    assert_eq!(unsafe { invoke_result(&data, &entries) }, expected);
++                });
++            }
++        });
++
++        assert_eq!(accepted.load(Ordering::Relaxed), 32);
++        assert_eq!(rejected.load(Ordering::Relaxed), 32);
+     }
+ }

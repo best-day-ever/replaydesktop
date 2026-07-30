@@ -22,6 +22,92 @@ index bc915be..d166022 100644
  conf.set('COMPILER', '"' + cc.get_id() + ' ' + cc.version() + '"')
  conf.set('FEATURE_SET', features + '"')
  
+diff --git a/src/encode.c b/src/encode.c
+index c853604..4a5f8ad 100644
+--- a/src/encode.c
++++ b/src/encode.c
+@@ -612,6 +612,7 @@ static void *encoding_thread(void *arg)
+     EncodingContext *ctx = arg;
+     int ret = 0, flush = 0;
+     AVPacket *out_pkt = NULL;
++    int64_t dropped_packets = 0;
+ 
+     sp_set_thread_name_self(sp_class_get_name(ctx));
+ 
+@@ -769,18 +770,65 @@ static void *encoding_thread(void *arg)
+             out_pkt->opaque = (void *)(intptr_t)sp_class_get_id(ctx);
+             out_pkt->time_base = ctx->avctx->time_base;
+ 
+-            if (ctx->metrics) {
+-                const tx_metrics_entry metrics[] = {
+-                    { .key = "pts", .value = out_pkt->pts },
+-                    { .key = "encoded", .value = av_gettime_relative() },
+-                };
+-                tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
+-            }
++            int64_t packet_pts = out_pkt->pts;
++            int64_t packet_size = out_pkt->size;
++            int64_t encoded_ts = av_gettime_relative();
++            if (ctx->metrics)
++                tx_metrics_emit_payload(
++                    ctx->metrics, packet_pts, "encoded", encoded_ts,
++                    "encoded_payload_bytes", packet_size);
+ 
+             sp_log(ctx, SP_LOG_TRACE, "Pushing packet to FIFO, pts = %f\n",
+                    av_q2d(ctx->avctx->time_base) * out_pkt->pts);
+ 
+-            sp_packet_fifo_push(ctx->dst_packets, out_pkt);
++            ret = sp_packet_fifo_push(ctx->dst_packets, out_pkt);
++            if (ret == AVERROR(ENOBUFS)) {
++                dropped_packets++;
++                if (ctx->metrics) {
++                    int depth;
++                    int limit;
++                    int owner = sp_packet_fifo_get_effective_bound(
++                        ctx->dst_packets, &depth, &limit);
++                    if (owner == PACKET_FIFO_OWNER_OK) {
++                        tx_metrics_emit_drop(
++                            ctx->metrics, packet_pts, av_gettime_relative(),
++                            TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++                            TX_METRICS_REASON_FIFO_FULL,
++                            depth, limit, dropped_packets);
++                    } else {
++                        tx_metrics_emit_drop_unavailable(
++                            ctx->metrics, packet_pts, av_gettime_relative(),
++                            TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++                            TX_METRICS_REASON_FIFO_FULL,
++                            dropped_packets, owner);
++                    }
++                }
++                av_packet_free(&out_pkt);
++                ret = 0;
++                continue;
++            } else if (ret < 0) {
++                sp_log(ctx, SP_LOG_ERROR,
++                       "Unable to push encoded packet to FIFO: %s!\n",
++                       av_err2str(ret));
++                pthread_mutex_unlock(&ctx->lock);
++                goto fail;
++            } else if (ctx->metrics) {
++                int depth;
++                int limit;
++                int owner = sp_packet_fifo_get_effective_bound(
++                    ctx->dst_packets, &depth, &limit);
++                if (owner == PACKET_FIFO_OWNER_OK) {
++                    tx_metrics_emit_queue(
++                        ctx->metrics, packet_pts,
++                        TX_METRICS_QUEUE_STAGE_ENCODED_PACKET,
++                        depth, limit);
++                } else {
++                    tx_metrics_emit_queue_unavailable(
++                        ctx->metrics, packet_pts,
++                        TX_METRICS_QUEUE_STAGE_ENCODED_PACKET,
++                        owner);
++                }
++            }
+ 
+             sp_eventlist_dispatch(ctx, ctx->events, SP_EVENT_ON_CONFIG | SP_EVENT_ON_INIT, NULL);
+ 
 diff --git a/src/fifo_template.c b/src/fifo_template.c
 index c50cee6..8afdda4 100644
 --- a/src/fifo_template.c
@@ -261,7 +347,7 @@ index ecc7fb9..0f7fd95 100644
  /* Modify */
  void RENAME(fifo_set_max_queued)(AVBufferRef *dst, int max_queued);
 diff --git a/src/include/libtxproto/metrics.h b/src/include/libtxproto/metrics.h
-index 29eac4f..bdc735d 100644
+index 29eac4f..3e5350f 100644
 --- a/src/include/libtxproto/metrics.h
 +++ b/src/include/libtxproto/metrics.h
 @@ -18,9 +18,12 @@
@@ -277,7 +363,7 @@ index 29eac4f..bdc735d 100644
  typedef struct tx_metrics_entry {
      const char *key;
      int64_t value;
-@@ -30,7 +33,52 @@ typedef int (*tx_metrics_cb)(const struct tx_metrics_entry *entries,
+@@ -30,7 +33,59 @@ typedef int (*tx_metrics_cb)(const struct tx_metrics_entry *entries,
                               size_t count,
                               void *userdata);
  
@@ -330,11 +416,81 @@ index 29eac4f..bdc735d 100644
 +                         int64_t depth,
 +                         int64_t limit,
 +                         int64_t total);
++int tx_metrics_emit_drop_unavailable(struct tx_metrics *metrics,
++                                     int64_t pts,
++                                     int64_t timestamp,
++                                     enum tx_metrics_drop_stage stage,
++                                     enum tx_metrics_reason reason,
++                                     int64_t total,
++                                     enum tx_metrics_reason owner_reason);
+diff --git a/src/iosys_nvfbc.c b/src/iosys_nvfbc.c
+index e0fee54..7e5c891 100644
+--- a/src/iosys_nvfbc.c
++++ b/src/iosys_nvfbc.c
+@@ -765,9 +765,10 @@ static void *nvfbc_capture_thread(void *s)
+         fe->avg_frame_rate  = priv->framerate;
+         fe->rotation        = ROTATION_IDENTITY;
+ 
++        int64_t frame_pts = frame->pts;
+         if (ctx->metrics) {
+             const tx_metrics_entry metrics[] = {
+-                { .key = "pts", .value = frame->pts },
++                { .key = "pts", .value = frame_pts },
+                 { .key = "acquired", .value = ts },
+             };
+             tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
+@@ -778,6 +779,25 @@ static void *nvfbc_capture_thread(void *s)
+ 
+         if (err == AVERROR(ENOBUFS)) {
+             priv->dropped_frames++;
++            if (ctx->metrics) {
++                int depth;
++                int limit;
++                int owner = sp_frame_fifo_get_effective_bound(
++                    entry->frames, &depth, &limit);
++                if (owner == FRAME_FIFO_OWNER_OK) {
++                    tx_metrics_emit_drop(
++                        ctx->metrics, frame_pts, av_gettime_relative(),
++                        TX_METRICS_DROP_STAGE_CAPTURE,
++                        TX_METRICS_REASON_FIFO_FULL,
++                        depth, limit, priv->dropped_frames);
++                } else {
++                    tx_metrics_emit_drop_unavailable(
++                        ctx->metrics, frame_pts, av_gettime_relative(),
++                        TX_METRICS_DROP_STAGE_CAPTURE,
++                        TX_METRICS_REASON_FIFO_FULL,
++                        priv->dropped_frames, owner);
++                }
++            }
+             sp_log(entry, SP_LOG_WARN, "Dropping frame (%i dropped so far)!\n",
+                 priv->dropped_frames);
+ 
+@@ -790,6 +810,20 @@ static void *nvfbc_capture_thread(void *s)
+             sp_log(entry, SP_LOG_ERROR, "Unable to push frame to FIFO: %s!\n",
+                    av_err2str(err));
+             break;
++        } else if (ctx->metrics) {
++            int depth;
++            int limit;
++            int owner = sp_frame_fifo_get_effective_bound(
++                entry->frames, &depth, &limit);
++            if (owner == FRAME_FIFO_OWNER_OK) {
++                tx_metrics_emit_queue(
++                    ctx->metrics, frame_pts,
++                    TX_METRICS_QUEUE_STAGE_CAPTURE, depth, limit);
++            } else {
++                tx_metrics_emit_queue_unavailable(
++                    ctx->metrics, frame_pts,
++                    TX_METRICS_QUEUE_STAGE_CAPTURE, owner);
++            }
+         }
+     }
+ 
 diff --git a/src/metrics.c b/src/metrics.c
-index 4c4bf6e..8435e72 100644
+index 4c4bf6e..7287c23 100644
 --- a/src/metrics.c
 +++ b/src/metrics.c
-@@ -19,13 +19,163 @@
+@@ -19,13 +19,190 @@
  #include "metrics.h"
  
  #include <assert.h>
@@ -498,13 +654,73 @@ index 4c4bf6e..8435e72 100644
 +    };
 +    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
 +    return 0;
++}
++
++int tx_metrics_emit_drop_unavailable(struct tx_metrics *metrics,
++                                     int64_t pts,
++                                     int64_t timestamp,
++                                     enum tx_metrics_drop_stage stage,
++                                     enum tx_metrics_reason reason,
++                                     int64_t total,
++                                     enum tx_metrics_reason owner_reason)
++{
++    if (!metrics || stage < TX_METRICS_DROP_STAGE_CAPTURE ||
++        stage > TX_METRICS_DROP_STAGE_ENCODED_PACKET ||
++        reason != TX_METRICS_REASON_FIFO_FULL || total < 0 ||
++        owner_reason < TX_METRICS_REASON_OWNER_NO_DESTINATION ||
++        owner_reason > TX_METRICS_REASON_OWNER_CHANGED)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = "dropped", .value = timestamp },
++        { .key = "drop_stage", .value = stage },
++        { .key = "drop_reason", .value = reason },
++        { .key = "drop_total", .value = total },
++        { .key = "queue_owner_unavailable", .value = owner_reason },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
  }
+diff --git a/src/packet_sink.c b/src/packet_sink.c
+index 3ce3d2e..3935f76 100644
+--- a/src/packet_sink.c
++++ b/src/packet_sink.c
+@@ -205,11 +205,23 @@ packet_sink_thread(void *arg) {
+         }
+ 
+         if (ctx->metrics) {
+-            const tx_metrics_entry metrics[] = {
+-                { .key = "pts", .value = in_pkt->pts },
+-                { .key = "sent", .value = av_gettime_relative() },
+-            };
+-            tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
++            tx_metrics_emit_payload(
++                ctx->metrics, in_pkt->pts, "sent", av_gettime_relative(),
++                "sent_payload_bytes", in_pkt->size);
++
++            int depth;
++            int limit;
++            int owner = sp_packet_fifo_get_effective_bound(
++                ctx->src_packets, &depth, &limit);
++            if (owner == PACKET_FIFO_OWNER_OK) {
++                tx_metrics_emit_queue(
++                    ctx->metrics, in_pkt->pts,
++                    TX_METRICS_QUEUE_STAGE_PACKET_SINK, depth, limit);
++            } else {
++                tx_metrics_emit_queue_unavailable(
++                    ctx->metrics, in_pkt->pts,
++                    TX_METRICS_QUEUE_STAGE_PACKET_SINK, owner);
++            }
+         }
+ 
+         av_packet_free(&in_pkt);
 diff --git a/test/host_metrics.c b/test/host_metrics.c
 new file mode 100644
-index 0000000..1af8da9
+index 0000000..320bc84
 --- /dev/null
 +++ b/test/host_metrics.c
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,324 @@
 +/*
 + * This file is part of txproto.
 + *
@@ -785,6 +1001,16 @@ index 0000000..1af8da9
 +    assert(find_metric(&capture, "drop_reason")->value ==
 +           TX_METRICS_REASON_FIFO_FULL);
 +    assert(find_metric(&capture, "drop_total")->value == 4);
++
++    assert(tx_metrics_emit_drop_unavailable(
++               &metrics, 12, 22, TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++               TX_METRICS_REASON_FIFO_FULL, 5,
++               TX_METRICS_REASON_OWNER_CHANGED) == 0);
++    assert(find_metric(&capture, "drop_total")->value == 5);
++    assert(find_metric(&capture, "queue_owner_unavailable")->value ==
++           TX_METRICS_REASON_OWNER_CHANGED);
++    assert(!find_metric(&capture, "queue_depth"));
++    assert(!find_metric(&capture, "queue_limit"));
 +
 +    int calls = capture.calls;
 +    assert(tx_metrics_emit_payload(&metrics, 1, "encoded", 2,

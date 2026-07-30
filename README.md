@@ -1,4 +1,49 @@
-# ReplayDesktop host readiness doctor
+# ReplayDesktop
+
+ReplayDesktop is currently an internal Linux-to-macOS remote-desktop
+prototype built on the pinned Kyber/Kymux stack.
+
+## Apple Silicon prototype client
+
+The first arm64 macOS client package is published as a private GitHub
+prerelease:
+
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.1.0-spike.1>
+
+Download `ReplayDesktop-arm64-spike.zip`, expand it, and move
+`ReplayDesktop.app` to `/Applications`. The package:
+
+- supports Apple Silicon only;
+- requires macOS 15 Sequoia or newer;
+- is ad-hoc signed for internal testing, but is not notarized; and
+- contains no Kyber test certificates or private trust material.
+
+Because this build is not notarized, macOS may require the operator to approve
+the first launch through **System Settings → Privacy & Security → Open
+Anyway**. Do not disable Gatekeeper or strip quarantine metadata.
+
+The client package has passed architecture, deployment-target, archive, and
+code-signature checks. The end-to-end live-stream spike remains pending until
+the Linux host build is running and real `DP-0.3` pixels are visible on a Mac.
+
+## Pinned Kyber source
+
+The official Kyber Desktop 0.27.0 source is recorded as a recursive submodule:
+
+```console
+git submodule update --init --recursive
+git -C upstream/kyber-desktop apply \
+  ../../patches/kyber/0001-secure-prototype-packaging.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
+```
+
+The first patch removes upstream test identities from Linux and macOS
+packages and supplies ReplayDesktop bundle metadata. The second keeps the
+Linux FFmpeg build on the CUDA/NVENC path while disabling its unused,
+currently incompatible Vulkan codec path.
+
+## Host readiness doctor
 
 `replay-host-doctor` is the first ReplayDesktop walking skeleton. It performs
 bounded, read-only host observations, derives one fail-closed G0 decision,

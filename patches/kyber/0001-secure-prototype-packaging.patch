@@ -1,0 +1,81 @@
+diff --git a/build-linux.sh b/build-linux.sh
+index aabe610..e9e43e1 100755
+--- a/build-linux.sh
++++ b/build-linux.sh
+@@ -95,13 +95,6 @@ package() {
+         $src_bin/kyber_config.toml \
+         $staging_directory/bin
+ 
+-    # Copy test TLS cert/key
+-    cp \
+-        $src_bin/kybertest_cert.pem \
+-        $src_bin/kybertest_key.pem \
+-        $src_bin/kybertest_rootca_cert.pem \
+-        $staging_directory/bin
+-
+     # Copy ressources
+     cp \
+         $source_directory/share/kyber.ico \
+@@ -187,13 +180,6 @@ case "$ACTION" in
+             kyber_config.toml \
+             $OUT_DIR/bin
+ 
+-        # Copy test TLS cert/key
+-        cp \
+-            test/tls/kybertest_cert.pem \
+-            test/tls/kybertest_key.pem \
+-            test/tls/kybertest_rootca_cert.pem \
+-            $OUT_DIR/bin
+-
+         # Copy resources
+         cp \
+             kyclient/res/kyber.ico \
+diff --git a/build-macos.sh b/build-macos.sh
+index f80c380..4d30943 100755
+--- a/build-macos.sh
++++ b/build-macos.sh
+@@ -90,7 +90,6 @@ package() {
+ 
+     cp \
+         $source_directory/bin/kyclient \
+-        $source_directory/bin/kybertest_rootca_cert.pem \
+         $app_dir/Contents/MacOS
+ 
+     cp -a \
+@@ -242,7 +241,6 @@ case "$ACTION" in
+ 
+         cp \
+             target/$CARGO_TARGET/release/kyclient \
+-            test/tls/kybertest_rootca_cert.pem \
+             $OUT_DIR/bin
+         
+         mkdir -p $OUT_DIR/share/kyber
+diff --git a/kyclient/res/Info.plist b/kyclient/res/Info.plist
+index add5189..73694a2 100644
+--- a/kyclient/res/Info.plist
++++ b/kyclient/res/Info.plist
+@@ -5,14 +5,18 @@
+         <key>CFBundleInfoDictionaryVersion</key>
+         <string>6.0</string>
+         <key>CFBundleIdentifier</key>
+-        <string>com.kyber.client</string>
++        <string>com.bestdayever.replaydesktop</string>
+         <key>CFBundleExecutable</key>
+-        <string>client</string>
++        <string>kyclient</string>
+         <key>CFBundleName</key>
+-        <string>Kyber Client</string>
++        <string>ReplayDesktop</string>
+         <key>CFBundleVersion</key>
+-        <string>0.16.0</string>
++        <string>0.1.0</string>
++        <key>CFBundleShortVersionString</key>
++        <string>0.1.0</string>
++        <key>LSMinimumSystemVersion</key>
++        <string>15.0</string>
+         <key>CFBundleIconFile</key>
+         <string>kyber.icns</string>
+     </dict>
+-</plist>
+\ No newline at end of file
++</plist>

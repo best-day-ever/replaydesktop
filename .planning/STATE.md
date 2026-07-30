@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Completed 01-10-PLAN.md
-last_updated: "2026-07-30T16:21:30+02:00"
+stopped_at: Completed 260730-mqr-PLAN.md
+last_updated: "2026-07-30T15:50:45.998Z"
 last_activity: 2026-07-30
-last_activity_desc: "Completed quick task 260730-j91: macOS technical GUI and high-resolution scrolling"
+last_activity_desc: "Completed quick task 260730-mqr: bidirectional clipboard and private v0.3.0-spike.1 prerelease"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-30 — Completed quick task 260730-j91: macOS technical GUI and high-resolution scrolling
+Last activity: 2026-07-30 — Completed quick task 260730-mqr: bidirectional clipboard and private v0.3.0-spike.1 prerelease
 
 Progress: [██████████] 100%
 
@@ -116,6 +116,11 @@ Recent decisions affecting current work:
 - [Phase 01]: Advertise only tuples proven from the exact current NV12 lease; incompatible HEVC inputs and Ampere-ineligible AV1 stay terminal and non-advertised.
 - [Phase 01]: Use distinct post-repair archive schemas and dispatch verification by exact matching index/manifest contract so PASS support cannot loosen pre-reboot history.
 - [Phase 01]: Parse only a bounded IDR slice-header prefix while hashing and clearing the complete capped NVENC bitstream.
+- [Phase Quick 260730-mqr]: Map host allow_paste to Mac local-read/send and host allow_copy to Mac remote-write; never collapse directions.
+- [Phase Quick 260730-mqr]: Default clipboard off and create no pasteboard worker when disabled or both directions are refused.
+- [Phase Quick 260730-mqr]: Keep the prototype ClipboardEvent wire serialized; request IDs and deterministic simultaneous-peer conflict resolution require a future version.
+- [Phase Quick 260730-mqr]: Treat matched new-controller/new-service positional MessagePack IPC as the prototype boundary; mixed internal versions are unsupported.
+- [Phase Quick 260730-mqr]: macOS hosting is a platform port because pinned Kyber has no working macOS capture/encode/input sender.
 
 ### Pending Todos
 
@@ -132,6 +137,7 @@ None yet.
 |---|-------------|------|--------|--------|-----------|
 | 260730-iie | Prototype LAN connection without user-managed trust | 2026-07-30 | runtime-only |  | [260730-iie-make-prototype-lan-mode-require-no-user-](./quick/260730-iie-make-prototype-lan-mode-require-no-user-/) |
 | 260730-j91 | macOS technical GUI, live telemetry panel, audio/multi-monitor controls, and high-resolution scrolling | 2026-07-30 | ecdff71 | Needs Review | [260730-j91-build-and-publish-a-macos-technical-gui-](./quick/260730-j91-build-and-publish-a-macos-technical-gui-/) |
+| 260730-mqr | Bidirectional Text+HTML clipboard, directional policy gates, and private v0.3.0-spike.1 prerelease | 2026-07-30 | c1f48ad | human_needed | [260730-mqr-implement-privacy-correct-bidirectional-](./quick/260730-mqr-implement-privacy-correct-bidirectional-/) |
 
 ## Deferred Items
 
@@ -141,6 +147,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-30T00:18:29.330Z
-Stopped at: Completed 01-10-PLAN.md
+Last session: 2026-07-30T15:50:45.989Z
+Stopped at: Completed 260730-mqr-PLAN.md
 Resume file: None

@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 ENGINE_LOCK="$REPO_ROOT/prototype/macos/engine-baseline.lock"
 APP_PATH="$PWD/ReplayDesktop.app"
-ARCHIVE_PATH="$PWD/ReplayDesktop-arm64-gui-spike.zip"
+ARCHIVE_PATH="$PWD/ReplayDesktop-arm64-clipboard-spike.zip"
 SOURCE_BOUNDARY=false
 SOURCE_BASE=""
 SOURCE_HEAD=""
@@ -34,7 +34,7 @@ usage() {
         "" \
         "The default mode verifies the signed macOS GUI bundle and archive." \
         "--source-boundary verifies a replayable committed parent-repository" \
-        "range and the reproducible kynput patch without accepting nested changes."
+        "range and the reproducible kynput/kyctl patches without accepting nested changes."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -184,6 +184,7 @@ verify_source_boundary() {
     expected_desktop=$(head_lock_value kyber_commit)
     expected_kysdk=$(head_lock_value kysdk_commit)
     expected_kynput=$(head_lock_value kynput_commit)
+    expected_kyctl=$(head_lock_value kyctl_commit)
 
     desktop_gitlink=$(
         git ls-tree "$source_head_commit" upstream/kyber-desktop | awk '{print $3}'
@@ -211,6 +212,15 @@ verify_source_boundary() {
     [ "$(git -C upstream/kyber-desktop/kysdk/kynput rev-parse HEAD)" = "$expected_kynput" ] ||
         fail 'working kynput checkout is not at the pinned detached commit'
 
+    kyctl_gitlink=$(
+        git -C upstream/kyber-desktop/kysdk ls-tree "$expected_kysdk" kyctl |
+            awk '{print $3}'
+    )
+    [ "$kyctl_gitlink" = "$expected_kyctl" ] ||
+        fail "kyctl gitlink drifted: $kyctl_gitlink"
+    [ "$(git -C upstream/kyber-desktop/kysdk/kyctl rev-parse HEAD)" = "$expected_kyctl" ] ||
+        fail 'working kyctl checkout is not at the pinned detached commit'
+
     range_paths=$(git diff --name-only "$source_base_commit" "$source_head_commit")
     [ -n "$range_paths" ] || fail 'source-boundary commit range is empty'
 
@@ -231,7 +241,10 @@ verify_source_boundary() {
             prototype/macos/engine-baseline.lock|\
             scripts/package-macos-gui.sh|\
             scripts/verify-gui-spike.sh|\
-            patches/kyber/0004-linux-hires-wheel.patch)
+            patches/kyber/0004-linux-hires-wheel.patch|\
+            patches/kyber/0005-kynput-macos-clipboard.patch|\
+            patches/kyber/0006-kyctl-clipboard-negotiation.patch|\
+            patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch)
                 ;;
             upstream/kyber-desktop|upstream/kyber-desktop/*)
                 fail "nested Kyber source must never be committed in the parent range: $path"
@@ -266,9 +279,16 @@ EOF
 $range_paths
 EOF
 
-    git cat-file -e \
-        "$source_head_commit:patches/kyber/0004-linux-hires-wheel.patch" ||
-        fail 'source head is missing the reproducible scroll patch'
+    for patch in \
+        patches/kyber/0001-secure-prototype-packaging.patch \
+        patches/kyber/0004-linux-hires-wheel.patch \
+        patches/kyber/0005-kynput-macos-clipboard.patch \
+        patches/kyber/0006-kyctl-clipboard-negotiation.patch \
+        patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch
+    do
+        git cat-file -e "$source_head_commit:$patch" ||
+            fail "source head is missing reproducible patch $patch"
+    done
     temp_root=${TMPDIR:-/tmp}
     scratch=$(mktemp -d "$temp_root/replaydesktop-source.XXXXXX")
     cleanup_source_boundary() {
@@ -279,11 +299,33 @@ EOF
     trap cleanup_source_boundary RETURN
 
     git clone --quiet --no-hardlinks \
+        "$REPO_ROOT/upstream/kyber-desktop" \
+        "$scratch/kyber-desktop"
+    git -C "$scratch/kyber-desktop" checkout --quiet --detach "$expected_desktop"
+    git -C "$scratch/kyber-desktop" apply --check \
+        <(git show "$source_head_commit:patches/kyber/0001-secure-prototype-packaging.patch")
+    git -C "$scratch/kyber-desktop" apply \
+        <(git show "$source_head_commit:patches/kyber/0001-secure-prototype-packaging.patch")
+    git -C "$scratch/kyber-desktop" apply --check \
+        <(git show "$source_head_commit:patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch")
+
+    git clone --quiet --no-hardlinks \
         "$REPO_ROOT/upstream/kyber-desktop/kysdk/kynput" \
         "$scratch/kynput"
     git -C "$scratch/kynput" checkout --quiet --detach "$expected_kynput"
     git -C "$scratch/kynput" apply --check \
         <(git show "$source_head_commit:patches/kyber/0004-linux-hires-wheel.patch")
+    git -C "$scratch/kynput" apply \
+        <(git show "$source_head_commit:patches/kyber/0004-linux-hires-wheel.patch")
+    git -C "$scratch/kynput" apply --check \
+        <(git show "$source_head_commit:patches/kyber/0005-kynput-macos-clipboard.patch")
+
+    git clone --quiet --no-hardlinks \
+        "$REPO_ROOT/upstream/kyber-desktop/kysdk/kyctl" \
+        "$scratch/kyctl"
+    git -C "$scratch/kyctl" checkout --quiet --detach "$expected_kyctl"
+    git -C "$scratch/kyctl" apply --check \
+        <(git show "$source_head_commit:patches/kyber/0006-kyctl-clipboard-negotiation.patch")
 
     source_boundary_digest=$(
         git diff \
@@ -294,10 +336,12 @@ EOF
     )
 
     printf '%s\n' \
-        'PASS: committed range stays inside the GUI-spike parent source boundary' \
-        'PASS: Kyber, Kyber SDK, and kynput gitlinks retain their exact pins' \
+        'PASS: committed range stays inside the clipboard-spike parent source boundary' \
+        'PASS: Kyber, Kyber SDK, kynput, and kyctl gitlinks retain their exact pins' \
         'PASS: no private/test identity material is committed in the range' \
-        'PASS: committed 0004-linux-hires-wheel.patch applies to clean pinned kynput' \
+        'PASS: committed 0001 then 0007 patches apply to clean pinned Kyber Desktop' \
+        'PASS: committed 0004 then 0005 patches apply to clean pinned kynput' \
+        'PASS: committed 0006 patch applies to clean pinned kyctl' \
         'SOURCE_BOUNDARY=PASS' \
         "SOURCE_BASE=$source_base_commit" \
         "SOURCE_COMMIT=$source_head_commit" \

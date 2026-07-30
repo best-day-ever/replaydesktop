@@ -1,0 +1,85 @@
+diff --git a/kyclient/src/event_loop.rs b/kyclient/src/event_loop.rs
+index d58233b..50208ea 100644
+--- a/kyclient/src/event_loop.rs
++++ b/kyclient/src/event_loop.rs
+@@ -473,14 +473,18 @@ impl State {
+ 
+     fn start_streaming(&mut self) -> Result<()> {
+         // Recreate input pipeline (handlers are not restartable after stop)
+-        if self.cli_args.inputs {
++        if input_pipeline_required(self.cli_args.inputs, self.cli_args.clipboard) {
+             let pipeline_config = kynput_rs::Config::default_client();
+             let pipeline = kynput_rs::Pipeline::new(pipeline_config);
+ 
+             let eventloop_proxy = EventProxyWinit::new(self.eventloop_proxy.clone());
+             let input_ctx = Arc::new(InputContext::new(eventloop_proxy, pipeline)?);
+ 
+-            self.windows.set_input_ctx(&input_ctx);
++            if self.cli_args.inputs {
++                self.windows.set_input_ctx(&input_ctx);
++            } else {
++                input_ctx.disable_interactive_inputs()?;
++            }
+             self.input_ctx = Some(input_ctx);
+         }
+ 
+@@ -776,6 +780,28 @@ impl State {
+     }
+ }
+ 
++fn input_pipeline_required(inputs: bool, clipboard: Option<bool>) -> bool {
++    inputs || clipboard.unwrap_or(false)
++}
++
++#[cfg(test)]
++mod clipboard_pipeline_tests {
++    use super::input_pipeline_required;
++
++    #[test]
++    fn clipboard_can_start_the_pipeline_without_interactive_input() {
++        assert!(input_pipeline_required(false, Some(true)));
++        assert!(!input_pipeline_required(false, Some(false)));
++        assert!(!input_pipeline_required(false, None));
++    }
++
++    #[test]
++    fn interactive_input_still_starts_the_pipeline_independently() {
++        assert!(input_pipeline_required(true, Some(false)));
++        assert!(input_pipeline_required(true, None));
++    }
++}
++
+ pub struct EventLoopWrapper {
+     event_loop: EventLoop<UserEvent>,
+     state: State,
+diff --git a/kyclient/src/inputs/input_context.rs b/kyclient/src/inputs/input_context.rs
+index 4d69e73..23221ce 100644
+--- a/kyclient/src/inputs/input_context.rs
++++ b/kyclient/src/inputs/input_context.rs
+@@ -98,6 +98,26 @@ impl InputContext {
+         self.pipeline.clone()
+     }
+ 
++    pub(crate) fn disable_interactive_inputs(&self) -> Result<()> {
++        for input_type in [
++            InputType::Keyboard,
++            InputType::MouseMove,
++            InputType::MousePosition,
++            InputType::MouseButton,
++            InputType::MouseWheel,
++            InputType::GamepadControl,
++            InputType::GamepadEvent,
++            InputType::Unicode,
++        ] {
++            self.pipeline.set_type_processing_state(
++                input_type,
++                RouterProcessingState::from_boolean(false),
++            )?;
++        }
++
++        Ok(())
++    }
++
+     fn mouse_button_filter_pressed(pkt: &Packet) -> bool {
+         match MouseButton::from_packet(pkt) {
+             Some(mouse_button) => !mouse_button.pressed,

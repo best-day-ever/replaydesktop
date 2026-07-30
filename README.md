@@ -5,11 +5,12 @@ prototype built on the pinned Kyber/Kymux stack.
 
 ## Apple Silicon prototype client
 
-The native technical GUI spike is published as a private GitHub prerelease:
+The native technical clipboard spike is published as a private GitHub
+prerelease:
 
-<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.3>
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.3.0-spike.1>
 
-Download `ReplayDesktop-arm64-gui-spike.zip`, expand it, and move
+Download `ReplayDesktop-arm64-clipboard-spike.zip`, expand it, and move
 `ReplayDesktop.app` to `/Applications`. Finder launch opens an AppKit control
 panel; `ReplayDesktop.app/Contents/MacOS/kyclient` remains the direct CLI
 fallback. The panel:
@@ -23,7 +24,9 @@ fallback. The panel:
 - makes the Input control govern mouse plus focused-window keyboard
   forwarding, keeps immersive system-shortcut suppression visibly unavailable
   on macOS, and forces `--keyboard-grab=false`;
-- keeps clipboard visibly unavailable on macOS;
+- exposes an opt-in `Clipboard sync — Text + HTML, 60 KiB` control, independent
+  of general input, and negotiates host copy and paste policy separately before
+  touching the Mac pasteboard;
 - displays a bounded live tail of child output, Kyber logs, and
   `metrics.json`; and
 - writes runtime logs and metrics under the user's Application Support
@@ -67,16 +70,17 @@ Because this build is not notarized, macOS may require the operator to approve
 the first launch through **System Settings → Privacy & Security → Open
 Anyway**. Do not disable Gatekeeper or strip quarantine metadata.
 
-The GUI package has passed automated argument-matrix, engine-provenance,
+The clipboard package has passed automated argument-matrix, engine-provenance,
 build-metadata, architecture, deployment-target, archive, raw-CLI, and
-code-signature checks. Finder launch and GUI connection, rendered
-pixels/input, short trackpad scrolling, system audio, two-screen mode, and
-visibly changing telemetry remain explicit physical human UAT.
+code-signature checks. Physical cross-application Text/HTML copy and paste,
+macOS pasteboard privacy prompts, simultaneous real-user changes, Finder launch
+and GUI connection, rendered pixels/input, short trackpad scrolling, system
+audio, two-screen mode, and visibly changing telemetry remain explicit human
+UAT.
 The package was compiled with Xcode 26.2, the newest Xcode installed on the
 builder, rather than the planned Xcode 26.6 qualification lane.
-The superseded `v0.2.0-spike.1` and `v0.2.0-spike.2` assets remain immutable
-for audit. Use Spike 3, which additionally binds keyboard honesty and exact
-engine/source/toolchain provenance.
+The prior `v0.2.0-spike.1`, `v0.2.0-spike.2`, and `v0.2.0-spike.3` assets
+remain immutable for audit.
 
 ## Pinned Kyber source
 
@@ -90,6 +94,12 @@ git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
   ../../../../patches/kyber/0004-linux-hires-wheel.patch
+git -C upstream/kyber-desktop/kysdk/kynput apply \
+  ../../../../patches/kyber/0005-kynput-macos-clipboard.patch
+git -C upstream/kyber-desktop/kysdk/kyctl apply \
+  ../../../../patches/kyber/0006-kyctl-clipboard-negotiation.patch
+git -C upstream/kyber-desktop apply \
+  ../../patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch
 ```
 
 The first patch removes upstream test identities from Linux and macOS
@@ -98,7 +108,32 @@ Linux FFmpeg build on the CUDA/NVENC path while disabling its unused,
 currently incompatible Vulkan codec path. The fourth preserves the established
 macOS scroll conversion while emitting Linux `REL_WHEEL_HI_RES` and
 `REL_HWHEEL_HI_RES` events immediately, with accumulated legacy detents for
-compatibility.
+compatibility. Patch 0005 adds the bounded native macOS pasteboard handler and
+strict Linux/wire clipboard validation. Patch 0006 carries the independently
+negotiated host copy/paste permissions into that handler before the client
+pipeline starts. Patch 0007 lets clipboard start that pipeline independently
+of mouse and keyboard input while leaving interactive handlers disabled.
+
+The prototype retains Kyber's existing clipboard event set. Requests are
+serialized and local Mac changes win over an in-flight remote fetch, but fully
+deterministic simultaneous cross-peer conflict resolution requires a future
+versioned generation/request ID.
+
+The rebuilt controller and `kynputservice` are a matched prototype pair:
+mixed-version internal MessagePack IPC is not supported. The external Kymux
+HTTP response remains tolerant of missing directional fields, and its legacy
+aggregate is enabled only when both host directions are authorized.
+
+## macOS hosting status
+
+Pinned Kyber 0.27.0 does not contain a working macOS sender. Its controller and
+Kymux pieces can compile on macOS, but the media server is disabled there and
+there is no ScreenCaptureKit capture backend, wired VideoToolbox host encoder,
+system-audio capture path, or safe macOS host-input injector. The narrowest
+host port is ScreenCaptureKit NV12 to H.264 VideoToolbox over the existing
+Kymux transport, followed by CoreGraphics input and reuse of this pasteboard
+adapter. That is a platform port, not a hidden build option in the current
+prototype.
 
 ## Host readiness doctor
 

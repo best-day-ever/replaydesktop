@@ -145,6 +145,7 @@ private struct LauncherConfiguration {
     var audioBufferMilliseconds = 40
     var audioTransport = KymuxAudioTransport.reliable
     var inputsEnabled = true
+    var clipboardEnabled = false
 
     func validated() throws -> LauncherConfiguration {
         var result = self
@@ -252,9 +253,7 @@ private enum KyclientArguments {
         arguments.append("--kymux-audio=\(configuration.audioTransport.rawValue)")
         arguments.append("--inputs=\(configuration.inputsEnabled)")
         arguments.append(MacOSInputPolicy.keyboardGrabArgument)
-
-        // Clipboard is intentionally omitted: this macOS kyclient build does
-        // not expose a working clipboard pipeline.
+        arguments.append("--clipboard=\(configuration.clipboardEnabled)")
         arguments.append("--")
         arguments.append(configuration.host)
         return arguments
@@ -327,6 +326,7 @@ private enum PreferenceKey {
     static let audioBuffer = "prototype.audioBuffer"
     static let audioTransport = "prototype.audioTransport"
     static let inputsEnabled = "prototype.inputsEnabled"
+    static let clipboardEnabled = "prototype.clipboardEnabled"
 }
 
 private struct TailCursor {
@@ -355,6 +355,11 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
     private let audioTransportPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let inputsCheckbox = NSButton(
         checkboxWithTitle: MacOSInputPolicy.inputControlTitle,
+        target: nil,
+        action: nil
+    )
+    private let clipboardCheckbox = NSButton(
+        checkboxWithTitle: "Clipboard sync — Text + HTML, 60 KiB",
         target: nil,
         action: nil
     )
@@ -460,6 +465,8 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
         inputsCheckbox.target = self
         inputsCheckbox.action = #selector(controlChanged(_:))
+        clipboardCheckbox.target = self
+        clipboardCheckbox.action = #selector(controlChanged(_:))
         immersiveInputStatus.textColor = .systemOrange
         immersiveInputStatus.font =
             .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
@@ -606,16 +613,13 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             detail: "Kyber keyboard grab is forced off with --keyboard-grab=false."
         )
 
-        let clipboardStatus = NSTextField(
-            wrappingLabelWithString: "Unavailable in this macOS build"
-        )
-        clipboardStatus.textColor = .systemOrange
-        clipboardStatus.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         addRow(
             to: root,
             label: "Clipboard",
-            control: clipboardStatus,
-            detail: "No --clipboard argument is passed."
+            control: clipboardCheckbox,
+            detail:
+                "Experimental and opt-in. Host copy/paste policy is negotiated separately; "
+                + "denied directions never access the Mac pasteboard."
         )
 
         root.addArrangedSubview(validationLabel)
@@ -749,6 +753,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             PreferenceKey.audioBuffer: 40,
             PreferenceKey.audioTransport: KymuxAudioTransport.reliable.rawValue,
             PreferenceKey.inputsEnabled: true,
+            PreferenceKey.clipboardEnabled: false,
         ])
 
         hostField.stringValue = defaults.string(forKey: PreferenceKey.host) ?? ""
@@ -778,6 +783,8 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         )
 
         inputsCheckbox.state = defaults.bool(forKey: PreferenceKey.inputsEnabled) ? .on : .off
+        clipboardCheckbox.state =
+            defaults.bool(forKey: PreferenceKey.clipboardEnabled) ? .on : .off
     }
 
     private func savePreferences(_ configuration: LauncherConfiguration) {
@@ -792,6 +799,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         defaults.set(configuration.audioBufferMilliseconds, forKey: PreferenceKey.audioBuffer)
         defaults.set(configuration.audioTransport.rawValue, forKey: PreferenceKey.audioTransport)
         defaults.set(configuration.inputsEnabled, forKey: PreferenceKey.inputsEnabled)
+        defaults.set(configuration.clipboardEnabled, forKey: PreferenceKey.clipboardEnabled)
     }
 
     private func selectedCodec() -> CodecMode {
@@ -832,7 +840,8 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             audioEnabled: audioCheckbox.state == .on,
             audioBufferMilliseconds: audioBuffer,
             audioTransport: selectedAudioTransport(),
-            inputsEnabled: inputsCheckbox.state == .on
+            inputsEnabled: inputsCheckbox.state == .on,
+            clipboardEnabled: clipboardCheckbox.state == .on
         )
     }
 
@@ -1169,6 +1178,7 @@ private struct DryRunOptions {
     var audioBufferMilliseconds = 40
     var audioTransport = KymuxAudioTransport.reliable
     var inputsEnabled = true
+    var clipboardEnabled = false
 
     init(arguments: [String]) throws {
         for argument in arguments where argument != "--dry-run" {
@@ -1258,9 +1268,7 @@ private struct DryRunOptions {
                         + "--keyboard-grab=false is always emitted."
                 )
             case "clipboard":
-                throw LauncherError(
-                    message: "Clipboard is unavailable in this macOS build and cannot be enabled."
-                )
+                clipboardEnabled = try parseBoolean(value, option: name)
             default:
                 throw LauncherError(message: "Unknown dry-run option '--\(name)'.")
             }
@@ -1279,7 +1287,8 @@ private struct DryRunOptions {
                 audioEnabled: audioEnabled,
                 audioBufferMilliseconds: audioBufferMilliseconds,
                 audioTransport: audioTransport,
-                inputsEnabled: inputsEnabled
+                inputsEnabled: inputsEnabled,
+                clipboardEnabled: clipboardEnabled
             )
         }
     }
@@ -1322,71 +1331,75 @@ private func runSelfTest() -> Int32 {
                 for audioEnabled in [false, true] {
                     for transport in KymuxAudioTransport.allCases {
                         for inputsEnabled in [false, true] {
-                            let configuration = LauncherConfiguration(
-                                host: "test-host.invalid",
-                                port: 8080,
-                                codec: codec,
-                                bitrate: "100M",
-                                displayMode: displayMode,
-                                displayValue: displayMode == .single ? 0 : 2,
-                                audioEnabled: audioEnabled,
-                                audioBufferMilliseconds: 40,
-                                audioTransport: transport,
-                                inputsEnabled: inputsEnabled
-                            )
-                            let arguments = try KyclientArguments.build(for: configuration)
-                            combinations += 1
+                            for clipboardEnabled in [false, true] {
+                                let configuration = LauncherConfiguration(
+                                    host: "test-host.invalid",
+                                    port: 8080,
+                                    codec: codec,
+                                    bitrate: "100M",
+                                    displayMode: displayMode,
+                                    displayValue: displayMode == .single ? 0 : 2,
+                                    audioEnabled: audioEnabled,
+                                    audioBufferMilliseconds: 40,
+                                    audioTransport: transport,
+                                    inputsEnabled: inputsEnabled,
+                                    clipboardEnabled: clipboardEnabled
+                                )
+                                let arguments = try KyclientArguments.build(for: configuration)
+                                combinations += 1
 
-                            try require(
-                                Array(arguments.prefix(KyclientArguments.fixedBaseline.count))
-                                    == KyclientArguments.fixedBaseline,
-                                "default command did not begin with the exact baseline"
-                            )
-                            try require(
-                                arguments.contains("--video-codec=\(codec.codecArgument)"),
-                                "codec mapping missing for \(codec.rawValue)"
-                            )
-                            try require(
-                                arguments.contains("--444") == codec.usesYUV444,
-                                "4:4:4 flag mismatch for \(codec.rawValue)"
-                            )
-                            try require(
-                                arguments.contains(
-                                    displayMode == .single
-                                        ? "--display-idx=0"
-                                        : "--display-count=2"
-                                ),
-                                "display mapping missing"
-                            )
-                            try require(
-                                arguments.contains("--audio=\(audioEnabled)"),
-                                "audio mapping missing"
-                            )
-                            try require(
-                                arguments.contains("--kymux-audio=\(transport.rawValue)"),
-                                "audio transport mapping missing"
-                            )
-                            try require(
-                                arguments.contains("--inputs=\(inputsEnabled)"),
-                                "input toggle did not control mouse + focused keyboard forwarding"
-                            )
-                            try require(
-                                arguments.filter { $0.hasPrefix("--keyboard-grab=") }
-                                    == [MacOSInputPolicy.keyboardGrabArgument],
-                                "keyboard grab must be forced off exactly once"
-                            )
-                            try require(
-                                !arguments.contains(where: { $0.hasPrefix("--clipboard") }),
-                                "clipboard flag must never be emitted"
-                            )
-                            try require(
-                                arguments.contains("--protocol=kymux"),
-                                "multi-monitor and all GUI sessions must use Kymux"
-                            )
-                            try require(
-                                Array(arguments.suffix(2)) == ["--", "test-host.invalid"],
-                                "positional host was not protected by the option delimiter"
-                            )
+                                try require(
+                                    Array(arguments.prefix(KyclientArguments.fixedBaseline.count))
+                                        == KyclientArguments.fixedBaseline,
+                                    "default command did not begin with the exact baseline"
+                                )
+                                try require(
+                                    arguments.contains("--video-codec=\(codec.codecArgument)"),
+                                    "codec mapping missing for \(codec.rawValue)"
+                                )
+                                try require(
+                                    arguments.contains("--444") == codec.usesYUV444,
+                                    "4:4:4 flag mismatch for \(codec.rawValue)"
+                                )
+                                try require(
+                                    arguments.contains(
+                                        displayMode == .single
+                                            ? "--display-idx=0"
+                                            : "--display-count=2"
+                                    ),
+                                    "display mapping missing"
+                                )
+                                try require(
+                                    arguments.contains("--audio=\(audioEnabled)"),
+                                    "audio mapping missing"
+                                )
+                                try require(
+                                    arguments.contains("--kymux-audio=\(transport.rawValue)"),
+                                    "audio transport mapping missing"
+                                )
+                                try require(
+                                    arguments.contains("--inputs=\(inputsEnabled)"),
+                                    "input toggle did not control mouse + focused keyboard forwarding"
+                                )
+                                try require(
+                                    arguments.filter { $0.hasPrefix("--keyboard-grab=") }
+                                        == [MacOSInputPolicy.keyboardGrabArgument],
+                                    "keyboard grab must be forced off exactly once"
+                                )
+                                try require(
+                                    arguments.filter { $0.hasPrefix("--clipboard=") }
+                                        == ["--clipboard=\(clipboardEnabled)"],
+                                    "clipboard toggle must emit exactly one independent flag"
+                                )
+                                try require(
+                                    arguments.contains("--protocol=kymux"),
+                                    "multi-monitor and all GUI sessions must use Kymux"
+                                )
+                                try require(
+                                    Array(arguments.suffix(2)) == ["--", "test-host.invalid"],
+                                    "positional host was not protected by the option delimiter"
+                                )
+                            }
                         }
                     }
                 }
@@ -1409,6 +1422,24 @@ private func runSelfTest() -> Int32 {
             customPortArguments.first == "--port=9999"
                 && !customPortArguments.contains("--port=8080"),
             "GUI port did not replace the baseline slot cleanly"
+        )
+        try require(
+            customPortArguments.filter { $0.hasPrefix("--clipboard=") }
+                == ["--clipboard=false"],
+            "clipboard must be opt-in and default off"
+        )
+
+        let clipboardWithoutInput = try KyclientArguments.build(
+            for: LauncherConfiguration(
+                host: "test-host.invalid",
+                inputsEnabled: false,
+                clipboardEnabled: true
+            )
+        )
+        try require(
+            clipboardWithoutInput.contains("--inputs=false")
+                && clipboardWithoutInput.contains("--clipboard=true"),
+            "clipboard and general input toggles were conflated"
         )
 
         var rejectedOptionHost = false
@@ -1443,7 +1474,7 @@ private func runSelfTest() -> Int32 {
         print(
             "SELF-TEST PASS: \(combinations) codec/display/audio/transport combinations; "
                 + "input toggles mouse + focused keyboard; immersive grab unavailable; "
-                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard omitted"
+                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard opt-in and independent"
         )
         return 0
     } catch {
@@ -1506,12 +1537,14 @@ private func printLauncherHelp() {
                     [--display-index=0 | --display-count=2]
                     [--audio=true|false] [--audio-buffer=40]
                     [--kymux-audio=reliable|unreliable|unreliable_fec]
-                    [--inputs=true|false]
+                    [--inputs=true|false] [--clipboard=true|false]
 
         Input controls mouse + focused-window keyboard forwarding.
         Immersive system-shortcut suppression is unavailable on macOS;
         --keyboard-grab=false is always emitted and grab requests are rejected.
-        AV1 4:4:4 and clipboard requests are rejected.
+        Clipboard sync is experimental, limited to Text + HTML (60 KiB
+        combined), negotiated directionally with the host, and defaults off.
+        AV1 4:4:4 is rejected.
         """
     )
 }

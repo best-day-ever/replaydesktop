@@ -92,6 +92,10 @@ git -C upstream/kyber-desktop apply \
   ../../patches/kyber/0001-secure-prototype-packaging.patch
 git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
+  ../../../../../../patches/kyber/0008-txproto-host-telemetry.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0009-kymedia-host-telemetry-forwarding.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
   ../../../../patches/kyber/0004-linux-hires-wheel.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
@@ -113,6 +117,18 @@ strict Linux/wire clipboard validation. Patch 0006 carries the independently
 negotiated host copy/paste permissions into that handler before the client
 pipeline starts. Patch 0007 lets clipboard start that pipeline independently
 of mouse and keyboard input while leaving interactive handlers disabled.
+Patch 0008 fixes and instruments the bounded txproto host queues at the native
+capture, encode, and packet-sink ownership points. Apply it in txproto before
+patch 0009, which carries callback rejection and cumulative telemetry-loss
+facts through the Kymedia Rust forwarder. These facts remain host-local raw
+measurements; they do not claim cross-machine latency or scanout timing.
+
+Run `scripts/verify-host-telemetry.sh --source`, `--tests`, and `--replay` to
+check the patch allowlists, focused native/Rust gates, and clean pinned replay.
+The separate `--live` mode is an explicit, bounded host-service probe: it
+records the current service/config state, checks deployed NvFBC, NVENC, and
+telemetry evidence, and restores the original active state without printing
+configuration contents.
 
 The prototype retains Kyber's existing clipboard event set. Requests are
 serialized and local Mac changes win over an in-flight remote fetch, but fully

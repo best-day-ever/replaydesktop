@@ -1,0 +1,235 @@
+diff --git a/kynput/src/linux/host_mouse.rs b/kynput/src/linux/host_mouse.rs
+index cc1bd88..0d38335 100644
+--- a/kynput/src/linux/host_mouse.rs
++++ b/kynput/src/linux/host_mouse.rs
+@@ -34,14 +34,54 @@ use crate::{
+ };
+ use crate::{MouseButton, MouseButtonType, MouseMove, MouseWheel};
+ 
++const HI_RES_UNITS_PER_DETENT: f64 = 120.0;
++
++#[derive(Debug, Default, PartialEq, Eq)]
++struct WheelEmission {
++    hi_res: i32,
++    legacy: i32,
++}
++
++#[derive(Debug, Default)]
++struct WheelAxisAccumulator {
++    hi_res_remainder: f64,
++    legacy_remainder: i32,
++    direction: i8,
++}
++
++impl WheelAxisAccumulator {
++    fn accumulate(&mut self, delta: f32) -> WheelEmission {
++        if !delta.is_finite() || delta == 0.0 {
++            return WheelEmission::default();
++        }
++
++        let direction = if delta.is_sign_positive() { 1 } else { -1 };
++        if self.direction != 0 && self.direction != direction {
++            self.hi_res_remainder = 0.0;
++            self.legacy_remainder = 0;
++        }
++        self.direction = direction;
++
++        let scaled = f64::from(delta) * HI_RES_UNITS_PER_DETENT + self.hi_res_remainder;
++        let hi_res = scaled.trunc() as i32;
++        self.hi_res_remainder = scaled - f64::from(hi_res);
++        self.legacy_remainder += hi_res;
++
++        let legacy = self.legacy_remainder / HI_RES_UNITS_PER_DETENT as i32;
++        self.legacy_remainder %= HI_RES_UNITS_PER_DETENT as i32;
++
++        WheelEmission { hi_res, legacy }
++    }
++}
++
+ pub struct Backend {
+     device: UInputDevice,
+ 
+     device_name: &'static str,
+     listener: Option<Box<dyn InputEventListener + Send>>,
+ 
+-    accumulated_dx: f32,
+-    accumulated_dy: f32,
++    accumulated_dx: WheelAxisAccumulator,
++    accumulated_dy: WheelAxisAccumulator,
+ }
+ 
+ impl Backend {
+@@ -64,8 +104,8 @@ impl Backend {
+             device,
+             device_name,
+             listener: config.listener,
+-            accumulated_dx: 0.0,
+-            accumulated_dy: 0.0,
++            accumulated_dx: WheelAxisAccumulator::default(),
++            accumulated_dy: WheelAxisAccumulator::default(),
+         }))
+     }
+ 
+@@ -117,54 +157,34 @@ impl Backend {
+         Ok(())
+     }
+ 
+-    fn uinput_inject_wheel(&self, ev_code: EventCode, value: i32) -> Result<()> {
++    fn write_wheel_event(&self, ev_code: EventCode, value: i32) -> Result<()> {
++        if value == 0 {
++            return Ok(());
++        }
++
+         let ts = TimeVal::new(0, 0);
+ 
+         let sys_event = EvdevEvent::new(&ts, &ev_code, value);
+         self.device.write_event(&sys_event)?;
+ 
+-        let sys_event = EvdevEvent::new(&ts, &EventCode::EV_SYN(EV_SYN::SYN_REPORT), 0);
+-        self.device.write_event(&sys_event)?;
+-
+         Ok(())
+     }
+ 
+     fn inject_wheel(&mut self, event: &MouseWheel) -> Result<()> {
+-        self.accumulated_dx += event.dx;
+-        self.accumulated_dy += event.dy;
+-
+-        // Get the number of wheel move to inject, from accumulated_dx or accumulated_dy.
+-        // If delta > 1.0 or delta < -1.0, wheel move can be injected.
+-        //
+-        // The lambda returns the number of move to inject, and the remaining value or
+-        // accumulated_dx or accumulated_dy.
+-        let get_injectable_part = |delta: f32| -> Option<(f32, i32)> {
+-            let count = delta.abs() as i32;
+-
+-            if delta >= 1.0 {
+-                Some((delta - count as f32, count))
+-            } else if delta <= -1.0 {
+-                Some((delta + count as f32, count))
+-            } else {
+-                None
+-            }
+-        };
++        let horizontal = self.accumulated_dx.accumulate(event.dx);
++        let vertical = self.accumulated_dy.accumulate(-event.dy);
+ 
+-        // X axis
+-        if let Some((remain, count)) = get_injectable_part(self.accumulated_dx) {
+-            let sign = if self.accumulated_dx >= 1.0 { 1 } else { -1 };
+-
+-            self.accumulated_dx = remain;
+-            self.uinput_inject_wheel(EventCode::EV_REL(EV_REL::REL_HWHEEL), sign * count)?;
+-        }
++        self.write_wheel_event(
++            EventCode::EV_REL(EV_REL::REL_HWHEEL_HI_RES),
++            horizontal.hi_res,
++        )?;
++        self.write_wheel_event(EventCode::EV_REL(EV_REL::REL_HWHEEL), horizontal.legacy)?;
++        self.write_wheel_event(EventCode::EV_REL(EV_REL::REL_WHEEL_HI_RES), vertical.hi_res)?;
++        self.write_wheel_event(EventCode::EV_REL(EV_REL::REL_WHEEL), vertical.legacy)?;
+ 
+-        // Y axis
+-        if let Some((remain, count)) = get_injectable_part(self.accumulated_dy) {
+-            let sign = if self.accumulated_dy >= 1.0 { -1 } else { 1 };
+-
+-            self.accumulated_dy = remain;
+-            self.uinput_inject_wheel(EventCode::EV_REL(EV_REL::REL_WHEEL), sign * count)?;
+-        }
++        let ts = TimeVal::new(0, 0);
++        let sync = EvdevEvent::new(&ts, &EventCode::EV_SYN(EV_SYN::SYN_REPORT), 0);
++        self.device.write_event(&sync)?;
+ 
+         Ok(())
+     }
+@@ -253,3 +273,90 @@ impl InputHandler for HostMouseHandler {
+         })
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::{WheelAxisAccumulator, WheelEmission};
++
++    #[test]
++    fn host_mouse_fractional_positive_and_negative_movement_is_immediate() {
++        let mut positive = WheelAxisAccumulator::default();
++        assert_eq!(
++            positive.accumulate(0.25),
++            WheelEmission {
++                hi_res: 30,
++                legacy: 0,
++            }
++        );
++
++        let mut negative = WheelAxisAccumulator::default();
++        assert_eq!(
++            negative.accumulate(-0.5),
++            WheelEmission {
++                hi_res: -60,
++                legacy: 0,
++            }
++        );
++    }
++
++    #[test]
++    fn host_mouse_direction_reversal_discards_stale_remainder() {
++        let mut accumulator = WheelAxisAccumulator::default();
++        assert_eq!(accumulator.accumulate(0.75).hi_res, 90);
++        assert_eq!(
++            accumulator.accumulate(-0.5),
++            WheelEmission {
++                hi_res: -60,
++                legacy: 0,
++            }
++        );
++        assert_eq!(
++            accumulator.accumulate(-0.5),
++            WheelEmission {
++                hi_res: -60,
++                legacy: -1,
++            }
++        );
++    }
++
++    #[test]
++    fn host_mouse_multiple_detents_retain_legacy_compatibility() {
++        let mut accumulator = WheelAxisAccumulator::default();
++        assert_eq!(
++            accumulator.accumulate(2.5),
++            WheelEmission {
++                hi_res: 300,
++                legacy: 2,
++            }
++        );
++        assert_eq!(
++            accumulator.accumulate(0.5),
++            WheelEmission {
++                hi_res: 60,
++                legacy: 1,
++            }
++        );
++    }
++
++    #[test]
++    fn host_mouse_horizontal_sign_is_preserved() {
++        let mut accumulator = WheelAxisAccumulator::default();
++        assert_eq!(accumulator.accumulate(1.0).hi_res, 120);
++        assert_eq!(accumulator.accumulate(-1.0).hi_res, -120);
++    }
++
++    #[test]
++    fn host_mouse_sub_unit_samples_accumulate_without_phantom_detents() {
++        let mut accumulator = WheelAxisAccumulator::default();
++        for _ in 0..8 {
++            assert_eq!(accumulator.accumulate(0.001), WheelEmission::default());
++        }
++        assert_eq!(
++            accumulator.accumulate(0.001),
++            WheelEmission {
++                hi_res: 1,
++                legacy: 0,
++            }
++        );
++    }
++}

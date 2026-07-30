@@ -5,26 +5,62 @@ prototype built on the pinned Kyber/Kymux stack.
 
 ## Apple Silicon prototype client
 
-The first arm64 macOS client package is published as a private GitHub
-prerelease:
+The native technical GUI spike is published as a private GitHub prerelease:
+
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.1>
+
+Download `ReplayDesktop-arm64-gui-spike.zip`, expand it, and move
+`ReplayDesktop.app` to `/Applications`. Finder launch opens an AppKit control
+panel; `ReplayDesktop.app/Contents/MacOS/kyclient` remains the direct CLI
+fallback. The panel:
+
+- always launches the established Kymux/TLS-bypass/zero-video-buffer/metrics
+  baseline before adding visible operator choices;
+- labels H.264 4:2:0 as proven and HEVC 4:2:0, HEVC 4:4:4, and AV1 4:2:0 as
+  experimental/manual; AV1 4:4:4 is never offered;
+- maps audio and multi-monitor controls only to existing Kyber flags, with
+  total bitrate shared across active displays;
+- keeps clipboard visibly unavailable on macOS and describes keyboard input as
+  focused-window forwarding without suppression of macOS system shortcuts;
+- displays a bounded live tail of child output, Kyber logs, and
+  `metrics.json`; and
+- writes runtime logs and metrics under the user's Application Support
+  directory rather than inside the app.
+
+Current host qualification finds PulseAudio-on-PipeWire monitor sources and
+the GUI request starts Kyber's single Kymux audio service. The preserved
+four-channel M-Audio default monitor currently fails capture initialization
+with `Invalid argument` before Opus encoding begins, so this prerelease makes
+no working-audio claim. Choosing or adapting a compatible monitor remains
+follow-up work.
+
+This is an internal LAN/Tailscale prototype. The operator explicitly approved
+fixed development credentials, TLS certificate-verification bypass, and
+ad-hoc signing without notarization for this spike. Those exceptions are not
+production-safe and do not apply to a public release.
+
+The original known-good CLI-only prerelease remains available and is not
+replaced:
 
 <https://github.com/best-day-ever/replaydesktop/releases/tag/v0.1.0-spike.1>
 
-Download `ReplayDesktop-arm64-spike.zip`, expand it, and move
-`ReplayDesktop.app` to `/Applications`. The package:
+Both packages:
 
-- supports Apple Silicon only;
-- requires macOS 15 Sequoia or newer;
-- is ad-hoc signed for internal testing, but is not notarized; and
-- contains no Kyber test certificates or private trust material.
+- support Apple Silicon only;
+- require macOS 15 Sequoia or newer;
+- are ad-hoc signed for internal testing, but are not notarized; and
+- contain no Kyber test certificates or private trust material.
 
 Because this build is not notarized, macOS may require the operator to approve
 the first launch through **System Settings → Privacy & Security → Open
 Anyway**. Do not disable Gatekeeper or strip quarantine metadata.
 
-The client package has passed architecture, deployment-target, archive, and
-code-signature checks. The end-to-end live-stream spike remains pending until
-the Linux host build is running and real `DP-0.3` pixels are visible on a Mac.
+The GUI package has passed automated argument-matrix, architecture,
+deployment-target, archive, raw-CLI, and code-signature checks. Finder launch,
+rendered pixels/input, short trackpad scrolling, system audio, two-screen
+mode, and visibly changing telemetry remain explicit physical human UAT.
+The package was compiled with Xcode 26.2, the newest Xcode installed on the
+builder, rather than the planned Xcode 26.6 qualification lane.
 
 ## Pinned Kyber source
 
@@ -36,12 +72,17 @@ git -C upstream/kyber-desktop apply \
   ../../patches/kyber/0001-secure-prototype-packaging.patch
 git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
+git -C upstream/kyber-desktop/kysdk/kynput apply \
+  ../../../../patches/kyber/0004-linux-hires-wheel.patch
 ```
 
 The first patch removes upstream test identities from Linux and macOS
 packages and supplies ReplayDesktop bundle metadata. The second keeps the
 Linux FFmpeg build on the CUDA/NVENC path while disabling its unused,
-currently incompatible Vulkan codec path.
+currently incompatible Vulkan codec path. The fourth preserves the established
+macOS scroll conversion while emitting Linux `REL_WHEEL_HI_RES` and
+`REL_HWHEEL_HI_RES` events immediately, with accumulated legacy detents for
+compatibility.
 
 ## Host readiness doctor
 

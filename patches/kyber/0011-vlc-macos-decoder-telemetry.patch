@@ -1,0 +1,680 @@
+diff --git a/modules/codec/videotoolbox/decoder.c b/modules/codec/videotoolbox/decoder.c
+index 12b9903..0cee9ea 100644
+--- a/modules/codec/videotoolbox/decoder.c
++++ b/modules/codec/videotoolbox/decoder.c
+@@ -29,6 +29,7 @@
+ #import <vlc_common.h>
+ #import <vlc_plugin.h>
+ #import <vlc_codec.h>
++#import <vlc_metrics.h>
+ #import "../hxxx_helper.h"
+ #import <vlc_bits.h>
+ #import <vlc_boxes.h>
+@@ -39,6 +40,7 @@
+ #import "../../packetizer/hxxx_sei.h"
+ #import "pacer.h"
+ #import "dpb.h"
++#import "../../../src/misc/metrics.h"
+ 
+ #import <VideoToolbox/VideoToolbox.h>
+ #import <VideoToolbox/VTErrors.h>
+@@ -142,6 +144,11 @@ typedef struct decoder_sys_t
+     struct pic_pacer           *pic_pacer;
+ 
+     bool                        zero_latency;
++
++    uint32_t                    video_path_policy_flags;
++    OSType                      video_path_last_cvfmt;
++    uint32_t                    video_path_last_iosurface;
++    bool                        video_path_surface_emitted;
+ } decoder_sys_t;
+ 
+ #pragma mark - start & stop
+@@ -1053,6 +1060,107 @@ SetDecoderColorProperties(CFMutableDictionaryRef decoderConfiguration,
+     }
+ }
+ 
++static uint32_t
++VideoPathCodec(const decoder_sys_t *p_sys)
++{
++    switch (p_sys->codec)
++    {
++        case kCMVideoCodecType_H264:
++            return LIBVLC_VIDEO_PATH_CODEC_H264;
++        case kCMVideoCodecType_HEVC:
++            return LIBVLC_VIDEO_PATH_CODEC_HEVC;
++        case kCMVideoCodecType_AV1:
++            return LIBVLC_VIDEO_PATH_CODEC_AV1;
++        default:
++            return LIBVLC_VIDEO_PATH_CODEC_UNKNOWN;
++    }
++}
++
++static void
++VideoPathPush(decoder_t *p_dec, vlc_video_path_event *event)
++{
++    struct vlc_metrics *metrics = vlc_metrics_Get(VLC_OBJECT(p_dec));
++    if (metrics)
++        (void) vlc_metrics_PushVideoPath(metrics, event);
++}
++
++static void
++VideoPathPublishSession(decoder_t *p_dec)
++{
++    decoder_sys_t *p_sys = p_dec->p_sys;
++    CFTypeRef property = NULL;
++    OSStatus status = VTSessionCopyProperty(
++        p_sys->session,
++        kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
++        kCFAllocatorDefault, &property);
++    bool is_boolean =
++        property != NULL && CFGetTypeID(property) == CFBooleanGetTypeID();
++    bool value = is_boolean && CFBooleanGetValue((CFBooleanRef) property);
++
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_SESSION, false, 0);
++    event.codec = VideoPathCodec(p_sys);
++    event.policy_flags = p_sys->video_path_policy_flags;
++    event.hardware_state = vlc_video_path_NormalizeBooleanProperty(
++        status == noErr, is_boolean, value);
++    event.status = status;
++    if (event.hardware_state == LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN)
++        event.unknown_reason =
++            LIBVLC_VIDEO_PATH_UNKNOWN_HARDWARE_PROPERTY_UNAVAILABLE;
++    VideoPathPush(p_dec, &event);
++
++    if (property != NULL)
++        CFRelease(property);
++}
++
++static bool
++VideoPathPrepareSurface(decoder_t *p_dec,
++                        CVPixelBufferRef image_buffer, CMTime pts,
++                        vlc_video_path_event *event)
++{
++    decoder_sys_t *p_sys = p_dec->p_sys;
++    OSType cvfmt = CVPixelBufferGetPixelFormatType(image_buffer);
++    uint32_t iosurface = CVPixelBufferGetIOSurface(image_buffer) != NULL
++                       ? LIBVLC_VIDEO_PATH_TRUTH_YES
++                       : LIBVLC_VIDEO_PATH_TRUTH_NO;
++
++    if (p_sys->video_path_surface_emitted &&
++        p_sys->video_path_last_cvfmt == cvfmt &&
++        p_sys->video_path_last_iosurface == iosurface)
++        return false;
++
++    p_sys->video_path_surface_emitted = true;
++    p_sys->video_path_last_cvfmt = cvfmt;
++    p_sys->video_path_last_iosurface = iosurface;
++
++    bool pts_valid = CMTIME_IS_VALID(pts);
++    vlc_video_path_event_Init(
++        event, LIBVLC_VIDEO_PATH_EVENT_DECODED_SURFACE,
++        pts_valid, pts_valid ? pts.value : 0);
++    event->codec = VideoPathCodec(p_sys);
++    event->decoded_fourcc = cvfmt;
++    event->iosurface_state = iosurface;
++    return true;
++}
++
++static void
++VideoPathPublishFrameOutcome(
++    decoder_t *p_dec, OSStatus status, VTDecodeInfoFlags flags, CMTime pts,
++    const struct vlc_video_path_vt_outcome_input *input)
++{
++    bool pts_valid = CMTIME_IS_VALID(pts);
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME,
++        pts_valid, pts_valid ? pts.value : 0);
++    event.codec = VideoPathCodec(p_dec->p_sys);
++    event.status = status;
++    event.os_flags = flags;
++    event.outcome = vlc_video_path_ClassifyVTOutcome(input);
++    VideoPathPush(p_dec, &event);
++}
++
+ static CFMutableDictionaryRef CreateSessionDescriptionFormat(decoder_t *p_dec,
+                                                              unsigned i_sar_num,
+                                                              unsigned i_sar_den)
+@@ -1108,6 +1216,9 @@ static CFMutableDictionaryRef CreateSessionDescriptionFormat(decoder_t *p_dec,
+     SetDecoderColorProperties(decoderConfiguration, &p_dec->fmt_out.video);
+ 
+ #if TARGET_OS_OSX
++    p_sys->video_path_policy_flags =
++        LIBVLC_VIDEO_PATH_POLICY_HW_ENABLE_REQUESTED;
++
+     /* enable HW accelerated playback, since this is optional on OS X
+      * note that the backend may still fallback on software mode if no
+      * suitable hardware is available */
+@@ -1118,9 +1229,13 @@ static CFMutableDictionaryRef CreateSessionDescriptionFormat(decoder_t *p_dec,
+     /* on OS X, we can force VT to fail if no suitable HW decoder is available,
+      * preventing the aforementioned SW fallback */
+     if (var_InheritBool(p_dec, "videotoolbox-hw-decoder-only"))
++    {
++        p_sys->video_path_policy_flags |=
++            LIBVLC_VIDEO_PATH_POLICY_HW_REQUIRE_REQUESTED;
+         CFDictionarySetValue(decoderConfiguration,
+                              kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                              kCFBooleanTrue);
++    }
+ #endif
+ 
+     return decoderConfiguration;
+@@ -1129,6 +1244,8 @@ static CFMutableDictionaryRef CreateSessionDescriptionFormat(decoder_t *p_dec,
+ static int StartVideoToolbox(decoder_t *p_dec)
+ {
+     decoder_sys_t *p_sys = p_dec->p_sys;
++    p_sys->video_path_policy_flags = 0;
++    p_sys->video_path_surface_emitted = false;
+ 
+     /* Initialized to NULL for error handling */
+     CFMutableDictionaryRef destinationPixelBufferAttributes = NULL;
+@@ -1219,6 +1336,7 @@ static int StartVideoToolbox(decoder_t *p_dec)
+     if (HandleVTStatus(p_dec, status, NULL) != VLC_SUCCESS)
+         return VLC_EGENERIC;
+ 
++    VideoPathPublishSession(p_dec);
+     return VLC_SUCCESS;
+ 
+ error:
+@@ -2114,11 +2232,30 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+     decoder_t *p_dec = (decoder_t *)decompressionOutputRefCon;
+     decoder_sys_t *p_sys = p_dec->p_sys;
+     frame_info_t *p_info = (frame_info_t *) sourceFrameRefCon;
+-    const bool b_field = p_info->b_field;
++    const bool correlated = p_info != NULL;
++    const bool b_field = correlated && p_info->b_field;
++    bool publish_surface = false;
++    vlc_video_path_event surface_event;
++    struct vlc_video_path_vt_outcome_input outcome = {
++        .status = status,
++        .flags = infoFlags,
++        .frame_dropped = false,
++        .image_buffer_present = imageBuffer != NULL,
++        .output_discarded = false,
++        .pts_valid = true,
++        .buffer_nonempty = true,
++        .output_format_valid = true,
++        .picture_allocated = true,
++        .attachment_succeeded = true,
++    };
+ 
+     vlc_mutex_lock(&p_sys->lock);
+     if (p_sys->b_discard_decoder_output)
++    {
++        outcome.status = 0;
++        outcome.output_discarded = true;
+         goto end;
++    }
+ 
+     enum vtsession_status vtsession_status;
+     if (HandleVTStatus(p_dec, status, &vtsession_status) != VLC_SUCCESS)
+@@ -2133,10 +2270,13 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+ 
+     if (!imageBuffer)
+     {
++        outcome.frame_dropped =
++            (infoFlags & kVTDecodeInfo_FrameDropped) ==
++            kVTDecodeInfo_FrameDropped;
+         if (p_sys->zero_latency)
+             goto end;
+ 
+-        if (unlikely((infoFlags & kVTDecodeInfo_FrameDropped) != kVTDecodeInfo_FrameDropped))
++        if (unlikely(!outcome.frame_dropped))
+         {
+             msg_Err(p_dec, "critical: null imageBuffer for a non-dropped frame with valid status");
+             p_sys->vtsession_status = VTSESSION_STATUS_ABORT;
+@@ -2147,14 +2287,23 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+     }
+ 
+     if (p_sys->vtsession_status == VTSESSION_STATUS_ABORT)
++    {
++        outcome.output_discarded = true;
+         goto end;
++    }
++
++    publish_surface = VideoPathPrepareSurface(
++        p_dec, imageBuffer, pts, &surface_event);
+ 
+     if (unlikely(!p_sys->b_format_propagated)) {
+         p_sys->b_format_propagated =
+             UpdateVideoFormat(p_dec, imageBuffer) == VLC_SUCCESS;
+ 
+         if (!p_sys->b_format_propagated)
++        {
++            outcome.output_format_valid = false;
+             goto end;
++        }
+         assert(p_dec->fmt_out.i_codec != 0);
+     }
+ 
+@@ -2165,10 +2314,16 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+     }
+ 
+     if (!CMTIME_IS_VALID(pts))
++    {
++        outcome.pts_valid = false;
+         goto end;
++    }
+ 
+     if (CVPixelBufferGetDataSize(imageBuffer) == 0)
++    {
++        outcome.buffer_nonempty = false;
+         goto end;
++    }
+ 
+     if (unlikely(p_info == NULL))
+         goto end;
+@@ -2201,12 +2356,20 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+                  * output frames allocated by waiting for the vout to release them. */
+             pic_pacer_AccountAllocation(p_sys->pic_pacer, p_info->b_field);
+         }
++        else
++            outcome.attachment_succeeded = false;
+     }
++    else
++        outcome.picture_allocated = false;
+ 
+     vlc_mutex_lock(&p_sys->lock);
+ 
+     if (p_sys->b_discard_decoder_output)
+-        picture_Release(p_pic);
++    {
++        outcome.output_discarded = true;
++        if (p_pic != NULL)
++            picture_Release(p_pic);
++    }
+     else
+         p_info->p_picture = p_pic;
+ 
+@@ -2224,6 +2387,11 @@ static void DecoderCallback(void *decompressionOutputRefCon,
+ end:
+     free(p_info);
+     vlc_mutex_unlock(&p_sys->lock);
++    if (publish_surface)
++        VideoPathPush(p_dec, &surface_event);
++    if (correlated)
++        VideoPathPublishFrameOutcome(
++            p_dec, status, infoFlags, pts, &outcome);
+     pic_pacer_AccountFinishedDecode(p_sys->pic_pacer, b_field);
+     return;
+ }
+diff --git a/modules/video_output/apple/VLCSampleBufferDisplay.m b/modules/video_output/apple/VLCSampleBufferDisplay.m
+index f13a4f4..8ee0f60 100644
+--- a/modules/video_output/apple/VLCSampleBufferDisplay.m
++++ b/modules/video_output/apple/VLCSampleBufferDisplay.m
+@@ -31,6 +31,7 @@
+ #include <vlc_plugin.h>
+ #include <vlc_vout_display.h>
+ #include <vlc_atomic.h>
++#include <vlc_metrics.h>
+ #include <vlc_modules.h>
+ 
+ #import "VLCDrawable.h"
+@@ -39,6 +40,7 @@
+ #import <AVKit/AVKit.h>
+ 
+ #include "../../codec/vt_utils.h"
++#include "../../../src/misc/metrics.h"
+ #include "vlc_pip_controller.h"
+ 
+ #import <VideoToolbox/VideoToolbox.h>
+@@ -771,9 +773,55 @@ static void Close(vout_display_t *vd)
+     [sys close];
+ }
+ 
++static void
++VideoPathPublishRenderer(vout_display_t *vd, vlc_tick_t date,
++                         const struct vlc_video_path_renderer_outcome_input *input)
++{
++    struct vlc_metrics *metrics = vlc_metrics_Get(VLC_OBJECT(vd));
++    if (!metrics)
++        return;
++
++    bool pts_valid = date != VLC_TICK_INVALID;
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_RENDERER,
++        pts_valid, pts_valid ? date : 0);
++    event.outcome = vlc_video_path_ClassifyRendererOutcome(input);
++    (void) vlc_metrics_PushVideoPath(metrics, &event);
++}
++
++static void
++VideoPathPublishObservationLimit(vout_display_t *vd)
++{
++    struct vlc_metrics *metrics = vlc_metrics_Get(VLC_OBJECT(vd));
++    if (!metrics)
++        return;
++
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_OBSERVATION_LIMIT, false, 0);
++    event.unknown_reason =
++        LIBVLC_VIDEO_PATH_UNKNOWN_PHYSICAL_PRESENTATION_UNAVAILABLE;
++    event.observation_flags =
++        LIBVLC_VIDEO_PATH_OBSERVATION_PHYSICAL_PRESENTATION |
++        LIBVLC_VIDEO_PATH_OBSERVATION_SCANOUT_TIMESTAMP |
++        LIBVLC_VIDEO_PATH_OBSERVATION_LAYER_QUEUE_DEPTH;
++    vlc_video_path_event_SetText(
++        &event, "physical-present/scanout/layer-depth unavailable");
++    (void) vlc_metrics_PushVideoPath(metrics, &event);
++}
++
+ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+     VLCSampleBufferDisplay *sys;
+     sys = (__bridge VLCSampleBufferDisplay*)vd->sys;
++    struct vlc_video_path_renderer_outcome_input outcome = {
++        .layer_present = false,
++        .conversion_succeeded = false,
++        .format_description_succeeded = false,
++        .sample_buffer_succeeded = false,
++        .layer_ready = true,
++        .sample_enqueued = false,
++    };
+ 
+     switch (vd->fmt->orientation) {
+     case ORIENT_HFLIPPED:
+@@ -809,10 +857,15 @@ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+         break;
+     }
+ 
++    AVSampleBufferDisplayLayer *displayLayer;
+     @synchronized(sys.displayLayer) {
+-        if (sys.displayLayer == nil)
+-            return;
++        displayLayer = sys.displayLayer;
++    }
++    if (displayLayer == nil) {
++        VideoPathPublishRenderer(vd, date, &outcome);
++        return;
+     }
++    outcome.layer_present = true;
+ 
+     picture_Hold(pic);
+ 
+@@ -820,15 +873,22 @@ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+     if (sys->converter) {
+         dst = sys->converter->ops->filter_video(sys->converter, pic);
+     }
++    if (dst == NULL) {
++        VideoPathPublishRenderer(vd, date, &outcome);
++        return;
++    }
+ 
+     CVPixelBufferRef pixelBuffer = cvpxpic_get_ref(dst);
+-    CVPixelBufferRetain(pixelBuffer);
++    if (pixelBuffer != NULL)
++        CVPixelBufferRetain(pixelBuffer);
+     picture_Release(dst);
+ 
+     if (pixelBuffer == NULL) {
+         msg_Err(vd, "No pixelBuffer ref attached to pic!");
++        VideoPathPublishRenderer(vd, date, &outcome);
+         return;
+     }
++    outcome.conversion_succeeded = true;
+ 
+     if (vd->fmt->orientation != ORIENT_NORMAL) {
+         CVPixelBufferRef rotated = [sys.rotationContext rotate:pixelBuffer];
+@@ -858,8 +918,10 @@ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+     if (err != noErr) {
+         msg_Err(vd, "Image buffer format desciption creation failed!");
+         CVPixelBufferRelease(pixelBuffer);
++        VideoPathPublishRenderer(vd, date, &outcome);
+         return;
+     }
++    outcome.format_description_succeeded = true;
+ 
+     vlc_tick_t now = vlc_tick_now();
+     CFTimeInterval ca_now = CACurrentMediaTime();
+@@ -877,12 +939,24 @@ static void RenderPicture(vout_display_t *vd, picture_t *pic, vlc_tick_t date) {
+     CVPixelBufferRelease(pixelBuffer);
+     if (err != noErr) {
+         msg_Err(vd, "Image buffer creation failed!");
++        VideoPathPublishRenderer(vd, date, &outcome);
+         return;
+     }
++    outcome.sample_buffer_succeeded = true;
+ 
+-    @synchronized(sys.displayLayer) {
+-        [sys.displayLayer enqueueSampleBuffer:sampleBuffer];
++    #pragma clang diagnostic push
++    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    outcome.layer_ready = displayLayer.readyForMoreMediaData;
++    #pragma clang diagnostic pop
++    if (!outcome.layer_ready)
++        VideoPathPublishRenderer(vd, date, &outcome);
++
++    @synchronized(displayLayer) {
++        [displayLayer enqueueSampleBuffer:sampleBuffer];
+     }
++    outcome.layer_ready = true;
++    outcome.sample_enqueued = true;
++    VideoPathPublishRenderer(vd, date, &outcome);
+ 
+     CFRelease(sampleBuffer);
+ }
+@@ -1159,6 +1233,7 @@ static int Open (vout_display_t *vd,
+         };
+ 
+         vd->ops = &ops;
++        VideoPathPublishObservationLimit(vd);
+ 
+         static const vlc_fourcc_t subfmts[] = {
+             VLC_CODEC_ARGB,
+diff --git a/test/libvlc/meson.build b/test/libvlc/meson.build
+index 21c7d05..74e6579 100644
+--- a/test/libvlc/meson.build
++++ b/test/libvlc/meson.build
+@@ -121,6 +121,9 @@ vlc_tests += {
+     'sources' : files('video_path_metrics.c'),
+     'suite' : ['libvlc'],
+     'c_args' : ['-UNDEBUG'],
++    'dependencies' : (host_system == 'darwin')
++        ? [corefoundation_dep, corevideo_dep]
++        : [],
+     'link_with' : [
+         libvlc,
+         libvlccore,
+diff --git a/test/libvlc/video_path_metrics.c b/test/libvlc/video_path_metrics.c
+index 0f8ed36..63fc4c8 100644
+--- a/test/libvlc/video_path_metrics.c
++++ b/test/libvlc/video_path_metrics.c
+@@ -15,6 +15,11 @@
+ #include <vlc/vlc.h>
+ #include <vlc_threads.h>
+ 
++#ifdef __APPLE__
++# include <CoreFoundation/CoreFoundation.h>
++# include <CoreVideo/CoreVideo.h>
++#endif
++
+ #include "../../modules/access/kymux_video_config.h"
+ #include "../../src/misc/metrics.h"
+ 
+@@ -353,6 +358,170 @@ test_config_parsers(void)
+            LIBVLC_VIDEO_PATH_UNKNOWN_CODEC_UNSUPPORTED);
+ }
+ 
++static void
++test_videotoolbox_outcome_classifier(void)
++{
++    struct vlc_video_path_vt_outcome_input input = {
++        .status = 0,
++        .flags = 0,
++        .frame_dropped = false,
++        .image_buffer_present = true,
++        .output_discarded = false,
++        .pts_valid = true,
++        .buffer_nonempty = true,
++        .output_format_valid = true,
++        .picture_allocated = true,
++        .attachment_succeeded = true,
++    };
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_SUCCESS);
++
++    input.status = -1;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_STATUS_ERROR);
++    input.status = 0;
++
++    input.frame_dropped = true;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_FRAME_DROPPED);
++    input.frame_dropped = false;
++
++    input.image_buffer_present = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_NULL_BUFFER);
++    input.image_buffer_present = true;
++
++    input.output_discarded = true;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_DISCARDED_OUTPUT);
++    input.output_discarded = false;
++
++    input.pts_valid = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_INVALID_PTS);
++    input.pts_valid = true;
++
++    input.buffer_nonempty = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_EMPTY_BUFFER);
++    input.buffer_nonempty = true;
++
++    input.output_format_valid = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_FORMAT_FAILURE);
++    input.output_format_valid = true;
++
++    input.picture_allocated = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_PICTURE_ALLOCATION_FAILURE);
++    input.picture_allocated = true;
++
++    input.attachment_succeeded = false;
++    assert(vlc_video_path_ClassifyVTOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_VT_ATTACHMENT_FAILURE);
++}
++
++static void
++test_renderer_outcome_classifier(void)
++{
++    struct vlc_video_path_renderer_outcome_input input = {
++        .layer_present = false,
++        .conversion_succeeded = false,
++        .format_description_succeeded = false,
++        .sample_buffer_succeeded = false,
++        .layer_ready = false,
++        .sample_enqueued = false,
++    };
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_ABSENT);
++
++    input.layer_present = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_CONVERSION_FAILURE);
++    input.conversion_succeeded = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_FORMAT_DESCRIPTION_FAILURE);
++    input.format_description_succeeded = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_BUFFER_FAILURE);
++    input.sample_buffer_succeeded = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_BACKPRESSURE);
++    input.layer_ready = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_BUFFER_FAILURE);
++    input.sample_enqueued = true;
++    assert(vlc_video_path_ClassifyRendererOutcome(&input) ==
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_ENQUEUED);
++
++    assert(LIBVLC_VIDEO_PATH_OUTCOME_LEGACY_DISPLAY_CALLBACK_RETURNED !=
++           LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_ENQUEUED);
++}
++
++static void
++test_hardware_property_normalization(void)
++{
++    assert(vlc_video_path_NormalizeBooleanProperty(false, false, false) ==
++           LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN);
++    assert(vlc_video_path_NormalizeBooleanProperty(true, false, true) ==
++           LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN);
++    assert(vlc_video_path_NormalizeBooleanProperty(true, true, false) ==
++           LIBVLC_VIDEO_PATH_TRUTH_NO);
++    assert(vlc_video_path_NormalizeBooleanProperty(true, true, true) ==
++           LIBVLC_VIDEO_PATH_TRUTH_YES);
++
++    uint32_t requested =
++        LIBVLC_VIDEO_PATH_POLICY_HW_ENABLE_REQUESTED |
++        LIBVLC_VIDEO_PATH_POLICY_HW_REQUIRE_REQUESTED;
++    assert(requested != LIBVLC_VIDEO_PATH_TRUTH_YES);
++}
++
++#ifdef __APPLE__
++static void
++test_apple_property_and_surface_seams(void)
++{
++    CFTypeRef boolean = kCFBooleanTrue;
++    assert(vlc_video_path_NormalizeBooleanProperty(
++               true, CFGetTypeID(boolean) == CFBooleanGetTypeID(),
++               CFBooleanGetValue((CFBooleanRef) boolean)) ==
++           LIBVLC_VIDEO_PATH_TRUTH_YES);
++
++    int number_value = 1;
++    CFNumberRef number = CFNumberCreate(
++        kCFAllocatorDefault, kCFNumberIntType, &number_value);
++    assert(number != NULL);
++    assert(vlc_video_path_NormalizeBooleanProperty(
++               true, CFGetTypeID(number) == CFBooleanGetTypeID(), false) ==
++           LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN);
++    CFRelease(number);
++
++    CFMutableDictionaryRef attributes = CFDictionaryCreateMutable(
++        kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks,
++        &kCFTypeDictionaryValueCallBacks);
++    CFDictionaryRef iosurface_properties = CFDictionaryCreate(
++        kCFAllocatorDefault, NULL, NULL, 0,
++        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    assert(attributes != NULL && iosurface_properties != NULL);
++    CFDictionarySetValue(
++        attributes, kCVPixelBufferIOSurfacePropertiesKey,
++        iosurface_properties);
++
++    CVPixelBufferRef pixel_buffer = NULL;
++    CVReturn result = CVPixelBufferCreate(
++        kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA,
++        attributes, &pixel_buffer);
++    assert(result == kCVReturnSuccess);
++    assert(pixel_buffer != NULL);
++    assert(CVPixelBufferGetPixelFormatType(pixel_buffer) ==
++           kCVPixelFormatType_32BGRA);
++    assert(CVPixelBufferGetIOSurface(pixel_buffer) != NULL);
++
++    CVPixelBufferRelease(pixel_buffer);
++    CFRelease(iosurface_properties);
++    CFRelease(attributes);
++}
++#endif
++
+ int
+ main(void)
+ {
+@@ -362,5 +531,11 @@ main(void)
+     test_delayed_minmax_writer_ordering();
+     test_concurrent_exact_loss_totals();
+     test_config_parsers();
++    test_videotoolbox_outcome_classifier();
++    test_renderer_outcome_classifier();
++    test_hardware_property_normalization();
++#ifdef __APPLE__
++    test_apple_property_and_surface_seams();
++#endif
+     return 0;
+ }

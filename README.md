@@ -7,7 +7,7 @@ prototype built on the pinned Kyber/Kymux stack.
 
 The native technical GUI spike is published as a private GitHub prerelease:
 
-<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.2>
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.2.0-spike.3>
 
 Download `ReplayDesktop-arm64-gui-spike.zip`, expand it, and move
 `ReplayDesktop.app` to `/Applications`. Finder launch opens an AppKit control
@@ -20,8 +20,10 @@ fallback. The panel:
   experimental/manual; AV1 4:4:4 is never offered;
 - maps audio and multi-monitor controls only to existing Kyber flags, with
   total bitrate shared across active displays;
-- keeps clipboard visibly unavailable on macOS and describes keyboard input as
-  focused-window forwarding without suppression of macOS system shortcuts;
+- makes the Input control govern mouse plus focused-window keyboard
+  forwarding, keeps immersive system-shortcut suppression visibly unavailable
+  on macOS, and forces `--keyboard-grab=false`;
+- keeps clipboard visibly unavailable on macOS;
 - displays a bounded live tail of child output, Kyber logs, and
   `metrics.json`; and
 - writes runtime logs and metrics under the user's Application Support
@@ -39,6 +41,13 @@ fixed development credentials, TLS certificate-verification bypass, and
 ad-hoc signing without notarization for this spike. Those exceptions are not
 production-safe and do not apply to a public release.
 
+The tracked `prototype/macos/engine-baseline.lock` binds packaging to the exact
+known raw `kyclient` SHA-256 and pinned Kyber/Kysdk commits. Packaging fails if
+those engine bytes or source pins differ. The bundle also records and verifies
+its explicit package version, ReplayDesktop source range and digest, Xcode
+version/build, Swift version, SDK version/build, macOS deployment target, and
+raw-engine digest.
+
 The original known-good CLI-only prerelease remains available and is not
 replaced:
 
@@ -55,14 +64,16 @@ Because this build is not notarized, macOS may require the operator to approve
 the first launch through **System Settings → Privacy & Security → Open
 Anyway**. Do not disable Gatekeeper or strip quarantine metadata.
 
-The GUI package has passed automated argument-matrix, architecture,
-deployment-target, archive, raw-CLI, and code-signature checks. Finder launch,
-rendered pixels/input, short trackpad scrolling, system audio, two-screen
-mode, and visibly changing telemetry remain explicit physical human UAT.
+The GUI package has passed automated argument-matrix, engine-provenance,
+build-metadata, architecture, deployment-target, archive, raw-CLI, and
+code-signature checks. Finder launch and GUI connection, rendered
+pixels/input, short trackpad scrolling, system audio, two-screen mode, and
+visibly changing telemetry remain explicit physical human UAT.
 The package was compiled with Xcode 26.2, the newest Xcode installed on the
 builder, rather than the planned Xcode 26.6 qualification lane.
-The superseded `v0.2.0-spike.1` asset remains immutable for audit; Spike 2
-adds a strict positional-host boundary and exact app/archive verification.
+The superseded `v0.2.0-spike.1` and `v0.2.0-spike.2` assets remain immutable
+for audit. Use Spike 3, which additionally binds keyboard honesty and exact
+engine/source/toolchain provenance.
 
 ## Pinned Kyber source
 

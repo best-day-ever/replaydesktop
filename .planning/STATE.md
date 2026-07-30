@@ -4,16 +4,16 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
-status: executing
-stopped_at: Completed 01-09-PLAN.md
-last_updated: "2026-07-29T23:09:26.487Z"
+status: verifying
+stopped_at: Completed 01-10-PLAN.md
+last_updated: "2026-07-30T00:18:29.338Z"
 last_activity: 2026-07-30
-last_activity_desc: Completed 01-09-PLAN.md
+last_activity_desc: Completed 01-10-PLAN.md
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 10
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
-Last activity: 2026-07-30 — Completed 01-09-PLAN.md
+Status: Phase complete — ready for verification
+Last activity: 2026-07-30 — Completed 01-10-PLAN.md
 
-Progress: [█████████░] 90%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -67,6 +67,7 @@ Progress: [█████████░] 90%
 | Phase 01-host-readiness-gate P07 | 50m 30s | 3 tasks | 11 files |
 | Phase 01-host-readiness-gate P08 | 1h 39m 25s | 3 tasks | 10 files |
 | Phase 01 P09 | 40m | 3 tasks | 12 files |
+| Phase 01 P10 | 58m | 3 tasks | 22 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,10 @@ Recent decisions affecting current work:
 - [Phase 01]: Keep NVENC policy closed to seven 4K60 positions and prefilter AV1 before provider invocation on pre-Ada or unknown generations.
 - [Phase 01]: Codec bytes prove codec/profile/chroma/depth/dimensions/keyframe only; buffer format and exact 60/1 require native resource/config evidence.
 - [Phase 01]: Diagnostic SDK versions never authorize tuple advertisement; live NVENC stays unavailable until Plan 01-10.
+- [Phase 01]: Keep the official SDK 13.1 standalone NVENC proof isolated from Kyber/Kymedia's pinned nv-codec-headers n12.1.14.0; later integration compatibility remains unclaimed.
+- [Phase 01]: Advertise only tuples proven from the exact current NV12 lease; incompatible HEVC inputs and Ampere-ineligible AV1 stay terminal and non-advertised.
+- [Phase 01]: Use distinct post-repair archive schemas and dispatch verification by exact matching index/manifest contract so PASS support cannot loosen pre-reboot history.
+- [Phase 01]: Parse only a bounded IDR slice-header prefix while hashing and clearing the complete capped NVENC bitstream.
 
 ### Pending Todos
 
@@ -118,7 +123,6 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: HOST-01/HOST-02/HOST-03 are proven on real Xorg with matching NVIDIA kernel/userspace 610.43.03 and exact MST output DP-0.3; HOST-04 is the remaining G0 blocker.
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
 
@@ -130,6 +134,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-29T23:08:00.657Z
-Stopped at: Completed 01-09-PLAN.md
+Last session: 2026-07-30T00:18:29.330Z
+Stopped at: Completed 01-10-PLAN.md
 Resume file: None

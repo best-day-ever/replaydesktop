@@ -64,7 +64,7 @@ with immersive control and working clipboard synchronization.
   for encoder registration. The NVENC registration/mapping/input boundary
   remains explicitly unproven until HOST-04.
 
-- [ ] **HOST-04**: The host accounts for the complete
+- [x] **HOST-04**: The host accounts for the complete
   registration/mapping/input/copy boundary from the application-owned capture
   surface into NVENC, then queries and successfully probes each advertised
   codec/profile/chroma/bit-depth tuple on the actual GPU and driver before
@@ -337,7 +337,7 @@ requirements are intentionally excluded.
 | HOST-01 | Phase 1 | Complete |
 | HOST-02 | Phase 1 | Complete |
 | HOST-03 | Phase 1 | Complete |
-| HOST-04 | Phase 1 | Pending |
+| HOST-04 | Phase 1 | Complete |
 | HOST-05 | Phase 3 | Pending |
 | HOST-06 | Phase 3 | Pending |
 | CODE-01 | Phase 4 | Pending |

@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Completed 260731-263-PLAN.md; safe vlc-rs bridge 260731-30k is next
-last_updated: "2026-07-31T03:30:00Z"
+stopped_at: Packaged 260731-df1 metrics dashboard; manual live GUI smoke is pending
+last_updated: "2026-07-31T08:05:22Z"
 last_activity: 2026-07-31
-last_activity_desc: "Completed quick task 260731-263: host capture-begin, sequence, and terminal-loss evidence"
+last_activity_desc: "Packaged quick task 260731-df1: prototype technical metrics cards; manual smoke pending"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-31 — Completed quick task 260731-263: host capture-begin, sequence, and terminal-loss evidence
+Last activity: 2026-07-31 — Packaged quick task 260731-df1: prototype technical metrics cards; manual smoke pending
 
 Progress: [██████████] 100%
 
@@ -157,6 +157,7 @@ None yet.
 | 260730-swz | Loss-aware Linux host capture, encode, payload, queue, drop, and forwarding telemetry | 2026-07-30 | fd3a11f | human_needed | [260730-swz-implement-the-linux-host-native-telemetr](./quick/260730-swz-implement-the-linux-host-native-telemetr/) |
 | 260730-w4b | Truthful macOS native codec/chroma, decoder, VideoToolbox, surface, drop, and enqueue telemetry | 2026-07-30 | 8ba945d | human_needed | [260730-w4b-expose-truthful-macos-native-decoder-tel](./quick/260730-w4b-expose-truthful-macos-native-decoder-tel/) |
 | 260731-263 | Host NvFBC capture-begin, accepted-batch sequence, and terminal-loss evidence | 2026-07-31 | ba5b985 | Verified | [260731-263-implement-the-loss-aware-rust-telemetry-](./quick/260731-263-implement-the-loss-aware-rust-telemetry-/) |
+| 260731-df1 | Prototype technical metrics cards and arm64 package | 2026-07-31 | eeeb5c6 | Needs Review | [260731-df1-prototype-only-technical-metrics-dashboa](./quick/260731-df1-prototype-only-technical-metrics-dashboa/) |
 
 ## Deferred Items
 
@@ -166,6 +167,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-31T03:30:00Z
-Stopped at: Completed 260731-263-PLAN.md; safe vlc-rs bridge 260731-30k is next
+Last session: 2026-07-31T08:05:22Z
+Stopped at: Packaged 260731-df1 metrics dashboard; manual live GUI smoke is pending
 Resume file: None

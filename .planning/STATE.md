@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Completed 260730-w4b-PLAN.md; real decode/render event run remains human-needed
-last_updated: "2026-07-30T23:15:33Z"
-last_activity: 2026-07-30
-last_activity_desc: "Completed quick task 260730-w4b: truthful macOS native decoder telemetry"
+stopped_at: Completed 260731-263-PLAN.md; safe vlc-rs bridge 260731-30k is next
+last_updated: "2026-07-31T03:30:00Z"
+last_activity: 2026-07-31
+last_activity_desc: "Completed quick task 260731-263: host capture-begin, sequence, and terminal-loss evidence"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-30 — Completed quick task 260730-w4b: truthful macOS native decoder telemetry
+Last activity: 2026-07-31 — Completed quick task 260731-263: host capture-begin, sequence, and terminal-loss evidence
 
 Progress: [██████████] 100%
 
@@ -156,6 +156,7 @@ None yet.
 | 260730-mqr | Bidirectional Text+HTML clipboard, directional policy gates, and private v0.3.0-spike.1 prerelease | 2026-07-30 | c1f48ad | human_needed | [260730-mqr-implement-privacy-correct-bidirectional-](./quick/260730-mqr-implement-privacy-correct-bidirectional-/) |
 | 260730-swz | Loss-aware Linux host capture, encode, payload, queue, drop, and forwarding telemetry | 2026-07-30 | fd3a11f | human_needed | [260730-swz-implement-the-linux-host-native-telemetr](./quick/260730-swz-implement-the-linux-host-native-telemetr/) |
 | 260730-w4b | Truthful macOS native codec/chroma, decoder, VideoToolbox, surface, drop, and enqueue telemetry | 2026-07-30 | 8ba945d | human_needed | [260730-w4b-expose-truthful-macos-native-decoder-tel](./quick/260730-w4b-expose-truthful-macos-native-decoder-tel/) |
+| 260731-263 | Host NvFBC capture-begin, accepted-batch sequence, and terminal-loss evidence | 2026-07-31 | ba5b985 | Verified | [260731-263-implement-the-loss-aware-rust-telemetry-](./quick/260731-263-implement-the-loss-aware-rust-telemetry-/) |
 
 ## Deferred Items
 
@@ -165,6 +166,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-30T23:15:33Z
-Stopped at: Completed 260730-w4b-PLAN.md; real decode/render event run remains human-needed
+Last session: 2026-07-31T03:30:00Z
+Stopped at: Completed 260731-263-PLAN.md; safe vlc-rs bridge 260731-30k is next
 Resume file: None

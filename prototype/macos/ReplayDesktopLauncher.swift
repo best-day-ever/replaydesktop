@@ -334,6 +334,280 @@ private struct TailCursor {
     var offset: UInt64 = 0
 }
 
+private enum TerminalFrameOutcome: String, Equatable {
+    case displayed = "Displayed"
+    case skipped = "Skipped"
+}
+
+private struct CurrentMetrics: Equatable {
+    var hostAcquiredToEncodedMicros: Int64?
+    var hostEncodedToSentMicros: Int64?
+    var networkLocalRTTMicros: Int64?
+    var networkRemoteRTTMicros: Int64?
+    var networkPingDelayMicros: Int64?
+    var networkLocalPacketsLost: Int64?
+    var networkRemotePacketsLost: Int64?
+    var networkLocalDroppedPackets: Int64?
+    var networkRemoteDroppedPackets: Int64?
+    var clientReceivedToDecodedMicros: Int64?
+    var clientDecodedToDisplayedMicros: Int64?
+    var terminalFrameOutcome: TerminalFrameOutcome?
+
+    var isUnknown: Bool {
+        hostAcquiredToEncodedMicros == nil
+            && hostEncodedToSentMicros == nil
+            && networkLocalRTTMicros == nil
+            && networkRemoteRTTMicros == nil
+            && networkPingDelayMicros == nil
+            && networkLocalPacketsLost == nil
+            && networkRemotePacketsLost == nil
+            && networkLocalDroppedPackets == nil
+            && networkRemoteDroppedPackets == nil
+            && clientReceivedToDecodedMicros == nil
+            && clientDecodedToDisplayedMicros == nil
+            && terminalFrameOutcome == nil
+    }
+}
+
+private struct MetricsJSONLReducer {
+    private enum VideoEvent: String {
+        case acquired
+        case encoding
+        case encoded
+        case sent
+        case received
+        case decoding
+        case decoded
+        case prepared
+        case displayed
+        case skipped
+    }
+
+    private struct FrameKey: Hashable {
+        let sourceID: UInt32
+        let pts: UInt64
+    }
+
+    private struct FrameMetrics {
+        var timestamps: [VideoEvent: Int64] = [:]
+    }
+
+    private(set) var current = CurrentMetrics()
+    private var frames: [FrameKey: FrameMetrics] = [:]
+    private var frameOrder: [FrameKey] = []
+    private var incompleteLine = Data()
+
+    private let maximumRecentFrames = 256
+
+    mutating func reset() {
+        current = CurrentMetrics()
+        frames.removeAll(keepingCapacity: true)
+        frameOrder.removeAll(keepingCapacity: true)
+        incompleteLine.removeAll(keepingCapacity: true)
+    }
+
+    mutating func consume(_ chunk: Data) {
+        guard !chunk.isEmpty else {
+            return
+        }
+
+        incompleteLine.append(chunk)
+        var lineStart = incompleteLine.startIndex
+        while let newline = incompleteLine[lineStart...].firstIndex(of: 0x0A) {
+            consumeLine(Data(incompleteLine[lineStart ..< newline]))
+            lineStart = incompleteLine.index(after: newline)
+        }
+        if lineStart != incompleteLine.startIndex {
+            incompleteLine.removeSubrange(incompleteLine.startIndex ..< lineStart)
+        }
+    }
+
+    private mutating func consumeLine(_ line: Data) {
+        guard !line.isEmpty,
+              let value = try? JSONSerialization.jsonObject(with: line),
+              let object = value as? [String: Any],
+              object["log_type"] as? String == "raw_metric",
+              let type = object["type"] as? String
+        else {
+            return
+        }
+
+        switch type {
+        case "video":
+            consumeVideo(object)
+        case "network_local", "network_remote":
+            consumeNetworkStats(object, type: type)
+        case "network_ping":
+            consumeNetworkPing(object)
+        default:
+            return
+        }
+    }
+
+    private mutating func consumeVideo(_ object: [String: Any]) {
+        guard let eventName = object["event"] as? String,
+              let event = VideoEvent(rawValue: eventName),
+              let sourceIDValue = unsignedInteger(object["source_id"]),
+              sourceIDValue <= UInt64(UInt32.max),
+              let pts = unsignedInteger(object["pts"]),
+              let timestamp = signedInteger(object["ts"])
+        else {
+            return
+        }
+
+        let key = FrameKey(sourceID: UInt32(sourceIDValue), pts: pts)
+        var frame = frames[key] ?? FrameMetrics()
+        if frames[key] == nil {
+            frameOrder.append(key)
+        }
+        frame.timestamps[event] = timestamp
+        frames[key] = frame
+
+        if let duration = nonnegativeDelta(
+            from: frame.timestamps[.acquired],
+            to: frame.timestamps[.encoded]
+        ) {
+            current.hostAcquiredToEncodedMicros = duration
+        }
+        if let duration = nonnegativeDelta(
+            from: frame.timestamps[.encoded],
+            to: frame.timestamps[.sent]
+        ) {
+            current.hostEncodedToSentMicros = duration
+        }
+        if let duration = nonnegativeDelta(
+            from: frame.timestamps[.received],
+            to: frame.timestamps[.decoded]
+        ) {
+            current.clientReceivedToDecodedMicros = duration
+        }
+        if let duration = nonnegativeDelta(
+            from: frame.timestamps[.decoded],
+            to: frame.timestamps[.displayed]
+        ) {
+            current.clientDecodedToDisplayedMicros = duration
+        }
+
+        switch event {
+        case .displayed:
+            current.terminalFrameOutcome = .displayed
+        case .skipped:
+            current.terminalFrameOutcome = .skipped
+        case .acquired, .encoding, .encoded, .sent, .received, .decoding, .decoded, .prepared:
+            break
+        }
+
+        while frameOrder.count > maximumRecentFrames {
+            frames.removeValue(forKey: frameOrder.removeFirst())
+        }
+    }
+
+    private mutating func consumeNetworkStats(_ object: [String: Any], type: String) {
+        guard let rtt = signedInteger(object["rtt_micros"]),
+              let packetsLost = signedInteger(object["packets_lost"]),
+              let droppedPackets = signedInteger(object["dropped_packets"]),
+              rtt >= -1,
+              packetsLost >= -1,
+              droppedPackets >= -1
+        else {
+            return
+        }
+
+        let measuredRTT = rtt == -1 ? nil : rtt
+        let measuredPacketsLost = packetsLost == -1 ? nil : packetsLost
+        let measuredDroppedPackets = droppedPackets == -1 ? nil : droppedPackets
+
+        if type == "network_local" {
+            current.networkLocalRTTMicros = measuredRTT
+            current.networkLocalPacketsLost = measuredPacketsLost
+            current.networkLocalDroppedPackets = measuredDroppedPackets
+        } else {
+            current.networkRemoteRTTMicros = measuredRTT
+            current.networkRemotePacketsLost = measuredPacketsLost
+            current.networkRemoteDroppedPackets = measuredDroppedPackets
+        }
+    }
+
+    private mutating func consumeNetworkPing(_ object: [String: Any]) {
+        guard signedInteger(object["offset_micros"]) != nil,
+              let delay = signedInteger(object["delay_micros"]),
+              delay >= -1
+        else {
+            return
+        }
+        current.networkPingDelayMicros = delay == -1 ? nil : delay
+    }
+
+    private func signedInteger(_ value: Any?) -> Int64? {
+        guard let value, !(value is Bool), let number = value as? NSNumber else {
+            return nil
+        }
+        return Int64(number.stringValue)
+    }
+
+    private func unsignedInteger(_ value: Any?) -> UInt64? {
+        guard let value, !(value is Bool), let number = value as? NSNumber else {
+            return nil
+        }
+        return UInt64(number.stringValue)
+    }
+
+    private func nonnegativeDelta(from start: Int64?, to end: Int64?) -> Int64? {
+        guard let start, let end else {
+            return nil
+        }
+        let (duration, overflow) = end.subtractingReportingOverflow(start)
+        guard !overflow, duration >= 0 else {
+            return nil
+        }
+        return duration
+    }
+}
+
+private enum MetricsCardField: Hashable {
+    case hostAcquiredToEncoded
+    case hostEncodedToSent
+    case networkLocalRTT
+    case networkRemoteRTT
+    case networkPingDelay
+    case networkLocalPacketsLost
+    case networkRemotePacketsLost
+    case networkLocalDroppedPackets
+    case networkRemoteDroppedPackets
+    case clientReceivedToDecoded
+    case clientDecodedToDisplayed
+    case terminalFrameOutcome
+
+    var title: String {
+        switch self {
+        case .hostAcquiredToEncoded:
+            return "Acquired → encoded"
+        case .hostEncodedToSent:
+            return "Encoded → sent"
+        case .networkLocalRTT:
+            return "Local RTT"
+        case .networkRemoteRTT:
+            return "Remote RTT"
+        case .networkPingDelay:
+            return "Ping delay"
+        case .networkLocalPacketsLost:
+            return "Local packets lost"
+        case .networkRemotePacketsLost:
+            return "Remote packets lost"
+        case .networkLocalDroppedPackets:
+            return "Local dropped"
+        case .networkRemoteDroppedPackets:
+            return "Remote dropped"
+        case .clientReceivedToDecoded:
+            return "Received → decoded"
+        case .clientDecodedToDisplayed:
+            return "Decoded → displayed"
+        case .terminalFrameOutcome:
+            return "Latest frame"
+        }
+    }
+}
+
 @MainActor
 private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private let window: NSWindow
@@ -372,12 +646,14 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
     private let connectButton = NSButton(title: "Connect", target: nil, action: nil)
     private let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
     private let telemetryView = NSTextView()
+    private var metricsValueLabels: [MetricsCardField: NSTextField] = [:]
 
     private var child: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var telemetryTimer: Timer?
     private var tailCursors: [URL: TailCursor] = [:]
+    private var metricsReducer = MetricsJSONLReducer()
     private var transcript = ""
     private var disconnectRequested = false
 
@@ -387,7 +663,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
     override init() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 900),
+            contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 1_000),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -396,12 +672,13 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
         configureControls()
         buildInterface()
+        renderCurrentMetrics()
         loadPreferences()
         updateDerivedControls()
         updateCommandPreview()
 
         window.title = "ReplayDesktop — Technical Launcher"
-        window.minSize = NSSize(width: 880, height: 760)
+        window.minSize = NSSize(width: 880, height: 820)
         window.center()
         window.delegate = self
     }
@@ -640,6 +917,43 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         actionRow.spacing = 10
         root.addArrangedSubview(actionRow)
 
+        let metricsCards = NSStackView(views: [
+            makeMetricsCard(
+                title: "Host",
+                fields: [
+                    .hostAcquiredToEncoded,
+                    .hostEncodedToSent,
+                ]
+            ),
+            makeMetricsCard(
+                title: "Network",
+                fields: [
+                    .networkLocalRTT,
+                    .networkRemoteRTT,
+                    .networkPingDelay,
+                    .networkLocalPacketsLost,
+                    .networkRemotePacketsLost,
+                    .networkLocalDroppedPackets,
+                    .networkRemoteDroppedPackets,
+                ]
+            ),
+            makeMetricsCard(
+                title: "Client",
+                fields: [
+                    .clientReceivedToDecoded,
+                    .clientDecodedToDisplayed,
+                    .terminalFrameOutcome,
+                ]
+            ),
+        ])
+        metricsCards.orientation = .horizontal
+        metricsCards.alignment = .top
+        metricsCards.distribution = .fillEqually
+        metricsCards.spacing = 10
+        root.addArrangedSubview(metricsCards)
+        constrainWidth(metricsCards, to: root)
+        metricsCards.heightAnchor.constraint(equalToConstant: 132).isActive = true
+
         let telemetryHeader = NSStackView()
         telemetryHeader.orientation = .horizontal
         telemetryHeader.alignment = .centerY
@@ -663,7 +977,147 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         telemetryView.textContainer?.widthTracksTextView = true
         root.addArrangedSubview(scrollView)
         constrainWidth(scrollView, to: root)
-        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+    }
+
+    private func makeMetricsCard(
+        title: String,
+        fields: [MetricsCardField]
+    ) -> NSView {
+        let box = NSBox(frame: .zero)
+        box.title = title
+        box.titlePosition = .atTop
+        box.boxType = .primary
+
+        let container = NSView()
+        box.contentView = container
+
+        let values = NSStackView()
+        values.orientation = .vertical
+        values.alignment = .leading
+        values.spacing = 2
+        values.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(values)
+
+        NSLayoutConstraint.activate([
+            values.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            values.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            values.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            values.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -4),
+        ])
+
+        for field in fields {
+            let name = NSTextField(labelWithString: field.title)
+            name.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            name.textColor = .secondaryLabelColor
+            name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+            let value = NSTextField(labelWithString: "Unknown")
+            value.font = .monospacedSystemFont(
+                ofSize: NSFont.smallSystemFontSize,
+                weight: .medium
+            )
+            value.alignment = .right
+            value.setAccessibilityLabel("\(title) \(field.title)")
+            value.setContentHuggingPriority(.required, for: .horizontal)
+            value.setContentCompressionResistancePriority(.required, for: .horizontal)
+            metricsValueLabels[field] = value
+
+            let row = NSStackView(views: [name, value])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.distribution = .fill
+            row.spacing = 6
+            values.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: values.widthAnchor).isActive = true
+        }
+
+        return box
+    }
+
+    private func renderCurrentMetrics() {
+        let metrics = metricsReducer.current
+        setMetricValue(
+            .hostAcquiredToEncoded,
+            formattedMilliseconds(metrics.hostAcquiredToEncodedMicros)
+        )
+        setMetricValue(
+            .hostEncodedToSent,
+            formattedMilliseconds(metrics.hostEncodedToSentMicros)
+        )
+        setMetricValue(
+            .networkLocalRTT,
+            formattedMilliseconds(metrics.networkLocalRTTMicros)
+        )
+        setMetricValue(
+            .networkRemoteRTT,
+            formattedMilliseconds(metrics.networkRemoteRTTMicros)
+        )
+        setMetricValue(
+            .networkPingDelay,
+            formattedMilliseconds(metrics.networkPingDelayMicros)
+        )
+        setMetricValue(
+            .networkLocalPacketsLost,
+            formattedCounter(metrics.networkLocalPacketsLost)
+        )
+        setMetricValue(
+            .networkRemotePacketsLost,
+            formattedCounter(metrics.networkRemotePacketsLost)
+        )
+        setMetricValue(
+            .networkLocalDroppedPackets,
+            formattedCounter(metrics.networkLocalDroppedPackets)
+        )
+        setMetricValue(
+            .networkRemoteDroppedPackets,
+            formattedCounter(metrics.networkRemoteDroppedPackets)
+        )
+        setMetricValue(
+            .clientReceivedToDecoded,
+            formattedMilliseconds(metrics.clientReceivedToDecodedMicros)
+        )
+        setMetricValue(
+            .clientDecodedToDisplayed,
+            formattedMilliseconds(metrics.clientDecodedToDisplayedMicros)
+        )
+        setMetricValue(
+            .terminalFrameOutcome,
+            metrics.terminalFrameOutcome?.rawValue ?? "Unknown"
+        )
+    }
+
+    private func setMetricValue(_ field: MetricsCardField, _ value: String) {
+        metricsValueLabels[field]?.stringValue = value
+    }
+
+    private func formattedMilliseconds(_ microseconds: Int64?) -> String {
+        guard let microseconds, microseconds >= 0 else {
+            return "Unknown"
+        }
+        let wholeMilliseconds = microseconds / 1_000
+        let remainder = microseconds % 1_000
+        guard remainder != 0 else {
+            return "\(wholeMilliseconds) ms"
+        }
+
+        var fraction = String(format: "%03lld", remainder)
+        while fraction.last == "0" {
+            fraction.removeLast()
+        }
+        return "\(wholeMilliseconds).\(fraction) ms"
+    }
+
+    private func formattedCounter(_ value: Int64?) -> String {
+        guard let value, value >= 0 else {
+            return "Unknown"
+        }
+        return String(value)
+    }
+
+    private func resetMetricsDashboard() {
+        metricsReducer.reset()
+        renderCurrentMetrics()
     }
 
     private func sectionTitle(_ string: String) -> NSTextField {
@@ -939,6 +1393,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
         disconnectRequested = false
         tailCursors.removeAll()
+        resetMetricsDashboard()
         appendTranscript(
             "\n[launcher] cwd=\(runtimeDirectory.path)\n"
                 + "[launcher] command=\(commandDescription(executable: executable, arguments: arguments))\n"
@@ -1023,6 +1478,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         stdoutPipe = nil
         stderrPipe = nil
         child = nil
+        resetMetricsDashboard()
 
         let requested = disconnectRequested
         disconnectRequested = false
@@ -1098,6 +1554,10 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             cursor.offset += UInt64(data.count)
             tailCursors[url] = cursor
             if !data.isEmpty {
+                if label == "metrics.json" {
+                    metricsReducer.consume(data)
+                    renderCurrentMetrics()
+                }
                 appendTranscript("[\(label)] \(String(decoding: data, as: UTF8.self))")
             }
         } catch {
@@ -1311,6 +1771,149 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
     }
 }
 
+private func runMetricsReducerSelfTest() throws {
+    func line(_ json: String) -> Data {
+        Data((json + "\n").utf8)
+    }
+
+    var reducer = MetricsJSONLReducer()
+    try require(reducer.current.isUnknown, "metrics did not initialize to Unknown")
+
+    let encoded = line(
+        #"{"log_type":"raw_metric","type":"video","event":"encoded","source_id":7,"pts":41,"ts":3000}"#
+    )
+    let split = encoded.count / 2
+    reducer.consume(Data(encoded.prefix(split)))
+    try require(reducer.current.isUnknown, "partial JSONL line changed metrics")
+    reducer.consume(Data(encoded.dropFirst(split)))
+    try require(
+        reducer.current.hostAcquiredToEncodedMicros == nil,
+        "encoded event alone fabricated a host duration"
+    )
+
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"acquired","source_id":7,"pts":41,"ts":1000}"#
+        )
+    )
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"sent","source_id":7,"pts":41,"ts":4500}"#
+        )
+    )
+    try require(
+        reducer.current.hostAcquiredToEncodedMicros == 2_000
+            && reducer.current.hostEncodedToSentMicros == 1_500,
+        "out-of-order host events did not produce valid same-frame deltas"
+    )
+
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"displayed","source_id":7,"pts":41,"ts":11000}"#
+        )
+    )
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"received","source_id":7,"pts":41,"ts":6000}"#
+        )
+    )
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"decoded","source_id":7,"pts":41,"ts":9000}"#
+        )
+    )
+    try require(
+        reducer.current.clientReceivedToDecodedMicros == 3_000
+            && reducer.current.clientDecodedToDisplayedMicros == 2_000
+            && reducer.current.terminalFrameOutcome == .displayed,
+        "out-of-order client events did not produce valid deltas and Displayed outcome"
+    )
+
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"network_local","rtt_micros":1800,"packets_lost":7,"dropped_packets":3}"#
+        )
+    )
+    try require(
+        reducer.current.networkLocalRTTMicros == 1_800
+            && reducer.current.networkLocalPacketsLost == 7
+            && reducer.current.networkLocalDroppedPackets == 3,
+        "valid local network counters were not accepted"
+    )
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"network_local","rtt_micros":-1,"packets_lost":-1,"dropped_packets":-1}"#
+        )
+    )
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"network_remote","rtt_micros":-1,"packets_lost":-1,"dropped_packets":-1}"#
+        )
+    )
+    try require(
+        reducer.current.networkLocalRTTMicros == nil
+            && reducer.current.networkLocalPacketsLost == nil
+            && reducer.current.networkLocalDroppedPackets == nil
+            && reducer.current.networkRemoteRTTMicros == nil
+            && reducer.current.networkRemotePacketsLost == nil
+            && reducer.current.networkRemoteDroppedPackets == nil,
+        "network -1 sentinels did not remain Unknown"
+    )
+
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"network_ping","offset_micros":-250,"delay_micros":2300}"#
+        )
+    )
+    try require(
+        reducer.current.networkPingDelayMicros == 2_300,
+        "valid ping delay with a signed offset was not accepted"
+    )
+
+    let beforeMalformed = reducer.current
+    reducer.consume(line(#"{"log_type":"raw_metric","type":"video","event":"encoded""#))
+    reducer.consume(
+        line(
+            #"{"log_type":"frame_metric","type":"video","event":"encoded","source_id":7,"pts":41,"ts":9999}"#
+        )
+    )
+    try require(
+        reducer.current == beforeMalformed,
+        "malformed or unsupported JSON changed current metrics"
+    )
+
+    reducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"skipped","source_id":7,"pts":42,"ts":12000}"#
+        )
+    )
+    try require(
+        reducer.current.terminalFrameOutcome == .skipped,
+        "Skipped terminal outcome was not reported"
+    )
+
+    var negativeDeltaReducer = MetricsJSONLReducer()
+    negativeDeltaReducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"acquired","source_id":1,"pts":1,"ts":5000}"#
+        )
+    )
+    negativeDeltaReducer.consume(
+        line(
+            #"{"log_type":"raw_metric","type":"video","event":"encoded","source_id":1,"pts":1,"ts":4000}"#
+        )
+    )
+    try require(
+        negativeDeltaReducer.current.hostAcquiredToEncodedMicros == nil,
+        "negative video delta became a measured value"
+    )
+
+    reducer.consume(Data(#"{"log_type":"raw_metric""#.utf8))
+    reducer.reset()
+    reducer.consume(Data(#","type":"network_ping","offset_micros":0,"delay_micros":1}"#.utf8))
+    try require(reducer.current.isUnknown, "reset retained metrics or an incomplete JSONL line")
+}
+
 private func runSelfTest() -> Int32 {
     do {
         try require(
@@ -1471,10 +2074,14 @@ private func runSelfTest() -> Int32 {
             "launcher dry run accepted a working keyboard-grab request"
         )
 
+        try runMetricsReducerSelfTest()
+
         print(
             "SELF-TEST PASS: \(combinations) codec/display/audio/transport combinations; "
                 + "input toggles mouse + focused keyboard; immersive grab unavailable; "
-                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard opt-in and independent"
+                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard opt-in and independent; "
+                + "metrics JSONL fixtures passed (Unknown/reset, split/out-of-order, "
+                + "same-clock deltas, sentinels, malformed, skipped, negative rejection)"
         )
         return 0
     } catch {

@@ -1,11 +1,11 @@
 diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
-index 2814dd8..0cc9c7e 100644
+index 2814dd8..d984e6d 100644
 --- a/include/vlc/libvlc_media_player.h
 +++ b/include/vlc/libvlc_media_player.h
-@@ -231,6 +231,103 @@ LIBVLC_API void libvlc_media_player_release( libvlc_media_player_t *p_mi );
+@@ -231,6 +231,140 @@ LIBVLC_API void libvlc_media_player_release( libvlc_media_player_t *p_mi );
   */
  LIBVLC_API libvlc_media_player_t *libvlc_media_player_retain( libvlc_media_player_t *p_mi );
- 
+
 +/**
 + * Opaque video-path callback release request.
 + *
@@ -44,6 +44,9 @@ index 2814dd8..0cc9c7e 100644
 + * means the callback retained a worker handle before enqueue and transferred
 + * it to work that will call libvlc_video_path_release_request_execute().
 + * Returning nonzero rejects the handoff and transfers no handle.
++ *
++ * This callback can run from the last publisher's epilogue. It must be
++ * nonblocking and publisher-safe, and must not execute the request inline.
 + */
 +typedef int (*libvlc_video_path_release_dispatch_cb)(
 +    void *opaque,
@@ -56,6 +59,10 @@ index 2814dd8..0cc9c7e 100644
 + * media-player release returned, and the dispatcher callback returned. It
 + * does not prove that the player was destroyed, telemetry ended cleanly, or
 + * any remote peer received data.
++ *
++ * Completion can run on the executing control thread or on the
++ * dispatcher-return path, including the last publisher thread. It must
++ * therefore be nonblocking and safe in either context.
 + */
 +typedef void (*libvlc_video_path_release_complete_cb)(void *opaque);
 +
@@ -69,8 +76,10 @@ index 2814dd8..0cc9c7e 100644
 + *
 + * With no active publisher, release and completion run synchronously on the
 + * initiating control thread before this function returns. With an active
-+ * publisher, this function never waits; the last publisher only dispatches
-+ * the ready request, and a pre-existing control worker must execute it.
++ * publisher, this function never waits; the last publisher invokes the
++ * nonblocking dispatcher, and a pre-existing control worker must execute the
++ * request. If that worker releases before the dispatcher returns, the last
++ * publisher can also invoke the nonblocking completion callback.
 + */
 +LIBVLC_API libvlc_video_path_release_result_t
 +libvlc_media_player_release_video_path_fenced(
@@ -81,24 +90,52 @@ index 2814dd8..0cc9c7e 100644
 +    void *complete_opaque,
 +    libvlc_video_path_release_request_t **out_request);
 +
++/**
++ * Retain an independent observer, retry, or queue/worker handle.
++ *
++ * The internal lifecycle reference keeps a consumed player reference safe
++ * even if the returned observer is released immediately. It does not create
++ * a retry actor: before an accepted dispatch, a control subsystem that needs
++ * rejection recovery must retain or receive a distinct retry handle.
++ */
 +LIBVLC_API libvlc_video_path_release_request_t *
 +libvlc_video_path_release_request_retain(
 +    libvlc_video_path_release_request_t *request);
 +
++/**
++ * Release one request handle.
++ *
++ * The same handle must not be released concurrently with another operation
++ * that uses it. Distinct retained handles may be released independently.
++ */
 +LIBVLC_API void libvlc_video_path_release_request_release(
 +    libvlc_video_path_release_request_t *request);
 +
++/** Acquire and return the request's current stable state. */
 +LIBVLC_API libvlc_video_path_release_state_t
 +libvlc_video_path_release_request_get_state(
 +    const libvlc_video_path_release_request_t *request);
 +
++/** Return true only when an acquire load observes the READY retry state. */
 +LIBVLC_API bool libvlc_video_path_release_request_is_ready(
 +    const libvlc_video_path_release_request_t *request);
 +
++/**
++ * Retry the caller dispatcher from READY.
++ *
++ * Dispatch rejection restores READY only if no execute operation advanced the
++ * request. A nonzero dispatcher result transfers no queue/worker handle.
++ */
 +LIBVLC_API libvlc_video_path_release_result_t
 +libvlc_video_path_release_request_redispatch(
 +    libvlc_video_path_release_request_t *request);
 +
++/**
++ * Release the consumed player reference from a safe control context.
++ *
++ * Exactly one READY, DISPATCHING, or DISPATCHED caller can win. Calls from a
++ * video-path publisher are rejected as BUSY without changing state.
++ */
 +LIBVLC_API libvlc_video_path_release_result_t
 +libvlc_video_path_release_request_execute(
 +    libvlc_video_path_release_request_t *request);
@@ -113,22 +150,22 @@ index 805cdee..99b2250 100644
 @@ -25,6 +25,8 @@
  #include <vlc_aout.h>
  #include <vlc_metrics.h>
- 
+
 +struct vlc_video_path_callback_registration;
 +
  /**
   * @defgroup vlc_player Player
   * @ingroup input
 @@ -3399,7 +3401,8 @@ vlc_player_SetMetricsCallback(vlc_player_t *player,
- 
+
  VLC_API int
  vlc_player_SetVideoPathCallback(vlc_player_t *player,
 -                                vlc_video_path_cb cb, void *sys);
 +    vlc_video_path_cb cb, void *sys,
 +    struct vlc_video_path_callback_registration **out_registration);
- 
+
  /** @} vlc_player__events */
- 
+
 diff --git a/lib/libvlc.sym b/lib/libvlc.sym
 index f7522db..946855e 100644
 --- a/lib/libvlc.sym
@@ -145,7 +182,7 @@ index f7522db..946855e 100644
 +libvlc_video_path_release_request_redispatch
 +libvlc_video_path_release_request_execute
 diff --git a/lib/media_player.c b/lib/media_player.c
-index e38bb6f..52ece1a 100644
+index e38bb6f..89f26c6 100644
 --- a/lib/media_player.c
 +++ b/lib/media_player.c
 @@ -46,9 +46,202 @@
@@ -153,9 +190,9 @@ index e38bb6f..52ece1a 100644
  #include "media_player_internal.h"
  #include "renderer_discoverer_internal.h"
 +#include "../src/misc/metrics.h"
- 
+
  #define ES_INIT (-2) /* -1 is reserved for ES deselect */
- 
+
 +_Static_assert(LIBVLC_VIDEO_PATH_RELEASE_WAITING_FOR_DRAIN == 0,
 +               "video-path release ABI drift");
 +_Static_assert(LIBVLC_VIDEO_PATH_RELEASE_READY == 1,
@@ -354,7 +391,7 @@ index e38bb6f..52ece1a 100644
 @@ -642,6 +835,8 @@ libvlc_media_player_new( libvlc_instance_t *instance )
          return NULL;
      }
- 
+
 +    atomic_init(&mp->video_path_registration, NULL);
 +
      /* Input */
@@ -362,19 +399,19 @@ index e38bb6f..52ece1a 100644
      var_Create (mp, "sout", VLC_VAR_STRING);
 @@ -882,6 +1077,10 @@ static void libvlc_media_player_destroy( libvlc_media_player_t *p_mi )
      vlc_player_Unlock(p_mi->player);
- 
+
      vlc_player_Delete(p_mi->player);
 +    struct vlc_video_path_callback_registration *registration =
 +        atomic_exchange_explicit(&p_mi->video_path_registration, NULL,
 +                                 memory_order_acq_rel);
 +    vlc_video_path_callback_registration_Release(registration);
- 
+
      libvlc_event_manager_destroy(&p_mi->event_manager);
      libvlc_media_release( p_mi->p_md );
 @@ -942,6 +1141,164 @@ libvlc_media_player_t *libvlc_media_player_retain( libvlc_media_player_t *p_mi )
      return p_mi;
  }
- 
+
 +libvlc_video_path_release_request_t *
 +libvlc_video_path_release_request_retain(
 +    libvlc_video_path_release_request_t *request)
@@ -536,7 +573,7 @@ index e38bb6f..52ece1a 100644
  /**************************************************************************
   * Set the Media descriptor associated with the instance.
   *
-@@ -2566,9 +2923,20 @@ int libvlc_media_player_set_video_path_callback(libvlc_media_player_t *mp,
+@@ -2566,8 +2923,19 @@ int libvlc_media_player_set_video_path_callback(libvlc_media_player_t *mp,
                                                  libvlc_video_path_cb cb,
                                                  void *sys)
  {
@@ -545,7 +582,6 @@ index e38bb6f..52ece1a 100644
 -    int ret = vlc_player_SetVideoPathCallback(mp->player, cb, sys);
 +    int ret = vlc_player_SetVideoPathCallback(mp->player, cb, sys,
 +                                              &registration);
-     vlc_player_Unlock(mp->player);
 +
 +    if (ret == VLC_SUCCESS)
 +    {
@@ -555,9 +591,9 @@ index e38bb6f..52ece1a 100644
 +        atomic_store_explicit(&mp->video_path_registration, registration,
 +                              memory_order_release);
 +    }
+     vlc_player_Unlock(mp->player);
      return ret;
  }
- 
 diff --git a/lib/media_player_internal.h b/lib/media_player_internal.h
 index 00a05ae..6f91520 100644
 --- a/lib/media_player_internal.h
@@ -568,7 +604,7 @@ index 00a05ae..6f91520 100644
      vlc_atomic_rc_t    rc;
 +    _Atomic(struct vlc_video_path_callback_registration *)
 +        video_path_registration;
- 
+
      vlc_player_t *player;
      vlc_player_listener_id *listener;
 diff --git a/src/misc/metrics.c b/src/misc/metrics.c
@@ -585,7 +621,7 @@ index 7150cf1..5c6385f 100644
  #include "player/player.h"
  #include "metrics.h"
  #include "libvlc.h"
- 
+
 +#define VLC_VIDEO_PATH_ADMISSION_CLOSED \
 +    (((uint_fast64_t) 1) << (sizeof(uint_fast64_t) * CHAR_BIT - 1))
 +#define VLC_VIDEO_PATH_ADMISSION_ACTIVE_MASK \
@@ -731,9 +767,9 @@ index 7150cf1..5c6385f 100644
 +        vlc_video_path_callback_registration_Release(metrics->video_path);
      free(metrics);
  }
- 
+
 @@ -153,15 +290,31 @@ vlc_metrics_AttachScalar(struct vlc_metrics *metrics,
- 
+
  int
  vlc_metrics_AttachVideoPath(struct vlc_metrics *metrics,
 -                            vlc_video_path_cb cb, void *sys)
@@ -745,7 +781,7 @@ index 7150cf1..5c6385f 100644
 -    if (metrics->video_path_cb)
 +    if (metrics->video_path)
          return VLC_EGENERIC;
- 
+
 -    metrics->video_path_cb = cb;
 -    metrics->video_path_sys = sys;
 +    struct vlc_video_path_callback_registration *registration =
@@ -767,7 +803,7 @@ index 7150cf1..5c6385f 100644
 +            vlc_video_path_callback_registration_Retain(registration);
      return VLC_SUCCESS;
  }
- 
+
 @@ -217,7 +370,9 @@ vlc_metrics_PushVideoPath(struct vlc_metrics *metrics,
  {
      if (!metrics || !video_path_event_is_valid(event))
@@ -777,12 +813,12 @@ index 7150cf1..5c6385f 100644
 +        metrics->video_path;
 +    if (!registration || !video_path_registration_enter(registration))
          return VLC_SUCCESS;
- 
+
      event->producer_seq =
 @@ -240,9 +395,15 @@ vlc_metrics_PushVideoPath(struct vlc_metrics *metrics,
          event->callback_loss_generation = loss.generation;
      }
- 
+
 -    int ret = metrics->video_path_cb(metrics->video_path_sys, event, 1);
 +    libvlc_video_path_cb cb = registration->cb;
 +    void *sys = registration->sys;
@@ -795,7 +831,7 @@ index 7150cf1..5c6385f 100644
 +    video_path_registration_leave(registration);
      return ret;
  }
- 
+
 diff --git a/src/misc/metrics.h b/src/misc/metrics.h
 index 3c9e8f6..3c0dd74 100644
 --- a/src/misc/metrics.h
@@ -803,7 +839,7 @@ index 3c9e8f6..3c0dd74 100644
 @@ -4,11 +4,14 @@
  #include <vlc_metrics.h>
  #include <stdatomic.h>
- 
+
 +struct vlc_video_path_callback_registration;
 +
 +typedef void (*vlc_video_path_drained_cb)(void *opaque);
@@ -814,12 +850,12 @@ index 3c9e8f6..3c0dd74 100644
 -    libvlc_video_path_cb video_path_cb;
 -    void *video_path_sys;
 +    struct vlc_video_path_callback_registration *video_path;
- 
+
      atomic_uint_fast64_t next_video_path_seq;
      atomic_uint_fast64_t callback_loss_publication;
 @@ -60,7 +63,24 @@ VLC_API int vlc_metrics_AttachScalar(struct vlc_metrics *metrics,
                                       vlc_metrics_cb cb, void *sys);
- 
+
  VLC_API int vlc_metrics_AttachVideoPath(struct vlc_metrics *metrics,
 -                                        vlc_video_path_cb cb, void *sys);
 +    vlc_video_path_cb cb, void *sys,
@@ -840,7 +876,7 @@ index 3c9e8f6..3c0dd74 100644
 +    vlc_video_path_drained_cb drained_cb, void *drained_opaque);
 +
 +VLC_API unsigned vlc_video_path_publisher_depth(void);
- 
+
  VLC_API void
  vlc_metrics_video_path_loss_update_begin(struct vlc_metrics *metrics);
 diff --git a/src/player/player.c b/src/player/player.c
@@ -848,7 +884,7 @@ index bc2f601..6032ea9 100644
 --- a/src/player/player.c
 +++ b/src/player/player.c
 @@ -2213,7 +2213,8 @@ vlc_player_SetMetricsCallback(vlc_player_t *player,
- 
+
  int
  vlc_player_SetVideoPathCallback(vlc_player_t *player,
 -                                vlc_video_path_cb cb, void *sys)
@@ -860,24 +896,34 @@ index bc2f601..6032ea9 100644
 @@ -2233,5 +2234,5 @@ vlc_player_SetVideoPathCallback(vlc_player_t *player,
          }
      }
- 
+
 -    return vlc_metrics_AttachVideoPath(metrics, cb, sys);
 +    return vlc_metrics_AttachVideoPath(metrics, cb, sys, out_registration);
  }
 diff --git a/test/libvlc/video_path_metrics.c b/test/libvlc/video_path_metrics.c
-index 63fc4c8..2535a4a 100644
+index 63fc4c8..e893060 100644
 --- a/test/libvlc/video_path_metrics.c
 +++ b/test/libvlc/video_path_metrics.c
-@@ -15,6 +15,8 @@
+@@ -7,14 +7,18 @@
+ #endif
+
+ #include <assert.h>
++#include <sched.h>
+ #include <stdatomic.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdlib.h>
+ #include <string.h>
+
  #include <vlc/vlc.h>
  #include <vlc_threads.h>
- 
+
 +#include "../../lib/libvlc_internal.h"
 +#include "../../lib/media_player_internal.h"
  #ifdef __APPLE__
  # include <CoreFoundation/CoreFoundation.h>
  # include <CoreVideo/CoreVideo.h>
-@@ -100,9 +102,9 @@ test_abi_and_validation(void)
+@@ -100,9 +104,9 @@ test_abi_and_validation(void)
      struct vlc_metrics *metrics = vlc_metrics_New();
      assert(metrics != NULL);
      assert(vlc_metrics_AttachVideoPath(
@@ -886,31 +932,31 @@ index 63fc4c8..2535a4a 100644
      assert(vlc_metrics_AttachVideoPath(
 -               metrics, video_path_callback, &capture) != VLC_SUCCESS);
 +               metrics, video_path_callback, &capture, NULL) != VLC_SUCCESS);
- 
+
      vlc_video_path_event event;
      vlc_video_path_event_Init(
-@@ -231,7 +233,7 @@ test_delayed_minmax_writer_ordering(void)
+@@ -231,7 +235,7 @@ test_delayed_minmax_writer_ordering(void)
      struct vlc_metrics *metrics = vlc_metrics_New();
      assert(metrics != NULL);
      assert(vlc_metrics_AttachVideoPath(
 -               metrics, video_path_callback, &capture) == VLC_SUCCESS);
 +               metrics, video_path_callback, &capture, NULL) == VLC_SUCCESS);
- 
+
      const struct emit_args args = {.metrics = metrics, .count = 1};
      vlc_thread_t first;
-@@ -267,7 +269,7 @@ test_concurrent_exact_loss_totals(void)
+@@ -267,7 +271,7 @@ test_concurrent_exact_loss_totals(void)
      struct vlc_metrics *metrics = vlc_metrics_New();
      assert(metrics != NULL);
      assert(vlc_metrics_AttachVideoPath(
 -               metrics, video_path_callback, &capture) == VLC_SUCCESS);
 +               metrics, video_path_callback, &capture, NULL) == VLC_SUCCESS);
- 
+
      const struct emit_args args = {
          .metrics = metrics,
-@@ -476,6 +478,168 @@ test_hardware_property_normalization(void)
+@@ -476,6 +480,1251 @@ test_hardware_property_normalization(void)
      assert(requested != LIBVLC_VIDEO_PATH_TRUTH_YES);
  }
- 
+
 +struct release_tracer {
 +    libvlc_media_player_t *player;
 +    libvlc_video_path_release_request_t *observer;
@@ -1073,14 +1119,1105 @@ index 63fc4c8..2535a4a 100644
 +    libvlc_release(instance);
 +}
 +
++#define FENCE_TEST_CANARY UINT64_C(0x7265706c61796665)
++
++enum fence_opaque_observer {
++    FENCE_CANARY_CALLBACK = 1u << 0,
++    FENCE_CANARY_DISPATCH = 1u << 1,
++    FENCE_CANARY_WORKER = 1u << 2,
++    FENCE_CANARY_COMPLETE = 1u << 3,
++};
++
++struct fence_fixture;
++
++struct fence_callback_userdata {
++    struct fence_fixture *fixture;
++    uint64_t canary;
++};
++
++struct fence_fixture {
++    libvlc_instance_t *instance;
++    libvlc_media_player_t *player;
++    struct vlc_metrics *metrics;
++    struct fence_callback_userdata *callback_userdata;
++    libvlc_video_path_release_request_t *observer;
++    _Atomic(libvlc_video_path_release_request_t *) queued;
++    vlc_thread_t worker;
++    bool worker_started;
++
++    vlc_sem_t callback_entered;
++    vlc_sem_t callback_continue;
++    vlc_sem_t queue_ready;
++    vlc_sem_t worker_continue;
++    vlc_sem_t worker_done;
++    vlc_sem_t dispatcher_entered;
++    vlc_sem_t dispatcher_continue;
++    vlc_sem_t completion_entered;
++    vlc_sem_t completion_continue;
++
++    atomic_bool block_callback;
++    atomic_bool block_worker;
++    atomic_bool block_dispatcher;
++    atomic_bool block_completion;
++    atomic_bool expect_loss_before_dispatch;
++    atomic_bool worker_shutdown;
++    atomic_int callback_result;
++    atomic_uint reject_dispatches;
++
++    atomic_uint callback_calls;
++    atomic_uint dispatch_calls;
++    atomic_uint dispatch_rejections;
++    atomic_uint worker_transfers;
++    atomic_uint worker_execute_calls;
++    atomic_uint completion_calls;
++    atomic_uint opaque_observers;
++    atomic_uint order_clock;
++    atomic_uint callback_return_order;
++    atomic_uint dispatch_order;
++    atomic_uint worker_order;
++    atomic_uint worker_return_order;
++    atomic_uint completion_order;
++    atomic_uint userdata_retirement_order;
++    atomic_uint_fast64_t callback_seq;
++    atomic_int worker_result;
++    /* Opaque reachability/lifetime marker, not a standalone memory-order litmus. */
++    uint64_t opaque_lifetime_canary;
++};
++
++static unsigned
++fence_stamp(struct fence_fixture *fixture)
++{
++    return atomic_fetch_add_explicit(&fixture->order_clock, 1,
++                                     memory_order_relaxed) + 1;
++}
++
++static void
++fence_observe_opaque(struct fence_fixture *fixture, unsigned observer)
++{
++    assert(fixture->opaque_lifetime_canary == FENCE_TEST_CANARY);
++    atomic_fetch_or_explicit(&fixture->opaque_observers, observer,
++                             memory_order_relaxed);
++}
++
++static int
++fence_callback(void *opaque,
++               const struct libvlc_video_path_event *events, size_t count)
++{
++    struct fence_callback_userdata *userdata = opaque;
++    assert(userdata != NULL);
++    assert(userdata->canary == FENCE_TEST_CANARY);
++    struct fence_fixture *fixture = userdata->fixture;
++    assert(events != NULL);
++    assert(count == 1);
++    fence_observe_opaque(fixture, FENCE_CANARY_CALLBACK);
++    atomic_fetch_add_explicit(&fixture->callback_calls, 1,
++                              memory_order_relaxed);
++    atomic_store_explicit(&fixture->callback_seq, events[0].producer_seq,
++                          memory_order_release);
++
++    if (atomic_load_explicit(&fixture->block_callback,
++                             memory_order_acquire))
++    {
++        vlc_sem_post(&fixture->callback_entered);
++        vlc_sem_wait(&fixture->callback_continue);
++    }
++
++    atomic_store_explicit(&fixture->callback_return_order,
++                          fence_stamp(fixture), memory_order_release);
++    return atomic_load_explicit(&fixture->callback_result,
++                                memory_order_acquire);
++}
++
++static bool
++fence_consume_rejection(struct fence_fixture *fixture)
++{
++    unsigned remaining = atomic_load_explicit(&fixture->reject_dispatches,
++                                               memory_order_acquire);
++    while (remaining != 0)
++    {
++        if (atomic_compare_exchange_weak_explicit(
++                &fixture->reject_dispatches, &remaining, remaining - 1,
++                memory_order_acq_rel, memory_order_acquire))
++            return true;
++    }
++    return false;
++}
++
++static int
++fence_dispatch(
++    void *opaque, libvlc_video_path_release_request_t *borrowed_request)
++{
++    struct fence_fixture *fixture = opaque;
++    assert(borrowed_request != NULL);
++    fence_observe_opaque(fixture, FENCE_CANARY_DISPATCH);
++    atomic_fetch_add_explicit(&fixture->dispatch_calls, 1,
++                              memory_order_relaxed);
++    atomic_store_explicit(&fixture->dispatch_order, fence_stamp(fixture),
++                          memory_order_release);
++    assert(atomic_load_explicit(&fixture->callback_return_order,
++                                memory_order_acquire) != 0);
++
++    if (atomic_load_explicit(&fixture->expect_loss_before_dispatch,
++                             memory_order_acquire))
++    {
++        struct vlc_video_path_loss_snapshot loss;
++        assert(vlc_metrics_video_path_loss_snapshot(fixture->metrics, &loss));
++        assert(loss.events == 1);
++        assert(loss.first_seq ==
++               atomic_load_explicit(&fixture->callback_seq,
++                                    memory_order_acquire));
++        assert(loss.last_seq == loss.first_seq);
++        assert(loss.generation == 1);
++    }
++
++    if (fence_consume_rejection(fixture))
++    {
++        atomic_fetch_add_explicit(&fixture->dispatch_rejections, 1,
++                                  memory_order_relaxed);
++        if (atomic_load_explicit(&fixture->block_dispatcher,
++                                 memory_order_acquire))
++        {
++            vlc_sem_post(&fixture->dispatcher_entered);
++            vlc_sem_wait(&fixture->dispatcher_continue);
++        }
++        return -1;
++    }
++
++    assert(fixture->worker_started);
++    libvlc_video_path_release_request_t *worker_handle =
++        libvlc_video_path_release_request_retain(borrowed_request);
++    assert(worker_handle != NULL);
++    libvlc_video_path_release_request_t *expected = NULL;
++    assert(atomic_compare_exchange_strong_explicit(
++        &fixture->queued, &expected, worker_handle,
++        memory_order_release, memory_order_relaxed));
++    atomic_fetch_add_explicit(&fixture->worker_transfers, 1,
++                              memory_order_relaxed);
++    vlc_sem_post(&fixture->queue_ready);
++
++    if (atomic_load_explicit(&fixture->block_dispatcher,
++                             memory_order_acquire))
++    {
++        vlc_sem_post(&fixture->dispatcher_entered);
++        vlc_sem_wait(&fixture->dispatcher_continue);
++    }
++    return 0;
++}
++
++static void
++fence_complete(void *opaque)
++{
++    struct fence_fixture *fixture = opaque;
++    fence_observe_opaque(fixture, FENCE_CANARY_COMPLETE);
++    atomic_fetch_add_explicit(&fixture->completion_calls, 1,
++                              memory_order_relaxed);
++    atomic_store_explicit(&fixture->completion_order, fence_stamp(fixture),
++                          memory_order_release);
++
++    if (atomic_load_explicit(&fixture->block_completion,
++                             memory_order_acquire))
++    {
++        vlc_sem_post(&fixture->completion_entered);
++        vlc_sem_wait(&fixture->completion_continue);
++    }
++
++    struct fence_callback_userdata *userdata = fixture->callback_userdata;
++    assert(userdata != NULL);
++    assert(userdata->canary == FENCE_TEST_CANARY);
++    userdata->canary = 0;
++    free(userdata);
++    fixture->callback_userdata = NULL;
++    atomic_store_explicit(&fixture->userdata_retirement_order,
++                          fence_stamp(fixture), memory_order_release);
++}
++
++static void *
++fence_worker(void *opaque)
++{
++    struct fence_fixture *fixture = opaque;
++    vlc_sem_wait(&fixture->queue_ready);
++    libvlc_video_path_release_request_t *request =
++        atomic_exchange_explicit(&fixture->queued, NULL,
++                                 memory_order_acq_rel);
++    if (request == NULL)
++    {
++        assert(atomic_load_explicit(&fixture->worker_shutdown,
++                                    memory_order_acquire));
++        vlc_sem_post(&fixture->worker_done);
++        return NULL;
++    }
++
++    if (atomic_load_explicit(&fixture->block_worker, memory_order_acquire))
++        vlc_sem_wait(&fixture->worker_continue);
++
++    fence_observe_opaque(fixture, FENCE_CANARY_WORKER);
++    atomic_fetch_add_explicit(&fixture->worker_execute_calls, 1,
++                              memory_order_relaxed);
++    atomic_store_explicit(&fixture->worker_order, fence_stamp(fixture),
++                          memory_order_release);
++    libvlc_video_path_release_result_t result =
++        libvlc_video_path_release_request_execute(request);
++    atomic_store_explicit(&fixture->worker_result, result,
++                          memory_order_release);
++    atomic_store_explicit(&fixture->worker_return_order,
++                          fence_stamp(fixture), memory_order_release);
++    libvlc_video_path_release_request_release(request);
++    vlc_sem_post(&fixture->worker_done);
++    return NULL;
++}
++
++static void
++fence_fixture_init(struct fence_fixture *fixture)
++{
++    memset(fixture, 0, sizeof(*fixture));
++    atomic_init(&fixture->queued, NULL);
++    atomic_init(&fixture->block_callback, false);
++    atomic_init(&fixture->block_worker, false);
++    atomic_init(&fixture->block_dispatcher, false);
++    atomic_init(&fixture->block_completion, false);
++    atomic_init(&fixture->expect_loss_before_dispatch, false);
++    atomic_init(&fixture->worker_shutdown, false);
++    atomic_init(&fixture->callback_result, 0);
++    atomic_init(&fixture->reject_dispatches, 0);
++    atomic_init(&fixture->callback_calls, 0);
++    atomic_init(&fixture->dispatch_calls, 0);
++    atomic_init(&fixture->dispatch_rejections, 0);
++    atomic_init(&fixture->worker_transfers, 0);
++    atomic_init(&fixture->worker_execute_calls, 0);
++    atomic_init(&fixture->completion_calls, 0);
++    atomic_init(&fixture->opaque_observers, 0);
++    atomic_init(&fixture->order_clock, 0);
++    atomic_init(&fixture->callback_return_order, 0);
++    atomic_init(&fixture->dispatch_order, 0);
++    atomic_init(&fixture->worker_order, 0);
++    atomic_init(&fixture->worker_return_order, 0);
++    atomic_init(&fixture->completion_order, 0);
++    atomic_init(&fixture->userdata_retirement_order, 0);
++    atomic_init(&fixture->callback_seq, 0);
++    atomic_init(&fixture->worker_result,
++                LIBVLC_VIDEO_PATH_RELEASE_INVALID);
++    fixture->opaque_lifetime_canary = FENCE_TEST_CANARY;
++
++    vlc_sem_init(&fixture->callback_entered, 0);
++    vlc_sem_init(&fixture->callback_continue, 0);
++    vlc_sem_init(&fixture->queue_ready, 0);
++    vlc_sem_init(&fixture->worker_continue, 0);
++    vlc_sem_init(&fixture->worker_done, 0);
++    vlc_sem_init(&fixture->dispatcher_entered, 0);
++    vlc_sem_init(&fixture->dispatcher_continue, 0);
++    vlc_sem_init(&fixture->completion_entered, 0);
++    vlc_sem_init(&fixture->completion_continue, 0);
++
++    fixture->instance = libvlc_new(0, NULL);
++    assert(fixture->instance != NULL);
++    fixture->player = libvlc_media_player_new(fixture->instance);
++    assert(fixture->player != NULL);
++    fixture->callback_userdata = malloc(sizeof(*fixture->callback_userdata));
++    assert(fixture->callback_userdata != NULL);
++    fixture->callback_userdata->fixture = fixture;
++    fixture->callback_userdata->canary = FENCE_TEST_CANARY;
++    assert(libvlc_media_player_set_video_path_callback(
++               fixture->player, fence_callback,
++               fixture->callback_userdata) == VLC_SUCCESS);
++    fixture->metrics =
++        var_GetAddress((vlc_object_t *) fixture->player->player,
++                       "kyber-metrics");
++    assert(fixture->metrics != NULL);
++}
++
++static void
++fence_fixture_start_worker(struct fence_fixture *fixture)
++{
++    assert(!fixture->worker_started);
++    fixture->worker_started = true;
++    assert(vlc_clone(&fixture->worker, fence_worker, fixture) == 0);
++}
++
++static void
++fence_fixture_stop_idle_worker(struct fence_fixture *fixture)
++{
++    assert(fixture->worker_started);
++    assert(atomic_load_explicit(&fixture->queued,
++                                memory_order_acquire) == NULL);
++    atomic_store_explicit(&fixture->worker_shutdown, true,
++                          memory_order_release);
++    vlc_sem_post(&fixture->queue_ready);
++    vlc_sem_wait(&fixture->worker_done);
++    vlc_join(fixture->worker, NULL);
++}
++
++struct fence_push_args {
++    struct vlc_metrics *metrics;
++    vlc_video_path_event event;
++    int result;
++};
++
++static void *
++fence_push_thread(void *opaque)
++{
++    struct fence_push_args *args = opaque;
++    args->result = vlc_metrics_PushVideoPath(args->metrics, &args->event);
++    return NULL;
++}
++
++static void
++fence_init_event(vlc_video_path_event *event, uint64_t sentinel)
++{
++    vlc_video_path_event_Init(
++        event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME, false, 0);
++    event->producer_seq = sentinel;
++}
++
++static void
++test_zero_active_synchronous_fence(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++
++    assert(libvlc_video_path_release_request_retain(NULL) == NULL);
++    libvlc_video_path_release_request_release(NULL);
++    assert(libvlc_video_path_release_request_redispatch(NULL) ==
++           LIBVLC_VIDEO_PATH_RELEASE_INVALID);
++    assert(libvlc_video_path_release_request_execute(NULL) ==
++           LIBVLC_VIDEO_PATH_RELEASE_INVALID);
++
++    libvlc_video_path_release_request_t *invalid =
++        (libvlc_video_path_release_request_t *) (uintptr_t) 1;
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, NULL, &fixture, fence_complete, &fixture,
++               &invalid) == LIBVLC_VIDEO_PATH_RELEASE_INVALID);
++    assert(invalid == NULL);
++
++    libvlc_media_player_t *extra =
++        libvlc_media_player_retain(fixture.player);
++    fixture.observer =
++        (libvlc_video_path_release_request_t *) (uintptr_t) 1;
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++
++    assert(fixture.observer != NULL);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++    assert(!libvlc_video_path_release_request_is_ready(fixture.observer));
++    assert(atomic_load_explicit(&fixture.dispatch_calls,
++                                memory_order_relaxed) == 0);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++    assert(atomic_load_explicit(&fixture.userdata_retirement_order,
++                                memory_order_acquire) != 0);
++    assert(atomic_load_explicit(&fixture.opaque_observers,
++                                memory_order_relaxed) ==
++           FENCE_CANARY_COMPLETE);
++
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_ALREADY_CLOSED);
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_ALREADY_CLOSED);
++    assert(libvlc_media_player_set_video_path_callback(
++               extra, fence_callback, &fixture) != VLC_SUCCESS);
++
++    vlc_video_path_event denied;
++    fence_init_event(&denied, UINT64_C(0xfeedface));
++    assert(vlc_metrics_PushVideoPath(fixture.metrics, &denied) ==
++           VLC_SUCCESS);
++    assert(denied.producer_seq == UINT64_C(0xfeedface));
++    assert(atomic_load_explicit(&fixture.callback_calls,
++                                memory_order_relaxed) == 0);
++
++    libvlc_media_player_t *loser = libvlc_media_player_retain(extra);
++    libvlc_video_path_release_request_t *loser_request =
++        (libvlc_video_path_release_request_t *) (uintptr_t) 1;
++    assert(libvlc_media_player_release_video_path_fenced(
++               loser, fence_dispatch, &fixture, fence_complete, &fixture,
++               &loser_request) ==
++           LIBVLC_VIDEO_PATH_RELEASE_ALREADY_CLOSED);
++    assert(loser_request == NULL);
++    libvlc_media_player_release(loser);
++
++    libvlc_video_path_release_request_release(fixture.observer);
++    libvlc_media_player_release(extra);
++    libvlc_release(fixture.instance);
++}
++
++static void
++test_admitted_close_denied_and_loss(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++    libvlc_media_player_t *extra =
++        libvlc_media_player_retain(fixture.player);
++    atomic_store_explicit(&fixture.block_callback, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_worker, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.callback_result, -1,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.expect_loss_before_dispatch, true,
++                          memory_order_release);
++    fence_fixture_start_worker(&fixture);
++
++    struct fence_push_args admitted = {
++        .metrics = fixture.metrics,
++        .result = VLC_EGENERIC,
++    };
++    fence_init_event(&admitted.event, UINT64_C(0x11111111));
++    vlc_thread_t publisher;
++    assert(vlc_clone(&publisher, fence_push_thread, &admitted) == 0);
++    vlc_sem_wait(&fixture.callback_entered);
++
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_WAITING_FOR_DRAIN);
++    assert(!libvlc_video_path_release_request_is_ready(fixture.observer));
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_NOT_READY);
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_NOT_READY);
++
++    libvlc_video_path_release_request_release(fixture.observer);
++    fixture.observer = NULL;
++
++    vlc_video_path_event denied;
++    fence_init_event(&denied, UINT64_C(0x22222222));
++    assert(vlc_metrics_PushVideoPath(fixture.metrics, &denied) ==
++           VLC_SUCCESS);
++    assert(denied.producer_seq == UINT64_C(0x22222222));
++    assert(atomic_load_explicit(&fixture.callback_calls,
++                                memory_order_relaxed) == 1);
++
++    vlc_sem_post(&fixture.callback_continue);
++    vlc_join(publisher, NULL);
++    assert(admitted.result != VLC_SUCCESS);
++    assert(atomic_load_explicit(&fixture.dispatch_calls,
++                                memory_order_relaxed) == 1);
++    assert(atomic_load_explicit(&fixture.worker_transfers,
++                                memory_order_relaxed) == 1);
++
++    struct vlc_video_path_loss_snapshot loss;
++    assert(vlc_metrics_video_path_loss_snapshot(fixture.metrics, &loss));
++    assert(loss.events == 1);
++    assert(loss.first_seq == admitted.event.producer_seq);
++    assert(loss.last_seq == admitted.event.producer_seq);
++    assert(loss.generation == 1);
++
++    fence_init_event(&denied, UINT64_C(0x33333333));
++    assert(vlc_metrics_PushVideoPath(fixture.metrics, &denied) ==
++           VLC_SUCCESS);
++    assert(denied.producer_seq == UINT64_C(0x33333333));
++    struct vlc_video_path_loss_snapshot after_denied;
++    assert(vlc_metrics_video_path_loss_snapshot(
++        fixture.metrics, &after_denied));
++    assert(after_denied.events == loss.events);
++    assert(after_denied.first_seq == loss.first_seq);
++    assert(after_denied.last_seq == loss.last_seq);
++    assert(after_denied.generation == loss.generation);
++
++    vlc_sem_post(&fixture.worker_continue);
++    vlc_sem_wait(&fixture.worker_done);
++    vlc_join(fixture.worker, NULL);
++    assert(atomic_load_explicit(&fixture.worker_result,
++                                memory_order_acquire) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++    assert(atomic_load_explicit(&fixture.callback_return_order,
++                                memory_order_acquire) <
++           atomic_load_explicit(&fixture.dispatch_order,
++                                memory_order_acquire));
++    assert(atomic_load_explicit(&fixture.worker_order,
++                                memory_order_acquire) <
++           atomic_load_explicit(&fixture.completion_order,
++                                memory_order_acquire));
++    assert((atomic_load_explicit(&fixture.opaque_observers,
++                                 memory_order_relaxed) &
++            (FENCE_CANARY_CALLBACK | FENCE_CANARY_DISPATCH |
++             FENCE_CANARY_WORKER | FENCE_CANARY_COMPLETE)) ==
++           (FENCE_CANARY_CALLBACK | FENCE_CANARY_DISPATCH |
++            FENCE_CANARY_WORKER | FENCE_CANARY_COMPLETE));
++
++    libvlc_media_player_release(extra);
++    libvlc_release(fixture.instance);
++}
++
++static void
++test_rejected_dispatch_retry_after_observer_release(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++    atomic_store_explicit(&fixture.block_callback, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_worker, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.reject_dispatches, 2,
++                          memory_order_release);
++    fence_fixture_start_worker(&fixture);
++
++    struct fence_push_args admitted = {
++        .metrics = fixture.metrics,
++        .result = VLC_EGENERIC,
++    };
++    fence_init_event(&admitted.event, UINT64_C(0x44444444));
++    vlc_thread_t publisher;
++    assert(vlc_clone(&publisher, fence_push_thread, &admitted) == 0);
++    vlc_sem_wait(&fixture.callback_entered);
++
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++    libvlc_video_path_release_request_t *retry =
++        libvlc_video_path_release_request_retain(fixture.observer);
++    assert(retry != NULL);
++    libvlc_video_path_release_request_release(fixture.observer);
++    fixture.observer = NULL;
++
++    vlc_sem_post(&fixture.callback_continue);
++    vlc_join(publisher, NULL);
++    assert(admitted.result == VLC_SUCCESS);
++    assert(atomic_load_explicit(&fixture.dispatch_rejections,
++                                memory_order_relaxed) == 1);
++    assert(atomic_load_explicit(&fixture.worker_transfers,
++                                memory_order_relaxed) == 0);
++    assert(atomic_load_explicit(&fixture.queued,
++                                memory_order_acquire) == NULL);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 0);
++    assert(libvlc_video_path_release_request_get_state(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_READY);
++    assert(libvlc_video_path_release_request_is_ready(retry));
++
++    assert(libvlc_video_path_release_request_redispatch(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_DISPATCH_REJECTED);
++    assert(libvlc_video_path_release_request_get_state(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_READY);
++    assert(libvlc_video_path_release_request_is_ready(retry));
++    assert(atomic_load_explicit(&fixture.dispatch_rejections,
++                                memory_order_relaxed) == 2);
++    assert(atomic_load_explicit(&fixture.worker_transfers,
++                                memory_order_relaxed) == 0);
++
++    assert(libvlc_video_path_release_request_redispatch(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(libvlc_video_path_release_request_get_state(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_DISPATCHED);
++    assert(!libvlc_video_path_release_request_is_ready(retry));
++    assert(libvlc_video_path_release_request_redispatch(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_ALREADY_CLOSED);
++    assert(atomic_load_explicit(&fixture.worker_transfers,
++                                memory_order_relaxed) == 1);
++
++    vlc_sem_post(&fixture.worker_continue);
++    vlc_sem_wait(&fixture.worker_done);
++    vlc_join(fixture.worker, NULL);
++    assert(atomic_load_explicit(&fixture.worker_result,
++                                memory_order_acquire) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(libvlc_video_path_release_request_get_state(retry) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++    libvlc_video_path_release_request_release(retry);
++    libvlc_release(fixture.instance);
++}
++
++struct fence_redispatch_args {
++    libvlc_video_path_release_request_t *request;
++    libvlc_video_path_release_result_t result;
++};
++
++static void *
++fence_redispatch_thread(void *opaque)
++{
++    struct fence_redispatch_args *args = opaque;
++    args->result =
++        libvlc_video_path_release_request_redispatch(args->request);
++    libvlc_video_path_release_request_release(args->request);
++    return NULL;
++}
++
++static void
++test_rejection_superseded_by_direct_execute(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++    libvlc_media_player_t *extra =
++        libvlc_media_player_retain(fixture.player);
++    atomic_store_explicit(&fixture.block_callback, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.reject_dispatches, 1,
++                          memory_order_release);
++
++    struct fence_push_args admitted = {
++        .metrics = fixture.metrics,
++        .result = VLC_EGENERIC,
++    };
++    fence_init_event(&admitted.event, UINT64_C(0x45454545));
++    vlc_thread_t publisher;
++    assert(vlc_clone(&publisher, fence_push_thread, &admitted) == 0);
++    vlc_sem_wait(&fixture.callback_entered);
++
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++    vlc_sem_post(&fixture.callback_continue);
++    vlc_join(publisher, NULL);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_READY);
++
++    atomic_store_explicit(&fixture.reject_dispatches, 1,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_dispatcher, true,
++                          memory_order_release);
++    struct fence_redispatch_args redispatch = {
++        .request =
++            libvlc_video_path_release_request_retain(fixture.observer),
++        .result = LIBVLC_VIDEO_PATH_RELEASE_INVALID,
++    };
++    vlc_thread_t redispatcher;
++    assert(vlc_clone(&redispatcher, fence_redispatch_thread,
++                     &redispatch) == 0);
++    vlc_sem_wait(&fixture.dispatcher_entered);
++
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_DISPATCHING);
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_RELEASED);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 0);
++
++    vlc_sem_post(&fixture.dispatcher_continue);
++    vlc_join(redispatcher, NULL);
++    assert(redispatch.result == LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++    assert(atomic_load_explicit(&fixture.dispatch_rejections,
++                                memory_order_relaxed) == 2);
++    assert(atomic_load_explicit(&fixture.worker_transfers,
++                                memory_order_relaxed) == 0);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++
++    libvlc_video_path_release_request_release(fixture.observer);
++    libvlc_media_player_release(extra);
++    libvlc_release(fixture.instance);
++}
++
++static void
++test_fast_worker_completion_deferral(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++    libvlc_media_player_t *extra =
++        libvlc_media_player_retain(fixture.player);
++    atomic_store_explicit(&fixture.block_callback, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_worker, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_dispatcher, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.block_completion, true,
++                          memory_order_release);
++    fence_fixture_start_worker(&fixture);
++
++    struct fence_push_args admitted = {
++        .metrics = fixture.metrics,
++        .result = VLC_EGENERIC,
++    };
++    fence_init_event(&admitted.event, UINT64_C(0x55555555));
++    vlc_thread_t publisher;
++    assert(vlc_clone(&publisher, fence_push_thread, &admitted) == 0);
++    vlc_sem_wait(&fixture.callback_entered);
++
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++    vlc_sem_post(&fixture.callback_continue);
++    vlc_sem_wait(&fixture.dispatcher_entered);
++
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_DISPATCHING);
++    assert(!libvlc_video_path_release_request_is_ready(fixture.observer));
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++
++    vlc_sem_post(&fixture.worker_continue);
++    vlc_sem_wait(&fixture.worker_done);
++    assert(atomic_load_explicit(&fixture.worker_result,
++                                memory_order_acquire) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_RELEASED);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 0);
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++    assert(fixture.opaque_lifetime_canary == FENCE_TEST_CANARY);
++
++    vlc_sem_post(&fixture.dispatcher_continue);
++    vlc_sem_wait(&fixture.completion_entered);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETING);
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++
++    vlc_sem_post(&fixture.completion_continue);
++    vlc_join(publisher, NULL);
++    vlc_join(fixture.worker, NULL);
++    assert(admitted.result == VLC_SUCCESS);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++    assert(atomic_load_explicit(&fixture.worker_return_order,
++                                memory_order_acquire) <
++           atomic_load_explicit(&fixture.completion_order,
++                                memory_order_acquire));
++
++    libvlc_video_path_release_request_release(fixture.observer);
++    libvlc_media_player_release(extra);
++    libvlc_release(fixture.instance);
++}
++
++struct fenced_close_args {
++    struct fence_fixture *fixture;
++    libvlc_media_player_t *player;
++    vlc_sem_t *ready;
++    vlc_sem_t *go;
++    libvlc_video_path_release_result_t result;
++    libvlc_video_path_release_request_t *request;
++};
++
++static void *
++fenced_close_thread(void *opaque)
++{
++    struct fenced_close_args *args = opaque;
++    vlc_sem_post(args->ready);
++    vlc_sem_wait(args->go);
++    args->request =
++        (libvlc_video_path_release_request_t *) (uintptr_t) 1;
++    args->result = libvlc_media_player_release_video_path_fenced(
++        args->player, fence_dispatch, args->fixture, fence_complete,
++        args->fixture, &args->request);
++    if (args->result != LIBVLC_VIDEO_PATH_RELEASE_OK)
++        libvlc_media_player_release(args->player);
++    return NULL;
++}
++
++static void
++test_duplicate_fenced_close(void)
++{
++    for (unsigned iteration = 0; iteration < 4; ++iteration)
++    {
++        struct fence_fixture fixture;
++        fence_fixture_init(&fixture);
++        vlc_sem_t ready;
++        vlc_sem_t go;
++        vlc_sem_init(&ready, 0);
++        vlc_sem_init(&go, 0);
++
++        struct fenced_close_args args[2] = {
++            {
++                .fixture = &fixture,
++                .player = fixture.player,
++                .ready = &ready,
++                .go = &go,
++                .result = LIBVLC_VIDEO_PATH_RELEASE_INVALID,
++                .request = NULL,
++            },
++            {
++                .fixture = &fixture,
++                .player = libvlc_media_player_retain(fixture.player),
++                .ready = &ready,
++                .go = &go,
++                .result = LIBVLC_VIDEO_PATH_RELEASE_INVALID,
++                .request = NULL,
++            },
++        };
++        fixture.player = NULL;
++
++        vlc_thread_t closers[2];
++        assert(vlc_clone(&closers[0], fenced_close_thread, &args[0]) == 0);
++        assert(vlc_clone(&closers[1], fenced_close_thread, &args[1]) == 0);
++        vlc_sem_wait(&ready);
++        vlc_sem_wait(&ready);
++        vlc_sem_post(&go);
++        vlc_sem_post(&go);
++        vlc_join(closers[0], NULL);
++        vlc_join(closers[1], NULL);
++
++        unsigned winner =
++            args[0].result == LIBVLC_VIDEO_PATH_RELEASE_OK ? 0 : 1;
++        unsigned loser = winner ^ 1u;
++        assert(args[winner].result == LIBVLC_VIDEO_PATH_RELEASE_OK);
++        assert(args[winner].request != NULL);
++        assert(args[loser].result ==
++               LIBVLC_VIDEO_PATH_RELEASE_ALREADY_CLOSED);
++        assert(args[loser].request == NULL);
++        assert(libvlc_video_path_release_request_get_state(
++                   args[winner].request) ==
++               LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++        assert(atomic_load_explicit(&fixture.dispatch_calls,
++                                    memory_order_relaxed) == 0);
++        assert(atomic_load_explicit(&fixture.completion_calls,
++                                    memory_order_relaxed) == 1);
++        assert(fixture.callback_userdata == NULL);
++        libvlc_video_path_release_request_release(args[winner].request);
++        libvlc_release(fixture.instance);
++    }
++}
++
++struct fence_race_push_args {
++    struct fence_push_args push;
++    vlc_sem_t *ready;
++    vlc_sem_t *go;
++};
++
++static void *
++fence_race_push_thread(void *opaque)
++{
++    struct fence_race_push_args *args = opaque;
++    vlc_sem_post(args->ready);
++    vlc_sem_wait(args->go);
++    return fence_push_thread(&args->push);
++}
++
++static void
++test_admission_close_contention(void)
++{
++    for (unsigned iteration = 0; iteration < 16; ++iteration)
++    {
++        struct fence_fixture fixture;
++        fence_fixture_init(&fixture);
++        libvlc_media_player_t *extra =
++            libvlc_media_player_retain(fixture.player);
++        fence_fixture_start_worker(&fixture);
++
++        vlc_sem_t ready;
++        vlc_sem_t go;
++        vlc_sem_init(&ready, 0);
++        vlc_sem_init(&go, 0);
++        struct fenced_close_args closer = {
++            .fixture = &fixture,
++            .player = fixture.player,
++            .ready = &ready,
++            .go = &go,
++            .result = LIBVLC_VIDEO_PATH_RELEASE_INVALID,
++            .request = NULL,
++        };
++        struct fence_race_push_args publisher = {
++            .push = {
++                .metrics = fixture.metrics,
++                .result = VLC_EGENERIC,
++            },
++            .ready = &ready,
++            .go = &go,
++        };
++        fence_init_event(&publisher.push.event,
++                         UINT64_C(0x77777777));
++
++        vlc_thread_t close_thread;
++        vlc_thread_t publish_thread;
++        assert(vlc_clone(&close_thread, fenced_close_thread,
++                         &closer) == 0);
++        assert(vlc_clone(&publish_thread, fence_race_push_thread,
++                         &publisher) == 0);
++        vlc_sem_wait(&ready);
++        vlc_sem_wait(&ready);
++        vlc_sem_post(&go);
++        vlc_sem_post(&go);
++        vlc_join(close_thread, NULL);
++        vlc_join(publish_thread, NULL);
++        fixture.player = NULL;
++
++        assert(closer.result == LIBVLC_VIDEO_PATH_RELEASE_OK);
++        assert(closer.request != NULL);
++        assert(publisher.push.result == VLC_SUCCESS);
++        unsigned callback_calls =
++            atomic_load_explicit(&fixture.callback_calls,
++                                 memory_order_relaxed);
++        assert(callback_calls <= 1);
++        if (callback_calls == 0)
++            assert(publisher.push.event.producer_seq ==
++                   UINT64_C(0x77777777));
++        else
++            assert(publisher.push.event.producer_seq == 1);
++
++        unsigned dispatch_calls =
++            atomic_load_explicit(&fixture.dispatch_calls,
++                                 memory_order_relaxed);
++        assert(dispatch_calls <= 1);
++        if (dispatch_calls == 0)
++            fence_fixture_stop_idle_worker(&fixture);
++        else
++        {
++            vlc_sem_wait(&fixture.worker_done);
++            vlc_join(fixture.worker, NULL);
++            assert(atomic_load_explicit(&fixture.worker_result,
++                                        memory_order_acquire) ==
++                   LIBVLC_VIDEO_PATH_RELEASE_OK);
++        }
++        assert(atomic_load_explicit(&fixture.worker_transfers,
++                                    memory_order_relaxed) ==
++               dispatch_calls);
++        assert(atomic_load_explicit(&fixture.completion_calls,
++                                    memory_order_relaxed) == 1);
++        assert(libvlc_video_path_release_request_get_state(
++                   closer.request) ==
++               LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++        assert(fixture.callback_userdata == NULL);
++
++        vlc_video_path_event denied;
++        fence_init_event(&denied, UINT64_C(0x88888888));
++        assert(vlc_metrics_PushVideoPath(fixture.metrics, &denied) ==
++               VLC_SUCCESS);
++        assert(denied.producer_seq == UINT64_C(0x88888888));
++        assert(atomic_load_explicit(&fixture.callback_calls,
++                                    memory_order_relaxed) ==
++               callback_calls);
++        struct vlc_video_path_loss_snapshot loss;
++        assert(vlc_metrics_video_path_loss_snapshot(
++            fixture.metrics, &loss));
++        assert(loss.events == 0);
++        assert(loss.first_seq == 0);
++        assert(loss.last_seq == 0);
++        assert(loss.generation == 0);
++
++        libvlc_video_path_release_request_release(closer.request);
++        libvlc_media_player_release(extra);
++        libvlc_release(fixture.instance);
++    }
++}
++
++struct fenced_execute_args {
++    libvlc_video_path_release_request_t *request;
++    vlc_sem_t *started;
++    libvlc_video_path_release_result_t result;
++};
++
++static void *
++fenced_execute_thread(void *opaque)
++{
++    struct fenced_execute_args *args = opaque;
++    vlc_sem_post(args->started);
++    args->result =
++        libvlc_video_path_release_request_execute(args->request);
++    libvlc_video_path_release_request_release(args->request);
++    return NULL;
++}
++
++static void
++test_executing_state_and_duplicate_execute(void)
++{
++    struct fence_fixture fixture;
++    fence_fixture_init(&fixture);
++    atomic_store_explicit(&fixture.block_callback, true,
++                          memory_order_release);
++    atomic_store_explicit(&fixture.reject_dispatches, 1,
++                          memory_order_release);
++
++    struct fence_push_args admitted = {
++        .metrics = fixture.metrics,
++        .result = VLC_EGENERIC,
++    };
++    fence_init_event(&admitted.event, UINT64_C(0x66666666));
++    vlc_thread_t publisher;
++    assert(vlc_clone(&publisher, fence_push_thread, &admitted) == 0);
++    vlc_sem_wait(&fixture.callback_entered);
++
++    vlc_player_t *core_player = fixture.player->player;
++    assert(libvlc_media_player_release_video_path_fenced(
++               fixture.player, fence_dispatch, &fixture, fence_complete,
++               &fixture, &fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_OK);
++    fixture.player = NULL;
++    vlc_sem_post(&fixture.callback_continue);
++    vlc_join(publisher, NULL);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_READY);
++
++    vlc_player_Lock(core_player);
++    vlc_sem_t execute_started;
++    vlc_sem_init(&execute_started, 0);
++    struct fenced_execute_args execute = {
++        .request =
++            libvlc_video_path_release_request_retain(fixture.observer),
++        .started = &execute_started,
++        .result = LIBVLC_VIDEO_PATH_RELEASE_INVALID,
++    };
++    vlc_thread_t executor;
++    assert(vlc_clone(&executor, fenced_execute_thread, &execute) == 0);
++    vlc_sem_wait(&execute_started);
++
++    libvlc_video_path_release_state_t state =
++        LIBVLC_VIDEO_PATH_RELEASE_READY;
++    while (state != LIBVLC_VIDEO_PATH_RELEASE_EXECUTING)
++    {
++        state =
++            libvlc_video_path_release_request_get_state(fixture.observer);
++        if (state != LIBVLC_VIDEO_PATH_RELEASE_EXECUTING)
++        {
++            assert(state == LIBVLC_VIDEO_PATH_RELEASE_READY);
++            sched_yield();
++        }
++    }
++    assert(state == LIBVLC_VIDEO_PATH_RELEASE_EXECUTING);
++    assert(!libvlc_video_path_release_request_is_ready(fixture.observer));
++    assert(libvlc_video_path_release_request_execute(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++    assert(libvlc_video_path_release_request_redispatch(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_BUSY);
++
++    vlc_player_Unlock(core_player);
++    vlc_join(executor, NULL);
++    assert(execute.result == LIBVLC_VIDEO_PATH_RELEASE_OK);
++    assert(libvlc_video_path_release_request_get_state(fixture.observer) ==
++           LIBVLC_VIDEO_PATH_RELEASE_COMPLETE);
++    assert(atomic_load_explicit(&fixture.completion_calls,
++                                memory_order_relaxed) == 1);
++    assert(fixture.callback_userdata == NULL);
++    libvlc_video_path_release_request_release(fixture.observer);
++    libvlc_release(fixture.instance);
++}
++
  #ifdef __APPLE__
  static void
  test_apple_property_and_surface_seams(void)
-@@ -534,6 +698,7 @@ main(void)
+@@ -534,6 +1783,15 @@ main(void)
      test_videotoolbox_outcome_classifier();
      test_renderer_outcome_classifier();
      test_hardware_property_normalization();
 +    test_reentrant_fenced_release_tracer();
++    test_zero_active_synchronous_fence();
++    test_admitted_close_denied_and_loss();
++    test_rejected_dispatch_retry_after_observer_release();
++    test_rejection_superseded_by_direct_execute();
++    test_fast_worker_completion_deferral();
++    test_duplicate_fenced_close();
++    test_admission_close_contention();
++    test_executing_state_and_duplicate_execute();
  #ifdef __APPLE__
      test_apple_property_and_surface_seams();
  #endif

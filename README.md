@@ -116,6 +116,8 @@ git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
   ../../../../../../patches/kyber/0010-vlc-video-path-telemetry-abi.patch
 git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
   ../../../../../../patches/kyber/0011-vlc-macos-decoder-telemetry.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc-rs apply \
+  ../../../../../../patches/kyber/0014-vlc-rs-video-path-bridge.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
   ../../../../patches/kyber/0004-linux-hires-wheel.patch
 git -C upstream/kyber-desktop/kysdk/kynput apply \
@@ -178,10 +180,10 @@ scripts/verify-host-evidence-sequence.sh --tests
 scripts/verify-host-evidence-sequence.sh --replay
 ```
 
-The next independent splits are patch 0014 for the `vlc-rs` callback surface,
-patch 0015 for the Kyctl evidence ABI, and patch 0016 for the client
-writer/reducer. Those layers consume this contract; they do not change the
-host meanings frozen here.
+Patch 0014 independently carries the native video-path callback through
+`vlc-rs`; patches 0015 and 0016 remain the Kyctl evidence ABI and client
+writer/reducer splits. Those layers consume this contract; they do not change
+the host meanings frozen here.
 
 Run `scripts/verify-host-telemetry.sh --source`, `--tests`, and `--replay` to
 check the patch allowlists, focused native/Rust gates, and clean pinned replay.
@@ -230,6 +232,51 @@ installing or replacing `ReplayDesktop.app`, returns a versioned manifest, and
 removes only its validated scratch directory. Its recorded Xcode version must
 be interpreted literally: Xcode 26.2 is compatibility evidence, not the
 project's Xcode 26.6 release qualification.
+
+Patch 0014 must be applied to `vlc-rs` at
+`7cbfc51313b4bb3ab07be51505b7054e4e2c366b` only after the exact VLC
+`0010` then `0011` boundary exists. Its callback accepts at most 64 records,
+1024 bytes per record, and 64 KiB per native call. It validates the complete
+version-one batch and copies the known 192-byte prefix plus bounded UTF-8 text
+into owned Rust values before invoking consumer code; no callback-owned
+pointer, slice, or text escapes the FFI call.
+
+The safe surface is
+`MediaPlayer::set_video_path_callback(&mut self, callback)` with
+`VideoPathCallbackEvent::{Records(Vec<VideoPathEvent>),
+ProducerTerminalUnconfirmed(VideoPathTerminal)}` and an explicit
+`VideoPathCallbackDisposition::{Accept, Reject}` result. Known enum values are
+typed, future discriminants and flag bits retain their raw values, and
+malformed sentinels are rejected. `VideoPathCallbackLoss` remains the native
+cumulative callback-loss tuple carried by accepted records; saturating
+bridge-rejected callback/record counts and their readable sequence bounds stay
+separate.
+
+Validation failure, consumer `Reject`, or consumer panic returns one bounded
+nonzero rejection to native libVLC without retry, waiting, payload logging, or
+unwinding through C. Native userdata is a monotonic, never-reused opaque ID,
+not a dereferenced Rust allocation. Callback entry resolves that ID through a
+bounded-lifetime registry and clones an `Arc` invocation guard before consumer
+dispatch, so callback-triggered owner drop cannot invalidate in-flight state.
+
+Rust calls `libvlc_media_player_release` before unregistering the ID. Calls
+that arrive during release can still resolve the guard; calls arriving after
+unregistration fail closed without touching freed memory. This deliberately
+does not treat the reference-count decrement as proof that native destruction
+completed. After unregistration Rust emits one local
+`ProducerTerminalUnconfirmed` control event, and the state is freed only after
+all in-flight guards finish. That event is not a native clean-completion
+acknowledgement, a final native-loss snapshot, or physical-presentation
+evidence. Kyctl consumption, GUI state, evidence reduction, and packaging
+remain outside patch 0014.
+
+Verify the Rust bridge locally and offline without deployment:
+
+```console
+scripts/verify-vlc-rs-video-path-bridge.sh --source
+scripts/verify-vlc-rs-video-path-bridge.sh --tests
+scripts/verify-vlc-rs-video-path-bridge.sh --replay
+```
 
 The prototype retains Kyber's existing clipboard event set. Requests are
 serialized and local Mac changes win over an in-flight remote fetch, but fully

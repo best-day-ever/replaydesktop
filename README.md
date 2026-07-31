@@ -106,8 +106,12 @@ git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
 git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
   ../../../../../../patches/kyber/0008-txproto-host-telemetry.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
+  ../../../../../../patches/kyber/0012-txproto-capture-begin.patch
 git -C upstream/kyber-desktop/kysdk/kymedia apply \
   ../../../../patches/kyber/0009-kymedia-host-telemetry-forwarding.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0013-kymedia-host-evidence-sequence.patch
 git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
   ../../../../../../patches/kyber/0010-vlc-video-path-telemetry-abi.patch
 git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
@@ -138,6 +142,46 @@ capture, encode, and packet-sink ownership points. Apply it in txproto before
 patch 0009, which carries callback rejection and cumulative telemetry-loss
 facts through the Kymedia Rust forwarder. These facts remain host-local raw
 measurements; they do not claim cross-machine latency or scanout timing.
+
+Patch 0012 adds the missing real NvFBC begin observation. `capture_begin` is
+sampled on the host monotonic clock immediately before
+`nvFBCToCudaGrabFrame`; the same PTS-qualified batch is published only after
+the frame reaches the application-owned CUDA surface through the checked
+device-to-device copy. The resulting `capture_begin` to `acquired` interval is
+`host_capture_to_cuda_surface_ready`: it includes the NvFBC grab and the
+same-GPU copy. It is not scanout age or a claim about pure GPU capture time,
+and failed grabs, allocations, or copies do not publish orphan begin records.
+
+Patch 0013 gives every host forward attempt one monotonic producer sequence.
+Accepted batches preserve every native txproto entry in its original order
+and append `telemetry_forwarder_sequence`; rejected attempts use that same
+identity in coherent cumulative first/last-sequence and batch/entry loss
+state. Native callback rejection and the Rust forwarder's bounded-channel
+rejection are separate, correlated loss layers rather than interchangeable
+counts.
+
+After the callback-owned channel closes, accepted batches drain before one
+direct terminal record is sent through the still-open KyCom endpoint. The
+record carries the final attempted sequence, final accepted sequence (`0`
+means none), and the cumulative forwarder-loss snapshot. Only a terminal
+record actually observed by the consumer confirms producer completion. A
+disconnect without it must be classified as
+`producer_terminal_unconfirmed`; local send success is not remote receipt
+evidence.
+
+Verify this host evidence split without deploying, restarting the Linux user
+service, connecting a client, or changing an installed macOS application:
+
+```console
+scripts/verify-host-evidence-sequence.sh --source
+scripts/verify-host-evidence-sequence.sh --tests
+scripts/verify-host-evidence-sequence.sh --replay
+```
+
+The next independent splits are patch 0014 for the `vlc-rs` callback surface,
+patch 0015 for the Kyctl evidence ABI, and patch 0016 for the client
+writer/reducer. Those layers consume this contract; they do not change the
+host meanings frozen here.
 
 Run `scripts/verify-host-telemetry.sh --source`, `--tests`, and `--replay` to
 check the patch allowlists, focused native/Rust gates, and clean pinned replay.

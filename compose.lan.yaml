@@ -1,6 +1,21 @@
 name: replaydesktop-lan
 
 services:
+  dashboard:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    profiles: ["dashboard"]
+    volumes:
+      - ./server/dashboard/index.html:/usr/share/nginx/html/index.html:ro
+      - ./server/dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.runtime/lan-dashboard:/usr/share/nginx/html/downloads:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
   broker:
     build:
       context: ./server

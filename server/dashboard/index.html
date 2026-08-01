@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ReplayDesktop Client</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f9fc;
+      --muted: #aeb8ca;
+      --panel: rgba(21, 27, 40, .86);
+      --line: rgba(255, 255, 255, .1);
+      --blue: #6ea8ff;
+      --blue-strong: #2f78ed;
+      --green: #6ee7a2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(47, 120, 237, .24), transparent 34rem),
+        radial-gradient(circle at 90% 85%, rgba(110, 231, 162, .12), transparent 30rem),
+        #090d15;
+    }
+    main { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0; }
+    .eyebrow { color: var(--green); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 12px; }
+    h1 { margin: 10px 0 14px; font-size: clamp(38px, 7vw, 64px); line-height: 1.02; letter-spacing: -.045em; }
+    .lead { margin: 0 0 30px; max-width: 620px; color: var(--muted); font-size: 19px; }
+    .download {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      border-radius: 12px;
+      color: white;
+      background: linear-gradient(135deg, var(--blue-strong), #5c91f1);
+      font-weight: 750;
+      text-decoration: none;
+      box-shadow: 0 12px 36px rgba(47, 120, 237, .28);
+    }
+    .download:hover { filter: brightness(1.1); }
+    .meta { margin: 13px 0 38px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    section { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); backdrop-filter: blur(18px); }
+    section.full { grid-column: 1 / -1; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    ol { margin: 0; padding-left: 21px; color: var(--muted); }
+    li + li { margin-top: 9px; }
+    code { padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: rgba(0, 0, 0, .28); }
+    .endpoint { display: grid; gap: 10px; }
+    .endpoint div { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+    .endpoint code { text-align: right; overflow-wrap: anywhere; }
+    .warning { margin: 28px 0 0; padding: 15px 18px; border-left: 3px solid #efb366; color: var(--muted); background: rgba(239, 179, 102, .08); }
+    @media (max-width: 620px) {
+      main { padding: 38px 0; }
+      .grid { grid-template-columns: 1fr; }
+      section.full { grid-column: auto; }
+      .endpoint div { display: grid; }
+      .endpoint code { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">ReplayDesktop · LAN preview</div>
+    <h1>Your workstation,<br>one click away.</h1>
+    <p class="lead">Download the Apple Silicon client, enter this server as your broker, and choose an online workstation.</p>
+
+    <a class="download" href="/downloads/ReplayDesktop-v0.3.0-spike.6-arm64.zip" download>Download for macOS</a>
+    <p class="meta">v0.3.0-spike.6 · macOS 15+ · Apple Silicon · 38.4 MiB<br>SHA-256: a5679ae4156752119af814b90141c173c3c382facff6a83b38405dc12242393f</p>
+
+    <div class="grid">
+      <section>
+        <h2>Get connected</h2>
+        <ol>
+          <li>Unzip the download and open <strong>ReplayDesktop.app</strong>.</li>
+          <li>Enter the broker address shown here.</li>
+          <li>Log in and select the available workstation.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Connection details</h2>
+        <div class="endpoint">
+          <div><span>Broker</span><code id="broker">http://this-server:8090</code></div>
+          <div><span>Username</span><code>finn</code></div>
+          <div><span>Password</span><code>1337</code></div>
+        </div>
+      </section>
+
+      <section class="full">
+        <h2>First launch on macOS</h2>
+        <p style="margin:0;color:var(--muted)">This internal build is ad-hoc signed and not notarized. If macOS blocks the first launch, Control-click the app, choose <strong>Open</strong>, then confirm. Accessibility permission is required for remote input.</p>
+      </section>
+    </div>
+
+    <p class="warning"><strong>LAN-only prototype:</strong> the current HTTP broker and test password must not be exposed to the public internet. Streaming remains a direct client-to-workstation connection.</p>
+  </main>
+  <script>
+    document.getElementById('broker').textContent = 'http://' + window.location.hostname + ':8090';
+  </script>
+</body>
+</html>

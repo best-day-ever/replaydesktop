@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 11
 current_phase_name: lan-broker-client-mvp
 status: complete
-stopped_at: LAN broker, host registrar, Kyber JWT handoff, and broker-first macOS client verified
-last_updated: "2026-08-01T19:07:48Z"
+stopped_at: LAN client download dashboard running on port 80 with broker and Kyber flow healthy
+last_updated: "2026-08-01T21:47:23Z"
 last_activity: 2026-08-01
-last_activity_desc: "Verified the Docker LAN broker and the complete Mac-to-broker-to-Kyber JWT control flow"
+last_activity_desc: "Added and verified the LAN client download dashboard on HTTP port 80"
 progress:
   total_phases: 2
   completed_phases: 2
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 11 (lan-broker-client-mvp) — COMPLETE
 Plan: 1 of 1
 Status: Broker and client LAN control flow verified
-Last activity: 2026-08-01 — Verified Docker, live host registration/JWT acceptance, and the real Mac control flow
+Last activity: 2026-08-01 — Added the LAN client download dashboard and verified the direct release download
 
 Progress: [██████████] 100%
 
@@ -74,6 +74,7 @@ Progress: [██████████] 100%
 
 ### Roadmap Evolution
 
+- Phase 12 added: Brokered Live-Session VNC Fallback
 - Phase 11 added: LAN Broker Client MVP
 - Phase 10 added: Brokered Direct Access MVP
 - Phase 10 uses the public UDM Pro SE IPv4 fast path rather than a media relay:
@@ -136,6 +137,7 @@ Recent decisions affecting current work:
 - [Phase 11]: Keep the broker off the Kymux data path; it returns the registered LAN endpoint, certificate fingerprint, and an RS256 Kyber JWT after authorization.
 - [Phase 11]: Permit weak bootstrap credentials and non-loopback HTTP only inside explicit LAN mode, which hard-requires the no-firewall memory backend.
 - [Phase 11]: Treat settings edits during a child session as next-session changes and keep settings, live statistics, and disconnect available from a persistent macOS menu-bar item.
+- [Phase Quick 260801-wx7]: Default the dashboard to all-interface HTTP port 80, but preserve the unrelated localhost Caddy listener by publishing this live instance separately on every client-facing IPv4 address.
 
 ### Pending Todos
 
@@ -165,6 +167,7 @@ None yet.
 | 260731-df1 | Prototype technical metrics cards and arm64 package | 2026-07-31 | eeeb5c6 | Needs Review | [260731-df1-prototype-only-technical-metrics-dashboa](./quick/260731-df1-prototype-only-technical-metrics-dashboa/) |
 | 260801-ou3 | All-interface direct-LAN TCP and UDP 8080 access | 2026-08-01 | runtime-only | Verified | [260801-ou3-allow-direct-lan-replaydesktop-prototype](./quick/260801-ou3-allow-direct-lan-replaydesktop-prototype/) |
 | 260801-ozj | Persistent NVIDIA X11 virtual displays and exactly-two-window Mac client | 2026-08-01 | 551d468 | Needs Review | [260801-ozj-prototype-persistent-x11-virtual-display](./quick/260801-ozj-prototype-persistent-x11-virtual-display/) |
+| 260801-wx7 | LAN client download dashboard on HTTP port 80 | 2026-08-01 | f31b95e | Verified | [260801-wx7-add-and-run-a-lan-client-download-dashbo](./quick/260801-wx7-add-and-run-a-lan-client-download-dashbo/) |
 
 ## Deferred Items
 
@@ -174,6 +177,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-01T19:07:48Z
-Stopped at: LAN broker, host registrar, Kyber JWT handoff, and broker-first macOS client verified
+Last session: 2026-08-01T21:47:23Z
+Stopped at: LAN client download dashboard running on port 80 with broker and Kyber flow healthy
 Resume file: None

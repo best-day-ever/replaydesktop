@@ -284,6 +284,23 @@ Deferred until the v1 protocol and 4K60 proof pass.
 - **CTRL-01**: User can discover and authorize hosts through a control service
   without placing video/input traffic on the service data plane.
 
+- **CTRL-02**: Each enrolled host can register its stable identity, direct LAN
+  endpoint, certificate fingerprint, and periodic heartbeat with the broker;
+  stale hosts remain visible but are reported offline and cannot start a new
+  session.
+
+- **CTRL-03**: Before first use, the macOS client accepts and remembers a
+  changeable broker hostname or IP, authenticates once, and presents the
+  authorized workstation list with clear online/offline state.
+
+- **CTRL-04**: In explicit LAN mode, an authorized connect request returns a
+  short-lived Kyber JWT and the registered direct endpoint without opening a
+  firewall rule or placing media, input, audio, or clipboard on the broker.
+
+- **CTRL-05**: The client remembers connection settings per workstation and
+  keeps settings, disconnect controls, and live session statistics reachable
+  from the macOS menu while the Kyber child is running.
+
 - **NAT-01**: User can establish peer-to-peer sessions across NAT with explicit
   relay fallback and equivalent authentication.
 

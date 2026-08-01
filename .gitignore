@@ -4,3 +4,4 @@
 /server/*.db-shm
 /server/*.db-wal
 /server/replay-ticket-*.pem
+/.runtime/

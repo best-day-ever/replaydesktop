@@ -33,6 +33,19 @@ pub fn hash_password(password: &str) -> Result<String, PasswordError> {
     if !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&password.len()) {
         return Err(PasswordError::InvalidLength);
     }
+    hash_password_without_minimum(password)
+}
+
+/// Hashes a deliberately weak password for the explicitly gated local Docker
+/// bootstrap. Normal user creation must always call [`hash_password`].
+pub fn hash_insecure_development_password(password: &str) -> Result<String, PasswordError> {
+    if password.is_empty() || password.len() > MAX_PASSWORD_BYTES {
+        return Err(PasswordError::InvalidLength);
+    }
+    hash_password_without_minimum(password)
+}
+
+fn hash_password_without_minimum(password: &str) -> Result<String, PasswordError> {
     let salt = SaltString::generate(&mut OsRng);
     argon2()?
         .hash_password(password.as_bytes(), &salt)
@@ -77,6 +90,12 @@ mod tests {
         ));
         assert!(matches!(
             hash_password(&"x".repeat(129)),
+            Err(PasswordError::InvalidLength)
+        ));
+        let development = hash_insecure_development_password("1337").expect("development hash");
+        assert!(verify_password("1337", &development));
+        assert!(matches!(
+            hash_insecure_development_password(""),
             Err(PasswordError::InvalidLength)
         ));
     }

@@ -8,6 +8,7 @@ pub const REFRESH_TOKEN_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 pub const KNOCK_TTL_SECONDS: i64 = 30;
 pub const LEASE_TTL_SECONDS: i64 = 12 * 60 * 60;
 pub const KYMUX_TICKET_TTL_SECONDS: i64 = 60;
+pub const DEFAULT_HOST_OFFLINE_AFTER_SECONDS: i64 = 45;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct User {
@@ -52,6 +53,15 @@ pub struct Workstation {
     pub wan_port: u16,
     pub certificate_sha256: String,
     pub active: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkstationPresence {
+    pub workstation: Workstation,
+    pub registration_id: Option<Uuid>,
+    pub hostname: Option<String>,
+    pub agent_version: Option<String>,
+    pub last_seen_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,19 +168,34 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct HostRegistrationRequest {
+    pub registration_id: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub lan_ipv4: Ipv4Addr,
+    pub kymux_port: u16,
+    pub certificate_sha256: String,
+    pub agent_version: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct WorkstationSummary {
     pub id: Uuid,
     pub name: String,
+    pub hostname: Option<String>,
+    pub online: bool,
+    pub last_seen_at: Option<i64>,
 }
 
-impl From<Workstation> for WorkstationSummary {
-    fn from(value: Workstation) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-        }
-    }
+#[derive(Debug, Serialize)]
+pub struct LanConnectionResponse {
+    pub session_id: Uuid,
+    pub status: &'static str,
+    pub direct_endpoint: String,
+    pub workstation_certificate_sha256: String,
+    pub kyber_token: String,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Serialize)]

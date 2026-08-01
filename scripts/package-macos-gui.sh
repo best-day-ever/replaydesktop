@@ -363,6 +363,10 @@ set_plist_string CFBundleVersion "$BUNDLE_VERSION"
 set_plist_string LSMinimumSystemVersion "$DEPLOYMENT_TARGET"
 plutil -replace NSHighResolutionCapable -bool true "$PLIST" 2>/dev/null ||
     plutil -insert NSHighResolutionCapable -bool true "$PLIST"
+# The LAN MVP deliberately permits a cleartext broker only on the local network.
+# Public deployments keep ATS enabled and terminate broker TLS normally.
+plutil -replace NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$PLIST" 2>/dev/null ||
+    plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$PLIST"
 set_plist_string CFBundleGetInfoString \
     "ReplayDesktop $PACKAGE_VERSION internal prototype; ad-hoc signed and not notarized"
 set_plist_string ReplayDesktopPackageVersion "$PACKAGE_VERSION"

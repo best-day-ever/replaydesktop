@@ -1,0 +1,62 @@
+name: replaydesktop-lan
+
+services:
+  broker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    command: ["broker"]
+    restart: unless-stopped
+    environment:
+      REPLAY_DATABASE_URL: sqlite:///var/lib/replay-control/replay-control.db
+      REPLAY_HTTP_BIND: 0.0.0.0:8080
+      REPLAY_KNOCK_BIND: 127.0.0.1:8444
+      REPLAY_PUBLIC_HOST: ${REPLAY_HOST_LAN_IPV4}
+      REPLAY_KNOCK_ENDPOINT: 127.0.0.1:8444
+      REPLAY_TICKET_PRIVATE_KEY: /var/lib/replay-control/replay-ticket-private.pem
+      REPLAY_ADMISSION_BACKEND: memory
+      REPLAY_ALLOW_INSECURE_HTTP: "true"
+      REPLAY_LAN_MODE: "true"
+      REPLAY_HOST_REGISTRATION_TOKEN_FILE: /run/replay-secrets/host-registration-token
+      REPLAY_KYBER_JWT_PRIVATE_KEY: /var/lib/replay-control/kyber-jwt-private.pem
+      REPLAY_HOST_OFFLINE_AFTER_SECONDS: "45"
+      REPLAY_ALLOW_INSECURE_DEV_BOOTSTRAP: "true"
+      REPLAY_DEV_BOOTSTRAP_USERNAME: finn
+      REPLAY_DEV_BOOTSTRAP_PASSWORD: "1337"
+      RUST_LOG: replay_control=info,replay_control_server=info,tower_http=info
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./.runtime/lan-broker:/var/lib/replay-control
+      - ./.runtime/lan-secrets:/run/replay-secrets
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 3s
+
+  registrar:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    command: ["registrar"]
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      REPLAY_BROKER_URL: http://broker:8080
+      REPLAY_HOST_REGISTRATION_TOKEN_FILE: /run/replay-secrets/host-registration-token
+      REPLAY_HOST_REGISTRATION_ID_FILE: /var/lib/replay-control/host-registration-id
+      REPLAY_HOST_NAME: ${REPLAY_HOST_NAME}
+      REPLAY_HOST_HOSTNAME: ${REPLAY_HOST_HOSTNAME}
+      REPLAY_HOST_LAN_IPV4: ${REPLAY_HOST_LAN_IPV4}
+      REPLAY_HOST_KYMUX_PORT: ${REPLAY_HOST_KYMUX_PORT:-8080}
+      REPLAY_HOST_CERTIFICATE_FILE: /host/server-cert.pem
+      REPLAY_HOST_HEARTBEAT_SECONDS: "15"
+      RUST_LOG: replay_control=info
+    volumes:
+      - ./.runtime/lan-registrar:/var/lib/replay-control
+      - ./.runtime/lan-secrets:/run/replay-secrets:ro
+      - ${REPLAY_HOST_CERTIFICATE_PATH}:/host/server-cert.pem:ro

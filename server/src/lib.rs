@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod domain;
 pub mod knock;
+pub mod kyber_jwt;
 pub mod password;
 pub mod store;
 pub mod ticket;

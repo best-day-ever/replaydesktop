@@ -1,0 +1,427 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+ASSET_DIR="$REPO_ROOT/prototype/linux/virtual-display"
+
+XORG_CONF=/etc/X11/xorg.conf
+STATE_DIR=/var/lib/replaydesktop/virtual-display
+ETC_DIR=/etc/X11
+DEVICE_ID="NVIDIA Generic"
+PHYSICAL_DFP=
+VIRTUAL_ONE=DFP-2
+VIRTUAL_TWO=DFP-4
+DRY_RUN=false
+
+BEGIN_MARKER="# BEGIN REPLAYDESKTOP VIRTUAL DISPLAY"
+END_MARKER="# END REPLAYDESKTOP VIRTUAL DISPLAY"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  replay-virtual-display status [options]
+  replay-virtual-display validate-assets
+  replay-virtual-display render <headless-one|headless-two|add-one> [options]
+  sudo replay-virtual-display enable <headless-one|headless-two|add-one> [options]
+  replay-virtual-display disable --dry-run [options]
+  sudo replay-virtual-display disable [options]
+
+Options:
+  --physical DFP-N[.N]   Physical output retained by add-one
+  --virtual-one DFP-N    First fake output (default: DFP-2)
+  --virtual-two DFP-N    Second fake output (default: DFP-4)
+  --device IDENTIFIER    NVIDIA Device section (default: NVIDIA Generic)
+  --xorg-conf PATH       Xorg configuration (default: /etc/X11/xorg.conf)
+  --state-dir PATH       Backup/state directory
+  --etc-dir PATH         Destination directory for decoded EDIDs
+  --dry-run              For disable, print the unconfigured file only
+
+The command never restarts X. Activating or removing a virtual display needs
+an explicit display-manager restart after this command returns.
+EOF
+}
+
+die() {
+    printf 'replay-virtual-display: %s\n' "$*" >&2
+    exit 1
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+validate_virtual_dfp() {
+    [[ $1 =~ ^DFP-[0-9]+$ ]] || die "virtual output must be a base DFP-N name: $1"
+}
+
+validate_physical_dfp() {
+    [[ $1 =~ ^DFP-[0-9]+([.][0-9]+)?$ ]] || die "invalid physical DFP name: $1"
+}
+
+parse_options() {
+    while (($#)); do
+        case "$1" in
+            --physical)
+                (($# >= 2)) || die "--physical requires a value"
+                PHYSICAL_DFP=$2
+                shift 2
+                ;;
+            --virtual-one)
+                (($# >= 2)) || die "--virtual-one requires a value"
+                VIRTUAL_ONE=$2
+                shift 2
+                ;;
+            --virtual-two)
+                (($# >= 2)) || die "--virtual-two requires a value"
+                VIRTUAL_TWO=$2
+                shift 2
+                ;;
+            --device)
+                (($# >= 2)) || die "--device requires a value"
+                DEVICE_ID=$2
+                shift 2
+                ;;
+            --xorg-conf)
+                (($# >= 2)) || die "--xorg-conf requires a value"
+                XORG_CONF=$2
+                shift 2
+                ;;
+            --state-dir)
+                (($# >= 2)) || die "--state-dir requires a value"
+                STATE_DIR=$2
+                shift 2
+                ;;
+            --etc-dir)
+                (($# >= 2)) || die "--etc-dir requires a value"
+                ETC_DIR=$2
+                shift 2
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown option: $1"
+                ;;
+        esac
+    done
+}
+
+asset_to_binary() {
+    local source=$1
+    local destination=$2
+    tr -d '[:space:]' < "$source" | xxd -r -p > "$destination"
+}
+
+validate_assets() {
+    need_command xxd
+    need_command edid-decode
+
+    local scratch
+    scratch=$(mktemp -d)
+    trap 'rm -rf -- "$scratch"' RETURN
+
+    local number binary report
+    for number in 1 2; do
+        binary="$scratch/edid-$number.bin"
+        report="$scratch/edid-$number.txt"
+        asset_to_binary "$ASSET_DIR/edid-4k60-$number.hex" "$binary"
+        [[ $(wc -c < "$binary") -eq 256 ]] || die "EDID $number is not 256 bytes"
+        edid-decode "$binary" > "$report" 2>&1 || {
+            cat "$report" >&2
+            die "EDID $number failed edid-decode"
+        }
+        grep -Eq 'DTD 1:[[:space:]]+3840x2160[[:space:]]+60[.]000' "$report" \
+            || die "EDID $number does not have preferred 3840x2160 at 60 Hz"
+        grep -Fq "Display Product Serial Number: 'REPLAY-UHD-0$number'" "$report" \
+            || die "EDID $number does not have its ReplayDesktop identity"
+    done
+
+    cmp -s "$scratch/edid-1.bin" "$scratch/edid-2.bin" \
+        && die "virtual EDIDs must be unique"
+    trap - RETURN
+    rm -rf -- "$scratch"
+}
+
+strip_managed_block() {
+    local input=$1
+    REPLAY_BEGIN="$BEGIN_MARKER" REPLAY_END="$END_MARKER" perl -0777 -e '
+        use strict;
+        use warnings;
+        my $data = do { local $/; <STDIN> };
+        my $begin = quotemeta($ENV{REPLAY_BEGIN});
+        my $end = quotemeta($ENV{REPLAY_END});
+        $data =~ s/^[ \t]*$begin[ \t]*\n.*?^[ \t]*$end[ \t]*\n?//msg;
+        print $data;
+    ' < "$input"
+}
+
+build_block() {
+    local layout=$1
+    local connected custom metamodes order
+    local edid_one="$ETC_DIR/replaydesktop-virtual-1.bin"
+    local edid_two="$ETC_DIR/replaydesktop-virtual-2.bin"
+
+    validate_virtual_dfp "$VIRTUAL_ONE"
+    validate_virtual_dfp "$VIRTUAL_TWO"
+    [[ $VIRTUAL_ONE != "$VIRTUAL_TWO" ]] || die "the two virtual outputs must be different"
+
+    case "$layout" in
+        headless-one)
+            [[ -z $PHYSICAL_DFP ]] || die "headless-one does not accept --physical"
+            connected=$VIRTUAL_ONE
+            custom="$VIRTUAL_ONE:$edid_one"
+            metamodes="$VIRTUAL_ONE: nvidia-auto-select +0+0"
+            order=$VIRTUAL_ONE
+            ;;
+        headless-two)
+            [[ -z $PHYSICAL_DFP ]] || die "headless-two does not accept --physical"
+            connected="$VIRTUAL_ONE, $VIRTUAL_TWO"
+            custom="$VIRTUAL_ONE:$edid_one; $VIRTUAL_TWO:$edid_two"
+            metamodes="$VIRTUAL_ONE: nvidia-auto-select +0+0, $VIRTUAL_TWO: nvidia-auto-select +3840+0"
+            order="$VIRTUAL_ONE, $VIRTUAL_TWO"
+            ;;
+        add-one)
+            [[ -n $PHYSICAL_DFP ]] || die "add-one requires --physical DFP-N"
+            validate_physical_dfp "$PHYSICAL_DFP"
+            [[ $PHYSICAL_DFP != "$VIRTUAL_ONE" && $PHYSICAL_DFP != "$VIRTUAL_TWO" ]] \
+                || die "physical and virtual outputs must be different"
+            connected="$PHYSICAL_DFP, $VIRTUAL_ONE"
+            custom="$VIRTUAL_ONE:$edid_one"
+            metamodes="$PHYSICAL_DFP: nvidia-auto-select +0+0, $VIRTUAL_ONE: nvidia-auto-select +3840+0"
+            order="$PHYSICAL_DFP, $VIRTUAL_ONE"
+            ;;
+        *)
+            die "layout must be headless-one, headless-two, or add-one"
+            ;;
+    esac
+
+    cat <<EOF
+    $BEGIN_MARKER
+    # Managed by scripts/replay-virtual-display. Do not edit this block.
+    Option      "AllowEmptyInitialConfiguration" "true"
+    Option      "ConnectedMonitor" "$connected"
+    Option      "CustomEDID" "$custom"
+    Option      "UseDisplayDevice" "$connected"
+    Option      "MetaModes" "$metamodes"
+    Option      "nvidiaXineramaInfoOrder" "$order"
+    $END_MARKER
+EOF
+}
+
+render_config() {
+    local layout=$1
+    local input=$2
+    [[ -f $input ]] || die "Xorg configuration not found: $input"
+
+    local block stripped
+    block=$(build_block "$layout")
+    stripped=$(mktemp)
+    strip_managed_block "$input" > "$stripped"
+
+    REPLAY_DEVICE="$DEVICE_ID" REPLAY_BLOCK="$block" perl -0777 -e '
+        use strict;
+        use warnings;
+        my $data = do { local $/; <STDIN> };
+        my $device = $ENV{REPLAY_DEVICE};
+        my $block = $ENV{REPLAY_BLOCK};
+        my @parts = split(/(?=^[ \t]*Section[ \t]+"[^"]+"[ \t]*$)/m, $data);
+        my $matches = 0;
+        for my $part (@parts) {
+            next unless $part =~ /^[ \t]*Section[ \t]+"Device"[ \t]*$/m;
+            next unless $part =~ /^[ \t]*Identifier[ \t]+"\Q$device\E"[ \t]*$/m;
+            $part =~ s/^[ \t]*EndSection[ \t]*$/$block\nEndSection/m
+                or die "target Device section has no EndSection\n";
+            $matches++;
+        }
+        die "expected exactly one NVIDIA Device section named $device, found $matches\n"
+            unless $matches == 1;
+        print join("", @parts);
+    ' < "$stripped"
+    rm -f -- "$stripped"
+}
+
+validate_rendered_config() {
+    local config=$1
+    [[ $(grep -Fc "$BEGIN_MARKER" "$config") -eq 1 ]] \
+        || die "rendered config must have one begin marker"
+    [[ $(grep -Fc "$END_MARKER" "$config") -eq 1 ]] \
+        || die "rendered config must have one end marker"
+    grep -Fq 'Option      "ConnectedMonitor"' "$config" \
+        || die "rendered config lacks ConnectedMonitor"
+    grep -Fq 'Option      "CustomEDID"' "$config" \
+        || die "rendered config lacks CustomEDID"
+    grep -Fq 'Option      "UseDisplayDevice"' "$config" \
+        || die "rendered config lacks UseDisplayDevice"
+    grep -Fq 'Option      "MetaModes"' "$config" \
+        || die "rendered config lacks MetaModes"
+
+    local managed
+    managed=$(sed -n "/$BEGIN_MARKER/,/$END_MARKER/p" "$config")
+    [[ $managed != *ModeValidation* ]] || die "managed block must not bypass mode validation"
+}
+
+require_root() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "this action requires root; rerun with sudo"
+}
+
+print_restart_checkpoint() {
+    local backup="$STATE_DIR/xorg.conf.before-replaydesktop"
+    cat <<EOF
+
+Configuration is persistent but is not active yet.
+Activating it WILL terminate the current graphical session:
+  sudo systemctl restart display-manager
+
+After reconnecting, verify two UHD60 outputs before starting ReplayDesktop:
+  DISPLAY=:0 xrandr --query
+  DISPLAY=:0 nvidia-settings -q dpys
+
+Disable through the managed path:
+  sudo $SCRIPT_DIR/replay-virtual-display disable
+
+Emergency rollback:
+  sudo install -m 0644 '$backup' '$XORG_CONF'
+  sudo systemctl restart display-manager
+EOF
+}
+
+enable_layout() {
+    local layout=$1
+    require_root
+    validate_assets
+    need_command install
+    need_command perl
+    [[ -f $XORG_CONF ]] || die "create a working NVIDIA xorg.conf before enabling"
+
+    mkdir -p -- "$STATE_DIR" "$ETC_DIR"
+    chmod 0700 "$STATE_DIR"
+    local backup="$STATE_DIR/xorg.conf.before-replaydesktop"
+    if [[ ! -e $backup ]]; then
+        install -m 0600 -- "$XORG_CONF" "$backup"
+    fi
+
+    local scratch rendered mode uid gid
+    scratch=$(mktemp -d "$STATE_DIR/enable.XXXXXX")
+    trap 'rm -rf -- "$scratch"' RETURN
+    asset_to_binary "$ASSET_DIR/edid-4k60-1.hex" "$scratch/edid-1.bin"
+    asset_to_binary "$ASSET_DIR/edid-4k60-2.hex" "$scratch/edid-2.bin"
+    render_config "$layout" "$XORG_CONF" > "$scratch/xorg.conf"
+    validate_rendered_config "$scratch/xorg.conf"
+
+    install -m 0644 -- "$scratch/edid-1.bin" "$ETC_DIR/replaydesktop-virtual-1.bin"
+    install -m 0644 -- "$scratch/edid-2.bin" "$ETC_DIR/replaydesktop-virtual-2.bin"
+    mode=$(stat -c '%a' "$XORG_CONF")
+    uid=$(stat -c '%u' "$XORG_CONF")
+    gid=$(stat -c '%g' "$XORG_CONF")
+    install -m "$mode" -o "$uid" -g "$gid" -- "$scratch/xorg.conf" "$scratch/xorg.conf.install"
+    mv -f -- "$scratch/xorg.conf.install" "$XORG_CONF"
+    printf 'layout=%s\nphysical=%s\nvirtual_one=%s\nvirtual_two=%s\n' \
+        "$layout" "$PHYSICAL_DFP" "$VIRTUAL_ONE" "$VIRTUAL_TWO" \
+        > "$STATE_DIR/current"
+    chmod 0600 "$STATE_DIR/current"
+
+    trap - RETURN
+    rm -rf -- "$scratch"
+    printf 'Prepared ReplayDesktop virtual-display layout: %s\n' "$layout"
+    printf 'Backup: %s\n' "$backup"
+    print_restart_checkpoint
+}
+
+disable_layout() {
+    [[ -f $XORG_CONF ]] || die "Xorg configuration not found: $XORG_CONF"
+    if [[ $DRY_RUN == true ]]; then
+        strip_managed_block "$XORG_CONF"
+        return
+    fi
+
+    require_root
+    if ! grep -Fq "$BEGIN_MARKER" "$XORG_CONF"; then
+        printf 'ReplayDesktop virtual displays are already disabled in %s\n' "$XORG_CONF"
+        return
+    fi
+
+    local scratch mode uid gid
+    scratch=$(mktemp -d "$STATE_DIR/disable.XXXXXX")
+    trap 'rm -rf -- "$scratch"' RETURN
+    strip_managed_block "$XORG_CONF" > "$scratch/xorg.conf"
+    mode=$(stat -c '%a' "$XORG_CONF")
+    uid=$(stat -c '%u' "$XORG_CONF")
+    gid=$(stat -c '%g' "$XORG_CONF")
+    install -m "$mode" -o "$uid" -g "$gid" -- "$scratch/xorg.conf" "$scratch/xorg.conf.install"
+    mv -f -- "$scratch/xorg.conf.install" "$XORG_CONF"
+    rm -f -- "$ETC_DIR/replaydesktop-virtual-1.bin" \
+        "$ETC_DIR/replaydesktop-virtual-2.bin" "$STATE_DIR/current"
+    trap - RETURN
+    rm -rf -- "$scratch"
+    printf 'Removed the ReplayDesktop virtual-display block.\n'
+    print_restart_checkpoint
+}
+
+show_status() {
+    printf 'xorg_config=%s\n' "$XORG_CONF"
+    if [[ -f $XORG_CONF ]] && grep -Fq "$BEGIN_MARKER" "$XORG_CONF"; then
+        printf 'configured=enabled\n'
+        sed -n "/$BEGIN_MARKER/,/$END_MARKER/p" "$XORG_CONF"
+    else
+        printf 'configured=disabled\n'
+    fi
+    if [[ -f $STATE_DIR/current ]]; then
+        printf 'state_file=%s\n' "$STATE_DIR/current"
+        cat "$STATE_DIR/current"
+    fi
+    if command -v xrandr >/dev/null 2>&1 && [[ -n ${DISPLAY:-} ]]; then
+        printf 'live_outputs:\n'
+        xrandr --query | awk '/ connected / { print }'
+    else
+        printf 'live_outputs=Unknown (run inside the target X session)\n'
+    fi
+}
+
+COMMAND=${1:-}
+[[ -n $COMMAND ]] || {
+    usage
+    exit 1
+}
+shift
+
+LAYOUT=
+case "$COMMAND" in
+    render|enable)
+        LAYOUT=${1:-}
+        [[ -n $LAYOUT ]] || die "$COMMAND requires a layout"
+        shift
+        ;;
+esac
+parse_options "$@"
+
+case "$COMMAND" in
+    status)
+        show_status
+        ;;
+    validate-assets)
+        validate_assets
+        printf 'EDID assets valid: two unique preferred 3840x2160@60 displays\n'
+        ;;
+    render)
+        validate_assets
+        render_config "$LAYOUT" "$XORG_CONF"
+        ;;
+    enable)
+        enable_layout "$LAYOUT"
+        ;;
+    disable)
+        disable_layout
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        die "unknown command: $COMMAND"
+        ;;
+esac

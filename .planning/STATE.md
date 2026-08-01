@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Opened direct-LAN firewall path; persistent dual-UHD virtual-display prototype is next
-last_updated: "2026-08-01T16:03:35Z"
+stopped_at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
+last_updated: "2026-08-01T16:57:02Z"
 last_activity: 2026-08-01
-last_activity_desc: "Completed quick task 260801-ou3: all-interface TCP and UDP 8080 LAN access"
+last_activity_desc: "Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-08-01 — Completed quick task 260801-ou3: all-interface TCP and UDP 8080 LAN access
+Last activity: 2026-08-01 — Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending
 
 Progress: [██████████] 100%
 
@@ -159,6 +159,7 @@ None yet.
 | 260731-263 | Host NvFBC capture-begin, accepted-batch sequence, and terminal-loss evidence | 2026-07-31 | ba5b985 | Verified | [260731-263-implement-the-loss-aware-rust-telemetry-](./quick/260731-263-implement-the-loss-aware-rust-telemetry-/) |
 | 260731-df1 | Prototype technical metrics cards and arm64 package | 2026-07-31 | eeeb5c6 | Needs Review | [260731-df1-prototype-only-technical-metrics-dashboa](./quick/260731-df1-prototype-only-technical-metrics-dashboa/) |
 | 260801-ou3 | All-interface direct-LAN TCP and UDP 8080 access | 2026-08-01 | runtime-only | Verified | [260801-ou3-allow-direct-lan-replaydesktop-prototype](./quick/260801-ou3-allow-direct-lan-replaydesktop-prototype/) |
+| 260801-ozj | Persistent NVIDIA X11 virtual displays and exactly-two-window Mac client | 2026-08-01 | 551d468 | Needs Review | [260801-ozj-prototype-persistent-x11-virtual-display](./quick/260801-ozj-prototype-persistent-x11-virtual-display/) |
 
 ## Deferred Items
 
@@ -168,6 +169,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-01T16:03:35Z
-Stopped at: Opened direct-LAN firewall path; persistent dual-UHD virtual-display prototype is next
+Last session: 2026-08-01T16:57:02Z
+Stopped at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
 Resume file: None

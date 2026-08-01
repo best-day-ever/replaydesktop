@@ -1,0 +1,1792 @@
+diff --git a/src/media_player.rs b/src/media_player.rs
+index fb2154c55a5cf0fdb1a169cafadf40a8112a6606..750f012bfac61a8b9477f91cb9d6158999bebfea 100644
+--- a/src/media_player.rs
++++ b/src/media_player.rs
+@@ -2,34 +2,293 @@
+ // This file is part of vlc-rs.
+ // Licensed under the MIT license, see the LICENSE file.
+ 
++use crate::enums::{Position, State};
++use crate::metrics::{
++    copy_video_path_batch, MetricsEntry, RejectedVideoPathBatch, VideoPathCallbackDisposition,
++    VideoPathCallbackEvent, VideoPathTerminal,
++};
+ use crate::sys;
++use crate::EventManager;
+ use crate::Instance;
+ use crate::Media;
+-use crate::EventManager;
+-use libc::{c_void, c_int, c_uint};
+-use crate::enums::{State, Position};
+-use std::mem::transmute;
+-use crate::metrics::MetricsEntry;
++use libc::{c_int, c_uint, c_void};
++use std::collections::HashMap;
++use std::convert::TryFrom;
+ use std::ffi::CStr;
++use std::fmt;
++use std::mem::transmute;
++use std::panic::{catch_unwind, AssertUnwindSafe};
++use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
++use std::sync::{Arc, Mutex, OnceLock};
++
++const VIDEO_PATH_CALLBACK_REJECTED: c_int = 1;
++
++type VideoPathCallback =
++    dyn Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static;
+ 
+ /// A LibVLC media player plays one media (usually in a custom drawable).
+ pub struct MediaPlayer {
+     pub(crate) ptr: *mut sys::libvlc_media_player_t,
++    video_path_callback: Option<Box<VideoPathCallbackHandle>>,
+ }
+ 
+ unsafe impl Send for MediaPlayer {}
+ unsafe impl Sync for MediaPlayer {}
+ 
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathCallbackInstallError {
++    AlreadyInstalled,
++    IdentifierExhausted,
++    NativeRejected(c_int),
++}
++
++impl fmt::Display for VideoPathCallbackInstallError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::AlreadyInstalled => formatter.write_str("video-path callback already installed"),
++            Self::IdentifierExhausted => {
++                formatter.write_str("video-path callback identifier space exhausted")
++            }
++            Self::NativeRejected(status) => {
++                write!(
++                    formatter,
++                    "libVLC rejected video-path callback installation ({})",
++                    status
++                )
++            }
++        }
++    }
++}
++
++impl std::error::Error for VideoPathCallbackInstallError {}
++
++struct VideoPathCallbackState {
++    callback: Box<VideoPathCallback>,
++    native_lifetime_closed: AtomicBool,
++    terminal_emitted: AtomicBool,
++    last_observed_producer_sequence: AtomicU64,
++    bridge_rejected_callbacks: AtomicU64,
++    bridge_rejected_records: AtomicU64,
++    first_rejected_producer_sequence: AtomicU64,
++    last_rejected_producer_sequence: AtomicU64,
++}
++
++struct VideoPathCallbackHandle {
++    id: usize,
++    state: Arc<VideoPathCallbackState>,
++}
++
++impl VideoPathCallbackHandle {
++    fn new<C>(callback: C) -> Result<Self, VideoPathCallbackInstallError>
++    where
++        C: Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static,
++    {
++        let id = NEXT_VIDEO_PATH_CALLBACK_ID
++            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
++                current.checked_add(1)
++            })
++            .map_err(|_| VideoPathCallbackInstallError::IdentifierExhausted)?;
++        let handle = Self {
++            id,
++            state: Arc::new(VideoPathCallbackState::new(callback)),
++        };
++        video_path_callback_registry()
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .insert(handle.id, Arc::clone(&handle.state));
++        Ok(handle)
++    }
++
++    fn userdata(&self) -> *mut c_void {
++        self.id as *mut c_void
++    }
++
++    fn unregister(&self) {
++        video_path_callback_registry()
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .remove(&self.id);
++    }
++}
++
++impl Drop for VideoPathCallbackHandle {
++    fn drop(&mut self) {
++        self.unregister();
++    }
++}
++
++static NEXT_VIDEO_PATH_CALLBACK_ID: AtomicUsize = AtomicUsize::new(1);
++static VIDEO_PATH_CALLBACK_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<VideoPathCallbackState>>>> =
++    OnceLock::new();
++
++fn video_path_callback_registry() -> &'static Mutex<HashMap<usize, Arc<VideoPathCallbackState>>> {
++    VIDEO_PATH_CALLBACK_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
++}
++
++fn video_path_callback_state(data: *mut c_void) -> Option<Arc<VideoPathCallbackState>> {
++    let id = data as usize;
++    if id == 0 {
++        return None;
++    }
++    video_path_callback_registry()
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner())
++        .get(&id)
++        .cloned()
++}
++
++impl VideoPathCallbackState {
++    fn new<C>(callback: C) -> Self
++    where
++        C: Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static,
++    {
++        Self {
++            callback: Box::new(callback),
++            native_lifetime_closed: AtomicBool::new(false),
++            terminal_emitted: AtomicBool::new(false),
++            last_observed_producer_sequence: AtomicU64::new(0),
++            bridge_rejected_callbacks: AtomicU64::new(0),
++            bridge_rejected_records: AtomicU64::new(0),
++            first_rejected_producer_sequence: AtomicU64::new(0),
++            last_rejected_producer_sequence: AtomicU64::new(0),
++        }
++    }
++
++    fn observe_producer_sequence(&self, sequence: u64) {
++        atomic_maximum(&self.last_observed_producer_sequence, sequence);
++    }
++
++    fn record_rejection(&self, rejected: RejectedVideoPathBatch) {
++        atomic_saturating_add(&self.bridge_rejected_callbacks, 1);
++        atomic_saturating_add(&self.bridge_rejected_records, rejected.record_count);
++        if let Some(sequence) = rejected.first_sequence {
++            atomic_minimum_nonzero(&self.first_rejected_producer_sequence, sequence);
++        }
++        if let Some(sequence) = rejected.last_sequence {
++            atomic_maximum(&self.last_rejected_producer_sequence, sequence);
++        }
++    }
++
++    fn terminal_snapshot(&self) -> VideoPathTerminal {
++        VideoPathTerminal {
++            last_observed_producer_sequence: nonzero_option(
++                self.last_observed_producer_sequence.load(Ordering::SeqCst),
++            ),
++            bridge_rejected_callbacks: self.bridge_rejected_callbacks.load(Ordering::SeqCst),
++            bridge_rejected_records: self.bridge_rejected_records.load(Ordering::SeqCst),
++            first_rejected_producer_sequence: nonzero_option(
++                self.first_rejected_producer_sequence.load(Ordering::SeqCst),
++            ),
++            last_rejected_producer_sequence: nonzero_option(
++                self.last_rejected_producer_sequence.load(Ordering::SeqCst),
++            ),
++        }
++    }
++}
++
++fn nonzero_option(value: u64) -> Option<u64> {
++    if value == 0 {
++        None
++    } else {
++        Some(value)
++    }
++}
++
++fn atomic_saturating_add(value: &AtomicU64, increment: u64) {
++    let mut current = value.load(Ordering::SeqCst);
++    loop {
++        let next = current.saturating_add(increment);
++        match value.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
++            Ok(_) => return,
++            Err(observed) => current = observed,
++        }
++    }
++}
++
++fn atomic_maximum(value: &AtomicU64, candidate: u64) {
++    let mut current = value.load(Ordering::SeqCst);
++    while candidate > current {
++        match value.compare_exchange_weak(current, candidate, Ordering::SeqCst, Ordering::SeqCst) {
++            Ok(_) => return,
++            Err(observed) => current = observed,
++        }
++    }
++}
++
++fn atomic_minimum_nonzero(value: &AtomicU64, candidate: u64) {
++    if candidate == 0 {
++        return;
++    }
++
++    let mut current = value.load(Ordering::SeqCst);
++    while current == 0 || candidate < current {
++        match value.compare_exchange_weak(current, candidate, Ordering::SeqCst, Ordering::SeqCst) {
++            Ok(_) => return,
++            Err(observed) => current = observed,
++        }
++    }
++}
++
++fn install_video_path_callback_with<C, S>(
++    slot: &mut Option<Box<VideoPathCallbackHandle>>,
++    callback: C,
++    setter: S,
++) -> Result<(), VideoPathCallbackInstallError>
++where
++    C: Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static,
++    S: FnOnce(sys::libvlc_video_path_cb, *mut c_void) -> c_int,
++{
++    if slot.is_some() {
++        return Err(VideoPathCallbackInstallError::AlreadyInstalled);
++    }
++    let candidate = Box::new(VideoPathCallbackHandle::new(callback)?);
++
++    let userdata = candidate.userdata();
++    let status = setter(video_path_cb, userdata);
++    if status != 0 {
++        return Err(VideoPathCallbackInstallError::NativeRejected(status));
++    }
++
++    *slot = Some(candidate);
++    Ok(())
++}
++
++fn release_video_path_callback_with<R>(
++    callback_handle: Option<Box<VideoPathCallbackHandle>>,
++    release: R,
++) where
++    R: FnOnce(),
++{
++    release();
++
++    if let Some(handle) = callback_handle {
++        let state = Arc::clone(&handle.state);
++        handle.unregister();
++        state.native_lifetime_closed.store(true, Ordering::SeqCst);
++        if !state.terminal_emitted.swap(true, Ordering::SeqCst) {
++            let terminal = state.terminal_snapshot();
++            let _ = catch_unwind(AssertUnwindSafe(|| {
++                (state.callback)(VideoPathCallbackEvent::ProducerTerminalUnconfirmed(
++                    terminal,
++                ))
++            }));
++        }
++    }
++}
++
+ impl MediaPlayer {
+     /// Create an empty Media Player object
+     pub fn new(instance: &Instance) -> Option<MediaPlayer> {
+-        unsafe{
++        unsafe {
+             let p = sys::libvlc_media_player_new(instance.ptr);
+ 
+             if p.is_null() {
+                 return None;
+             }
+-            Some(MediaPlayer{ptr: p})
++            Some(MediaPlayer {
++                ptr: p,
++                video_path_callback: None,
++            })
+         }
+     }
+ 
+@@ -339,11 +598,613 @@ impl MediaPlayer {
+             sys::libvlc_media_player_set_metrics_callback(self.ptr, metrics_cb, Box::into_raw(cb) as *mut _);
+         }
+     }
++
++    pub fn set_video_path_callback<C>(
++        &mut self,
++        callback: C,
++    ) -> Result<(), VideoPathCallbackInstallError>
++    where
++        C: Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static,
++    {
++        let player = self.ptr;
++        install_video_path_callback_with(
++            &mut self.video_path_callback,
++            callback,
++            |native_callback, userdata| unsafe {
++                sys::libvlc_media_player_set_video_path_callback(player, native_callback, userdata)
++            },
++        )
++    }
+ }
+ 
+ impl Drop for MediaPlayer {
+     fn drop(&mut self) {
+-        unsafe{ sys::libvlc_media_player_release(self.ptr) };
++        let callback_handle = self.video_path_callback.take();
++        release_video_path_callback_with(callback_handle, || unsafe {
++            sys::libvlc_media_player_release(self.ptr)
++        });
++    }
++}
++
++unsafe extern "C" fn video_path_cb(
++    data: *mut c_void,
++    events: *const sys::libvlc_video_path_event,
++    count: usize,
++) -> c_int {
++    match catch_unwind(AssertUnwindSafe(|| {
++        // Native media-player release is a reference-count decrement rather
++        // than a universal destruction fence. The opaque, never-reused ID is
++        // therefore looked up instead of dereferenced: an invocation guard
++        // keeps in-flight state alive, while callbacks arriving after Rust
++        // owner release fail closed without touching freed userdata.
++        let state = match video_path_callback_state(data) {
++            Some(state) => state,
++            None => return VIDEO_PATH_CALLBACK_REJECTED,
++        };
++        if state.native_lifetime_closed.load(Ordering::SeqCst) {
++            state.record_rejection(RejectedVideoPathBatch {
++                record_count: u64::try_from(count.min(crate::metrics::VIDEO_PATH_MAX_RECORDS))
++                    .unwrap_or(crate::metrics::VIDEO_PATH_MAX_RECORDS as u64),
++                first_sequence: None,
++                last_sequence: None,
++            });
++            return VIDEO_PATH_CALLBACK_REJECTED;
++        }
++
++        let batch = match unsafe { copy_video_path_batch(events, count) } {
++            Ok(batch) => batch,
++            Err(rejected) => {
++                state.record_rejection(rejected);
++                return VIDEO_PATH_CALLBACK_REJECTED;
++            }
++        };
++        state.observe_producer_sequence(batch.last_sequence);
++
++        let rejected = RejectedVideoPathBatch {
++            record_count: u64::try_from(batch.events.len()).unwrap_or(u64::MAX),
++            first_sequence: Some(batch.first_sequence),
++            last_sequence: Some(batch.last_sequence),
++        };
++        match catch_unwind(AssertUnwindSafe(|| {
++            (state.callback)(VideoPathCallbackEvent::Records(batch.events))
++        })) {
++            Ok(VideoPathCallbackDisposition::Accept) => 0,
++            Ok(VideoPathCallbackDisposition::Reject) | Err(_) => {
++                state.record_rejection(rejected);
++                VIDEO_PATH_CALLBACK_REJECTED
++            }
++        }
++    })) {
++        Ok(status) => status,
++        Err(_) => VIDEO_PATH_CALLBACK_REJECTED,
++    }
++}
++
++#[cfg(test)]
++mod video_path_tests {
++    use super::*;
++    use crate::metrics::{
++        VideoPathCallbackDisposition, VideoPathCallbackEvent, VideoPathTerminal,
++        VIDEO_PATH_MAX_RECORDS, VIDEO_PATH_V1_PREFIX_SIZE,
++    };
++    use libc::c_char;
++    use std::mem;
++    use std::ptr;
++    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
++    use std::sync::{Arc, Mutex};
++    use std::thread;
++
++    fn raw_event(sequence: u64, text: &str) -> sys::libvlc_video_path_event {
++        let mut event: sys::libvlc_video_path_event = unsafe { mem::zeroed() };
++        event.version = sys::LIBVLC_VIDEO_PATH_EVENT_VERSION;
++        event.struct_size = VIDEO_PATH_V1_PREFIX_SIZE as u16;
++        event.kind = 4;
++        event.producer_seq = sequence;
++        event.monotonic_ts = sequence as i64 + 1;
++        event.codec = 2;
++        event.chroma = 2;
++        event.text[..text.len()]
++            .iter_mut()
++            .zip(text.as_bytes())
++            .for_each(|(destination, source)| *destination = *source as c_char);
++        event
++    }
++
++    fn invoke(
++        handle: &Box<VideoPathCallbackHandle>,
++        event: *const sys::libvlc_video_path_event,
++        count: usize,
++    ) -> c_int {
++        unsafe { video_path_cb(handle.userdata(), event, count) }
++    }
++
++    fn callback_handle<C>(callback: C) -> Box<VideoPathCallbackHandle>
++    where
++        C: Fn(VideoPathCallbackEvent) -> VideoPathCallbackDisposition + Send + Sync + 'static,
++    {
++        Box::new(VideoPathCallbackHandle::new(callback).unwrap())
++    }
++
++    #[test]
++    fn accepts_owned_batches_and_accounts_reject_and_malformed_input() {
++        let accepted = Arc::new(Mutex::new(Vec::new()));
++        let accepted_for_callback = Arc::clone(&accepted);
++        let state = callback_handle(move |event| {
++            if let VideoPathCallbackEvent::Records(records) = event {
++                accepted_for_callback
++                    .lock()
++                    .unwrap()
++                    .push(records[0].text.clone());
++            }
++            VideoPathCallbackDisposition::Accept
++        });
++        let event = raw_event(4, "owned");
++        assert_eq!(invoke(&state, &event, 1), 0);
++        assert_eq!(accepted.lock().unwrap().as_slice(), ["owned"]);
++
++        let rejected_terminal = Arc::new(Mutex::new(None));
++        let rejected_terminal_for_callback = Arc::clone(&rejected_terminal);
++        let rejecting = callback_handle(move |event| match event {
++            VideoPathCallbackEvent::Records(_) => VideoPathCallbackDisposition::Reject,
++            VideoPathCallbackEvent::ProducerTerminalUnconfirmed(terminal) => {
++                *rejected_terminal_for_callback.lock().unwrap() = Some(terminal);
++                VideoPathCallbackDisposition::Accept
++            }
++        });
++        let rejected_event = raw_event(9, "reject");
++        assert_eq!(
++            invoke(&rejecting, &rejected_event, 1),
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        release_video_path_callback_with(Some(rejecting), || {});
++        assert_eq!(
++            rejected_terminal.lock().unwrap().as_ref(),
++            Some(&VideoPathTerminal {
++                last_observed_producer_sequence: Some(9),
++                bridge_rejected_callbacks: 1,
++                bridge_rejected_records: 1,
++                first_rejected_producer_sequence: Some(9),
++                last_rejected_producer_sequence: Some(9),
++            })
++        );
++
++        let consumer_calls = Arc::new(AtomicUsize::new(0));
++        let calls_for_callback = Arc::clone(&consumer_calls);
++        let malformed_state = callback_handle(move |_| {
++            calls_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++            VideoPathCallbackDisposition::Accept
++        });
++        let mut malformed = raw_event(11, "bad");
++        malformed.pts = 1;
++        assert_eq!(
++            invoke(&malformed_state, &malformed, 1),
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        assert_eq!(consumer_calls.load(AtomicOrdering::SeqCst), 0);
++        let terminal = malformed_state.state.terminal_snapshot();
++        assert_eq!(terminal.bridge_rejected_callbacks, 1);
++        assert_eq!(terminal.bridge_rejected_records, 1);
++        assert_eq!(terminal.first_rejected_producer_sequence, Some(11));
++        assert_eq!(terminal.last_rejected_producer_sequence, Some(11));
++    }
++
++    #[test]
++    fn invalid_later_record_rejects_the_atomic_batch_without_dispatch() {
++        let consumer_calls = Arc::new(AtomicUsize::new(0));
++        let calls_for_callback = Arc::clone(&consumer_calls);
++        let state = callback_handle(move |_| {
++            calls_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++            VideoPathCallbackDisposition::Accept
++        });
++        let first = raw_event(21, "first");
++        let mut second = raw_event(22, "second");
++        second.pts_valid = 2;
++        let mut storage = vec![0u64; VIDEO_PATH_V1_PREFIX_SIZE * 2 / mem::size_of::<u64>()];
++        let storage_bytes = storage.as_mut_ptr().cast::<u8>();
++        unsafe {
++            ptr::copy_nonoverlapping(
++                (&first as *const sys::libvlc_video_path_event).cast::<u8>(),
++                storage_bytes,
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++            ptr::copy_nonoverlapping(
++                (&second as *const sys::libvlc_video_path_event).cast::<u8>(),
++                storage_bytes.add(VIDEO_PATH_V1_PREFIX_SIZE),
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++        }
++        assert_eq!(
++            invoke(
++                &state,
++                storage_bytes.cast::<sys::libvlc_video_path_event>(),
++                2,
++            ),
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        assert_eq!(consumer_calls.load(AtomicOrdering::SeqCst), 0);
++        assert_eq!(
++            state.state.terminal_snapshot(),
++            VideoPathTerminal {
++                last_observed_producer_sequence: None,
++                bridge_rejected_callbacks: 1,
++                bridge_rejected_records: 2,
++                first_rejected_producer_sequence: Some(21),
++                last_rejected_producer_sequence: Some(22),
++            }
++        );
++    }
++
++    #[test]
++    fn oversized_count_is_rejected_before_dereference_and_clamped() {
++        let state = callback_handle(|_| panic!("oversized callback must not dispatch"));
++        let event = raw_event(1, "");
++        assert_eq!(
++            invoke(&state, &event, VIDEO_PATH_MAX_RECORDS + 1),
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        let terminal = state.state.terminal_snapshot();
++        assert_eq!(terminal.bridge_rejected_callbacks, 1);
++        assert_eq!(
++            terminal.bridge_rejected_records,
++            VIDEO_PATH_MAX_RECORDS as u64
++        );
++        assert_eq!(terminal.first_rejected_producer_sequence, None);
++    }
++
++    #[test]
++    fn contains_consumer_panic_and_returns_the_stable_rejection_code() {
++        let state = callback_handle(|event| match event {
++            VideoPathCallbackEvent::Records(_) => panic!("consumer panic"),
++            VideoPathCallbackEvent::ProducerTerminalUnconfirmed(_) => {
++                VideoPathCallbackDisposition::Accept
++            }
++        });
++        let event = raw_event(12, "panic");
++        assert_eq!(invoke(&state, &event, 1), VIDEO_PATH_CALLBACK_REJECTED);
++        let terminal = state.state.terminal_snapshot();
++        assert_eq!(terminal.bridge_rejected_callbacks, 1);
++        assert_eq!(terminal.bridge_rejected_records, 1);
++        assert_eq!(terminal.first_rejected_producer_sequence, Some(12));
++    }
++
++    #[test]
++    fn concurrent_callbacks_keep_exact_bounded_facts() {
++        const THREADS: usize = 8;
++        const CALLS_PER_THREAD: usize = 50;
++
++        let calls = Arc::new(AtomicUsize::new(0));
++        let calls_for_callback = Arc::clone(&calls);
++        let state = callback_handle(move |event| {
++            if let VideoPathCallbackEvent::Records(records) = event {
++                assert_eq!(records.len(), 1);
++                calls_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++            }
++            VideoPathCallbackDisposition::Accept
++        });
++        let userdata = state.userdata() as usize;
++        let mut threads = Vec::new();
++        for thread_index in 0..THREADS {
++            threads.push(thread::spawn(move || {
++                for call_index in 0..CALLS_PER_THREAD {
++                    let sequence = (thread_index * CALLS_PER_THREAD + call_index + 1) as u64;
++                    let event = raw_event(sequence, "concurrent");
++                    let status = unsafe { video_path_cb(userdata as *mut c_void, &event, 1) };
++                    assert_eq!(status, 0);
++                }
++            }));
++        }
++        for thread in threads {
++            thread.join().unwrap();
++        }
++
++        assert_eq!(
++            calls.load(AtomicOrdering::SeqCst),
++            THREADS * CALLS_PER_THREAD
++        );
++        assert_eq!(
++            state
++                .state
++                .last_observed_producer_sequence
++                .load(Ordering::SeqCst),
++            (THREADS * CALLS_PER_THREAD) as u64
++        );
++        assert_eq!(
++            state.state.bridge_rejected_callbacks.load(Ordering::SeqCst),
++            0
++        );
++    }
++
++    #[test]
++    fn concurrent_reject_and_panic_callbacks_keep_exact_loss_facts() {
++        const THREADS: usize = 8;
++        const CALLS_PER_THREAD: usize = 50;
++        const TOTAL_CALLS: usize = THREADS * CALLS_PER_THREAD;
++
++        let state = callback_handle(move |event| match event {
++            VideoPathCallbackEvent::Records(records) => {
++                if (records[0].producer_sequence - 1) % CALLS_PER_THREAD as u64 == 0 {
++                    panic!("concurrent rejection panic");
++                }
++                VideoPathCallbackDisposition::Reject
++            }
++            VideoPathCallbackEvent::ProducerTerminalUnconfirmed(_) => {
++                VideoPathCallbackDisposition::Accept
++            }
++        });
++        let userdata = state.userdata() as usize;
++        let mut threads = Vec::new();
++        for thread_index in 0..THREADS {
++            threads.push(thread::spawn(move || {
++                for call_index in 0..CALLS_PER_THREAD {
++                    let sequence = (thread_index * CALLS_PER_THREAD + call_index + 1) as u64;
++                    let event = raw_event(sequence, "rejected");
++                    let status = unsafe { video_path_cb(userdata as *mut c_void, &event, 1) };
++                    assert_eq!(status, VIDEO_PATH_CALLBACK_REJECTED);
++                }
++            }));
++        }
++        for thread in threads {
++            thread.join().unwrap();
++        }
++
++        assert_eq!(
++            state.state.terminal_snapshot(),
++            VideoPathTerminal {
++                last_observed_producer_sequence: Some(TOTAL_CALLS as u64),
++                bridge_rejected_callbacks: TOTAL_CALLS as u64,
++                bridge_rejected_records: TOTAL_CALLS as u64,
++                first_rejected_producer_sequence: Some(1),
++                last_rejected_producer_sequence: Some(TOTAL_CALLS as u64),
++            }
++        );
++    }
++
++    #[test]
++    fn rejection_accounting_is_clamped_and_saturating() {
++        let state = VideoPathCallbackState::new(|_| VideoPathCallbackDisposition::Accept);
++        state
++            .bridge_rejected_callbacks
++            .store(u64::MAX - 1, Ordering::SeqCst);
++        state
++            .bridge_rejected_records
++            .store(u64::MAX - 2, Ordering::SeqCst);
++        state.record_rejection(RejectedVideoPathBatch {
++            record_count: VIDEO_PATH_MAX_RECORDS as u64,
++            first_sequence: Some(20),
++            last_sequence: Some(30),
++        });
++        assert_eq!(
++            state.bridge_rejected_callbacks.load(Ordering::SeqCst),
++            u64::MAX
++        );
++        assert_eq!(
++            state.bridge_rejected_records.load(Ordering::SeqCst),
++            u64::MAX
++        );
++        assert_eq!(
++            state
++                .first_rejected_producer_sequence
++                .load(Ordering::SeqCst),
++            20
++        );
++        assert_eq!(
++            state.last_rejected_producer_sequence.load(Ordering::SeqCst),
++            30
++        );
++    }
++
++    struct DropCounter(Arc<AtomicUsize>);
++
++    impl Drop for DropCounter {
++        fn drop(&mut self) {
++            self.0.fetch_add(1, AtomicOrdering::SeqCst);
++        }
++    }
++
++    #[test]
++    fn failed_and_duplicate_install_drop_candidate_userdata() {
++        let failed_drops = Arc::new(AtomicUsize::new(0));
++        let failed_probe = DropCounter(Arc::clone(&failed_drops));
++        let mut slot = None;
++        let result = install_video_path_callback_with(
++            &mut slot,
++            move |_| {
++                let _keep_probe_alive = &failed_probe;
++                VideoPathCallbackDisposition::Accept
++            },
++            |_, _| -42,
++        );
++        assert_eq!(
++            result,
++            Err(VideoPathCallbackInstallError::NativeRejected(-42))
++        );
++        assert!(slot.is_none());
++        assert_eq!(failed_drops.load(AtomicOrdering::SeqCst), 1);
++
++        let mut installed_address = 0usize;
++        install_video_path_callback_with(
++            &mut slot,
++            |_| VideoPathCallbackDisposition::Accept,
++            |_, userdata| {
++                installed_address = userdata as usize;
++                0
++            },
++        )
++        .unwrap();
++        assert_eq!(installed_address, slot.as_ref().unwrap().id);
++        assert!(video_path_callback_state(installed_address as *mut c_void).is_some());
++
++        let duplicate_drops = Arc::new(AtomicUsize::new(0));
++        let duplicate_probe = DropCounter(Arc::clone(&duplicate_drops));
++        let duplicate = install_video_path_callback_with(
++            &mut slot,
++            move |_| {
++                let _keep_probe_alive = &duplicate_probe;
++                VideoPathCallbackDisposition::Accept
++            },
++            |_, _| panic!("duplicate installation reached native setter"),
++        );
++        assert_eq!(
++            duplicate,
++            Err(VideoPathCallbackInstallError::AlreadyInstalled)
++        );
++        assert_eq!(duplicate_drops.load(AtomicOrdering::SeqCst), 1);
++    }
++
++    struct OrderedDrop(Arc<Mutex<Vec<&'static str>>>);
++
++    impl Drop for OrderedDrop {
++        fn drop(&mut self) {
++            self.0.lock().unwrap().push("userdata-drop");
++        }
++    }
++
++    #[test]
++    fn release_precedes_one_terminal_event_and_userdata_drop() {
++        let order = Arc::new(Mutex::new(Vec::new()));
++        let probe = OrderedDrop(Arc::clone(&order));
++        let order_for_callback = Arc::clone(&order);
++        let terminal_calls = Arc::new(AtomicUsize::new(0));
++        let terminal_calls_for_callback = Arc::clone(&terminal_calls);
++        let state = callback_handle(move |event| {
++            let _keep_probe_alive = &probe;
++            if let VideoPathCallbackEvent::ProducerTerminalUnconfirmed(terminal) = event {
++                assert_eq!(terminal.last_observed_producer_sequence, None);
++                terminal_calls_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++                order_for_callback.lock().unwrap().push("terminal");
++            }
++            VideoPathCallbackDisposition::Reject
++        });
++        let order_for_release = Arc::clone(&order);
++        release_video_path_callback_with(Some(state), move || {
++            order_for_release.lock().unwrap().push("release");
++        });
++        assert_eq!(terminal_calls.load(AtomicOrdering::SeqCst), 1);
++        assert_eq!(
++            order.lock().unwrap().as_slice(),
++            ["release", "terminal", "userdata-drop"]
++        );
++    }
++
++    #[test]
++    fn callback_triggered_owner_drop_keeps_in_flight_state_and_rejects_late_calls() {
++        let owner = Arc::new(Mutex::new(None::<Box<VideoPathCallbackHandle>>));
++        let owner_for_callback = Arc::clone(&owner);
++        let userdata = Arc::new(AtomicUsize::new(0));
++        let userdata_for_callback = Arc::clone(&userdata);
++        let records = Arc::new(AtomicUsize::new(0));
++        let records_for_callback = Arc::clone(&records);
++        let terminal = Arc::new(AtomicUsize::new(0));
++        let terminal_for_callback = Arc::clone(&terminal);
++        let releases = Arc::new(AtomicUsize::new(0));
++        let releases_for_callback = Arc::clone(&releases);
++        let nested_status = Arc::new(AtomicUsize::new(usize::MAX));
++        let nested_status_for_callback = Arc::clone(&nested_status);
++
++        let handle = callback_handle(move |event| {
++            match event {
++                VideoPathCallbackEvent::Records(_) => {
++                    records_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++                    let owned_handle = owner_for_callback.lock().unwrap().take();
++                    if let Some(owned_handle) = owned_handle {
++                        let nested_userdata =
++                            userdata_for_callback.load(AtomicOrdering::SeqCst) as *mut c_void;
++                        let nested_status_for_release = Arc::clone(&nested_status_for_callback);
++                        let releases_for_release = Arc::clone(&releases_for_callback);
++                        release_video_path_callback_with(Some(owned_handle), move || {
++                            releases_for_release.fetch_add(1, AtomicOrdering::SeqCst);
++                            let nested_event = raw_event(102, "during-release");
++                            let status =
++                                unsafe { video_path_cb(nested_userdata, &nested_event, 1) };
++                            nested_status_for_release
++                                .store(status as usize, AtomicOrdering::SeqCst);
++                        });
++                    }
++                }
++                VideoPathCallbackEvent::ProducerTerminalUnconfirmed(_) => {
++                    terminal_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++                }
++            }
++            VideoPathCallbackDisposition::Accept
++        });
++        let userdata_value = handle.userdata() as usize;
++        userdata.store(userdata_value, AtomicOrdering::SeqCst);
++        *owner.lock().unwrap() = Some(handle);
++
++        let outer_event = raw_event(101, "self-drop");
++        assert_eq!(
++            unsafe { video_path_cb(userdata_value as *mut c_void, &outer_event, 1) },
++            0
++        );
++        assert_eq!(records.load(AtomicOrdering::SeqCst), 2);
++        assert_eq!(terminal.load(AtomicOrdering::SeqCst), 1);
++        assert_eq!(releases.load(AtomicOrdering::SeqCst), 1);
++        assert_eq!(nested_status.load(AtomicOrdering::SeqCst), 0);
++        assert!(owner.lock().unwrap().is_none());
++
++        let late_event = raw_event(103, "after-release");
++        assert_eq!(
++            unsafe { video_path_cb(userdata_value as *mut c_void, &late_event, 1) },
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        assert_eq!(records.load(AtomicOrdering::SeqCst), 2);
++        assert_eq!(terminal.load(AtomicOrdering::SeqCst), 1);
++    }
++
++    #[test]
++    fn release_unregisters_opaque_userdata_before_late_native_callbacks() {
++        let records = Arc::new(AtomicUsize::new(0));
++        let records_for_callback = Arc::clone(&records);
++        let terminal = Arc::new(AtomicUsize::new(0));
++        let terminal_for_callback = Arc::clone(&terminal);
++        let handle = callback_handle(move |event| {
++            match event {
++                VideoPathCallbackEvent::Records(_) => {
++                    records_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++                }
++                VideoPathCallbackEvent::ProducerTerminalUnconfirmed(_) => {
++                    terminal_for_callback.fetch_add(1, AtomicOrdering::SeqCst);
++                }
++            }
++            VideoPathCallbackDisposition::Accept
++        });
++        let userdata = handle.userdata();
++        release_video_path_callback_with(Some(handle), || {});
++        assert!(video_path_callback_state(userdata).is_none());
++        assert_eq!(terminal.load(AtomicOrdering::SeqCst), 1);
++
++        let event = raw_event(200, "late");
++        assert_eq!(
++            unsafe { video_path_cb(userdata, &event, 1) },
++            VIDEO_PATH_CALLBACK_REJECTED
++        );
++        assert_eq!(records.load(AtomicOrdering::SeqCst), 0);
++    }
++
++    #[test]
++    fn terminal_consumer_panic_is_contained_before_userdata_drop() {
++        let drops = Arc::new(AtomicUsize::new(0));
++        let probe = DropCounter(Arc::clone(&drops));
++        let state = callback_handle(move |_| {
++            let _keep_probe_alive = &probe;
++            panic!("terminal panic");
++        });
++        release_video_path_callback_with(Some(state), || {});
++        assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
++    }
++
++    #[test]
++    fn owned_callback_types_are_send_sync_static_and_legacy_type_is_unchanged() {
++        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
++        assert_send_sync_static::<VideoPathCallbackEvent>();
++        assert_send_sync_static::<VideoPathTerminal>();
++
++        let legacy = MetricsEntry {
++            key: "legacy".to_owned(),
++            value: 7,
++        };
++        assert_eq!(legacy.key, "legacy");
++        assert_eq!(legacy.value, 7);
+     }
+ }
+ 
+diff --git a/src/metrics.rs b/src/metrics.rs
+index 2716e2c3933246f375d2bebd9faa54c9f54efb99..faa7bbdc6cb5283cb431d6494955d4fc873377ff 100644
+--- a/src/metrics.rs
++++ b/src/metrics.rs
+@@ -3,3 +3,794 @@ pub struct MetricsEntry {
+     pub key: String,
+     pub value: i64,
+ }
++
++use crate::sys;
++use std::convert::TryFrom;
++use std::ptr;
++use std::str;
++
++pub const VIDEO_PATH_MAX_RECORDS: usize = 64;
++pub const VIDEO_PATH_MAX_RECORD_BYTES: usize = 1024;
++pub const VIDEO_PATH_MAX_CALLBACK_BYTES: usize = 64 * 1024;
++pub const VIDEO_PATH_V1_PREFIX_SIZE: usize = 192;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathEventKind {
++    BitstreamConfig,
++    DecoderModule,
++    VideoToolboxSession,
++    VideoToolboxFrame,
++    DecodedSurface,
++    Renderer,
++    ObservationLimit,
++    Other(u32),
++}
++
++impl VideoPathEventKind {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            1 => Self::BitstreamConfig,
++            2 => Self::DecoderModule,
++            3 => Self::VideoToolboxSession,
++            4 => Self::VideoToolboxFrame,
++            5 => Self::DecodedSurface,
++            6 => Self::Renderer,
++            7 => Self::ObservationLimit,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathCodec {
++    Unknown,
++    H264,
++    Hevc,
++    Av1,
++    Other(u32),
++}
++
++impl VideoPathCodec {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            0 => Self::Unknown,
++            1 => Self::H264,
++            2 => Self::Hevc,
++            3 => Self::Av1,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathChroma {
++    Unknown,
++    Monochrome,
++    Yuv420,
++    Yuv422,
++    Yuv444,
++    Other(u32),
++}
++
++impl VideoPathChroma {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            0 => Self::Unknown,
++            1 => Self::Monochrome,
++            2 => Self::Yuv420,
++            3 => Self::Yuv422,
++            4 => Self::Yuv444,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathTruth {
++    Unknown,
++    No,
++    Yes,
++    Other(u32),
++}
++
++impl VideoPathTruth {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            0 => Self::Unknown,
++            1 => Self::No,
++            2 => Self::Yes,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathUnknownReason {
++    None,
++    BitstreamConfigUnparseable,
++    CodecUnsupported,
++    HardwarePropertyUnavailable,
++    PhysicalPresentationUnavailable,
++    ScanoutTimestampUnavailable,
++    LayerQueueDepthUnavailable,
++    Other(u32),
++}
++
++impl VideoPathUnknownReason {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            0 => Self::None,
++            1 => Self::BitstreamConfigUnparseable,
++            2 => Self::CodecUnsupported,
++            3 => Self::HardwarePropertyUnavailable,
++            4 => Self::PhysicalPresentationUnavailable,
++            5 => Self::ScanoutTimestampUnavailable,
++            6 => Self::LayerQueueDepthUnavailable,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathOutcome {
++    None,
++    VideoToolboxOutputSuccess,
++    VideoToolboxFrameDropped,
++    VideoToolboxStatusError,
++    VideoToolboxNullBuffer,
++    VideoToolboxDiscardedOutput,
++    VideoToolboxInvalidPts,
++    VideoToolboxEmptyBuffer,
++    VideoToolboxOutputFormatFailure,
++    VideoToolboxPictureAllocationFailure,
++    VideoToolboxAttachmentFailure,
++    RendererLayerAbsent,
++    RendererConversionFailure,
++    RendererFormatDescriptionFailure,
++    RendererSampleBufferFailure,
++    RendererLayerBackpressure,
++    RendererSampleEnqueued,
++    LegacyDisplayCallbackReturned,
++    Other(u32),
++}
++
++impl VideoPathOutcome {
++    fn from_raw(value: u32) -> Self {
++        match value {
++            0 => Self::None,
++            1 => Self::VideoToolboxOutputSuccess,
++            2 => Self::VideoToolboxFrameDropped,
++            3 => Self::VideoToolboxStatusError,
++            4 => Self::VideoToolboxNullBuffer,
++            5 => Self::VideoToolboxDiscardedOutput,
++            6 => Self::VideoToolboxInvalidPts,
++            7 => Self::VideoToolboxEmptyBuffer,
++            8 => Self::VideoToolboxOutputFormatFailure,
++            9 => Self::VideoToolboxPictureAllocationFailure,
++            10 => Self::VideoToolboxAttachmentFailure,
++            20 => Self::RendererLayerAbsent,
++            21 => Self::RendererConversionFailure,
++            22 => Self::RendererFormatDescriptionFailure,
++            23 => Self::RendererSampleBufferFailure,
++            24 => Self::RendererLayerBackpressure,
++            25 => Self::RendererSampleEnqueued,
++            26 => Self::LegacyDisplayCallbackReturned,
++            other => Self::Other(other),
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct VideoPathPolicyFlags(u32);
++
++impl VideoPathPolicyFlags {
++    pub const HARDWARE_ENABLE_REQUESTED: u32 = 1 << 0;
++    pub const HARDWARE_REQUIRE_REQUESTED: u32 = 1 << 1;
++
++    pub fn from_bits_retain(bits: u32) -> Self {
++        Self(bits)
++    }
++
++    pub fn bits(self) -> u32 {
++        self.0
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct VideoPathOsFlags(u32);
++
++impl VideoPathOsFlags {
++    pub fn from_bits_retain(bits: u32) -> Self {
++        Self(bits)
++    }
++
++    pub fn bits(self) -> u32 {
++        self.0
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct VideoPathObservationFlags(u32);
++
++impl VideoPathObservationFlags {
++    pub const PHYSICAL_PRESENTATION: u32 = 1 << 0;
++    pub const SCANOUT_TIMESTAMP: u32 = 1 << 1;
++    pub const LAYER_QUEUE_DEPTH: u32 = 1 << 2;
++
++    pub fn from_bits_retain(bits: u32) -> Self {
++        Self(bits)
++    }
++
++    pub fn bits(self) -> u32 {
++        self.0
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct VideoPathCallbackLoss {
++    pub lost_events: u64,
++    pub first_sequence: u64,
++    pub last_sequence: u64,
++    pub generation: u64,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct VideoPathEvent {
++    pub abi_version: u16,
++    pub source_struct_size: u16,
++    pub kind: VideoPathEventKind,
++    pub producer_sequence: u64,
++    pub monotonic_timestamp: i64,
++    pub pts: Option<i64>,
++    pub codec: VideoPathCodec,
++    pub chroma: VideoPathChroma,
++    pub profile: u32,
++    pub bit_depth: u32,
++    pub hardware_state: VideoPathTruth,
++    pub iosurface_state: VideoPathTruth,
++    pub outcome: VideoPathOutcome,
++    pub unknown_reason: VideoPathUnknownReason,
++    pub decoded_fourcc: u32,
++    pub policy_flags: VideoPathPolicyFlags,
++    pub os_flags: VideoPathOsFlags,
++    pub status: i32,
++    pub observation_flags: VideoPathObservationFlags,
++    pub native_callback_loss: Option<VideoPathCallbackLoss>,
++    pub text: String,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct VideoPathTerminal {
++    pub last_observed_producer_sequence: Option<u64>,
++    pub bridge_rejected_callbacks: u64,
++    pub bridge_rejected_records: u64,
++    pub first_rejected_producer_sequence: Option<u64>,
++    pub last_rejected_producer_sequence: Option<u64>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum VideoPathCallbackEvent {
++    Records(Vec<VideoPathEvent>),
++    ProducerTerminalUnconfirmed(VideoPathTerminal),
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VideoPathCallbackDisposition {
++    Accept,
++    Reject,
++}
++
++#[derive(Debug)]
++pub(crate) struct ValidatedVideoPathBatch {
++    pub events: Vec<VideoPathEvent>,
++    pub first_sequence: u64,
++    pub last_sequence: u64,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct RejectedVideoPathBatch {
++    pub record_count: u64,
++    pub first_sequence: Option<u64>,
++    pub last_sequence: Option<u64>,
++}
++
++impl RejectedVideoPathBatch {
++    fn new(count: usize) -> Self {
++        Self {
++            record_count: u64::try_from(count.min(VIDEO_PATH_MAX_RECORDS))
++                .unwrap_or(VIDEO_PATH_MAX_RECORDS as u64),
++            first_sequence: None,
++            last_sequence: None,
++        }
++    }
++
++    fn observe_sequence(&mut self, sequence: u64) {
++        if sequence == 0 {
++            return;
++        }
++        self.first_sequence = Some(
++            self.first_sequence
++                .map_or(sequence, |current| current.min(sequence)),
++        );
++        self.last_sequence = Some(
++            self.last_sequence
++                .map_or(sequence, |current| current.max(sequence)),
++        );
++    }
++}
++
++fn convert_video_path_event(raw: &sys::libvlc_video_path_event) -> Result<VideoPathEvent, ()> {
++    if raw.version != sys::LIBVLC_VIDEO_PATH_EVENT_VERSION
++        || usize::from(raw.struct_size) < VIDEO_PATH_V1_PREFIX_SIZE
++        || usize::from(raw.struct_size) > VIDEO_PATH_MAX_RECORD_BYTES
++        || usize::from(raw.struct_size) % std::mem::align_of::<sys::libvlc_video_path_event>() != 0
++        || raw.kind == 0
++        || raw.producer_seq == 0
++        || raw.monotonic_ts <= 0
++        || raw.reserved.iter().any(|byte| *byte != 0)
++    {
++        return Err(());
++    }
++
++    let pts = match raw.pts_valid {
++        0 if raw.pts == 0 => None,
++        1 => Some(raw.pts),
++        _ => return Err(()),
++    };
++
++    let text_bytes = raw
++        .text
++        .iter()
++        .map(|value| *value as u8)
++        .collect::<Vec<_>>();
++    let text_end = text_bytes.iter().position(|byte| *byte == 0).ok_or(())?;
++    let text = str::from_utf8(&text_bytes[..text_end])
++        .map_err(|_| ())?
++        .to_owned();
++
++    let loss_values = [
++        raw.callback_lost_events,
++        raw.callback_loss_first_seq,
++        raw.callback_loss_last_seq,
++        raw.callback_loss_generation,
++    ];
++    let native_callback_loss = if loss_values.iter().all(|value| *value == 0) {
++        None
++    } else {
++        if loss_values.contains(&0) || raw.callback_loss_first_seq > raw.callback_loss_last_seq {
++            return Err(());
++        }
++        Some(VideoPathCallbackLoss {
++            lost_events: raw.callback_lost_events,
++            first_sequence: raw.callback_loss_first_seq,
++            last_sequence: raw.callback_loss_last_seq,
++            generation: raw.callback_loss_generation,
++        })
++    };
++
++    Ok(VideoPathEvent {
++        abi_version: raw.version,
++        source_struct_size: raw.struct_size,
++        kind: VideoPathEventKind::from_raw(raw.kind),
++        producer_sequence: raw.producer_seq,
++        monotonic_timestamp: raw.monotonic_ts,
++        pts,
++        codec: VideoPathCodec::from_raw(raw.codec),
++        chroma: VideoPathChroma::from_raw(raw.chroma),
++        profile: raw.profile,
++        bit_depth: raw.bit_depth,
++        hardware_state: VideoPathTruth::from_raw(raw.hardware_state),
++        iosurface_state: VideoPathTruth::from_raw(raw.iosurface_state),
++        outcome: VideoPathOutcome::from_raw(raw.outcome),
++        unknown_reason: VideoPathUnknownReason::from_raw(raw.unknown_reason),
++        decoded_fourcc: raw.decoded_fourcc,
++        policy_flags: VideoPathPolicyFlags::from_bits_retain(raw.policy_flags),
++        os_flags: VideoPathOsFlags::from_bits_retain(raw.os_flags),
++        status: raw.status,
++        observation_flags: VideoPathObservationFlags::from_bits_retain(raw.observation_flags),
++        native_callback_loss,
++        text,
++    })
++}
++
++pub(crate) unsafe fn copy_video_path_batch(
++    events: *const sys::libvlc_video_path_event,
++    count: usize,
++) -> Result<ValidatedVideoPathBatch, RejectedVideoPathBatch> {
++    let mut rejected = RejectedVideoPathBatch::new(count);
++    if events.is_null() || count == 0 || count > VIDEO_PATH_MAX_RECORDS {
++        return Err(rejected);
++    }
++
++    let mut owned = Vec::with_capacity(count);
++    let mut walked_bytes = 0usize;
++    let base = events.cast::<u8>();
++    let record_alignment = std::mem::align_of::<sys::libvlc_video_path_event>();
++    if (base as usize) % record_alignment != 0 {
++        return Err(rejected);
++    }
++
++    for _ in 0..count {
++        let header_in_bounds = matches!(
++            walked_bytes.checked_add(std::mem::size_of::<u16>() * 2),
++            Some(header_end) if header_end <= VIDEO_PATH_MAX_CALLBACK_BYTES
++        );
++        if !header_in_bounds {
++            return Err(rejected);
++        }
++
++        let record_address = match (base as usize).checked_add(walked_bytes) {
++            Some(address) if address % record_alignment == 0 => address,
++            _ => return Err(rejected),
++        };
++        let record = record_address as *const u8;
++        let version = unsafe { ptr::read_unaligned(record.cast::<u16>()) };
++        let struct_size = unsafe { ptr::read_unaligned(record.add(2).cast::<u16>()) } as usize;
++
++        if version != sys::LIBVLC_VIDEO_PATH_EVENT_VERSION
++            || !(VIDEO_PATH_V1_PREFIX_SIZE..=VIDEO_PATH_MAX_RECORD_BYTES).contains(&struct_size)
++            || struct_size % std::mem::align_of::<sys::libvlc_video_path_event>() != 0
++        {
++            return Err(rejected);
++        }
++
++        let next_record = match walked_bytes.checked_add(struct_size) {
++            Some(next) if next <= VIDEO_PATH_MAX_CALLBACK_BYTES => next,
++            _ => return Err(rejected),
++        };
++        let raw = unsafe { ptr::read_unaligned(record.cast::<sys::libvlc_video_path_event>()) };
++        rejected.observe_sequence(raw.producer_seq);
++        match convert_video_path_event(&raw) {
++            Ok(event) => owned.push(event),
++            Err(()) => return Err(rejected),
++        }
++        walked_bytes = next_record;
++    }
++
++    let first_sequence = owned
++        .iter()
++        .map(|event| event.producer_sequence)
++        .min()
++        .expect("nonempty callback batch");
++    let last_sequence = owned
++        .iter()
++        .map(|event| event.producer_sequence)
++        .max()
++        .expect("nonempty callback batch");
++
++    Ok(ValidatedVideoPathBatch {
++        events: owned,
++        first_sequence,
++        last_sequence,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use libc::c_char;
++    use std::mem;
++
++    fn raw_event(sequence: u64, text: &str) -> sys::libvlc_video_path_event {
++        let mut event: sys::libvlc_video_path_event = unsafe { mem::zeroed() };
++        event.version = sys::LIBVLC_VIDEO_PATH_EVENT_VERSION;
++        event.struct_size = VIDEO_PATH_V1_PREFIX_SIZE as u16;
++        event.kind = 2;
++        event.producer_seq = sequence;
++        event.monotonic_ts = 42;
++        event.codec = 2;
++        event.chroma = 4;
++        event.hardware_state = 2;
++        event.iosurface_state = 1;
++        event.outcome = 1;
++        event.text[..text.len()]
++            .iter_mut()
++            .zip(text.as_bytes())
++            .for_each(|(destination, source)| *destination = *source as c_char);
++        event
++    }
++
++    unsafe fn copy_one(
++        event: &sys::libvlc_video_path_event,
++    ) -> Result<ValidatedVideoPathBatch, RejectedVideoPathBatch> {
++        unsafe { copy_video_path_batch(event, 1) }
++    }
++
++    #[test]
++    fn raw_layout_matches_v1_contract() {
++        assert_eq!(sys::LIBVLC_VIDEO_PATH_EVENT_VERSION, 1);
++        assert_eq!(sys::LIBVLC_VIDEO_PATH_TEXT_CAPACITY, 64);
++        assert_eq!(mem::size_of::<sys::libvlc_video_path_event>(), 192);
++        assert_eq!(mem::align_of::<sys::libvlc_video_path_event>(), 8);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, version), 0);
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, struct_size),
++            2
++        );
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, kind), 4);
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, producer_seq),
++            8
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, monotonic_ts),
++            16
++        );
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, pts), 24);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, pts_valid), 32);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, reserved), 33);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, codec), 40);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, chroma), 44);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, profile), 48);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, bit_depth), 52);
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, hardware_state),
++            56
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, iosurface_state),
++            60
++        );
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, outcome), 64);
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, unknown_reason),
++            68
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, decoded_fourcc),
++            72
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, policy_flags),
++            76
++        );
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, os_flags), 80);
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, status), 84);
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, observation_flags),
++            88
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, callback_lost_events),
++            96
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, callback_loss_first_seq),
++            104
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, callback_loss_last_seq),
++            112
++        );
++        assert_eq!(
++            mem::offset_of!(sys::libvlc_video_path_event, callback_loss_generation),
++            120
++        );
++        assert_eq!(mem::offset_of!(sys::libvlc_video_path_event, text), 128);
++    }
++
++    #[test]
++    fn copies_owned_text_before_native_storage_changes() {
++        let mut raw = raw_event(7, "videotoolbox");
++        let owned = unsafe { copy_one(&raw) }.unwrap();
++        raw.text.fill(b'x' as c_char);
++        raw.text[63] = 0;
++        assert_eq!(owned.events[0].text, "videotoolbox");
++        assert_eq!(owned.events[0].producer_sequence, 7);
++    }
++
++    #[test]
++    fn preserves_unknown_values_and_flag_bits() {
++        let mut raw = raw_event(1, "future");
++        raw.kind = 100;
++        raw.codec = 101;
++        raw.chroma = 102;
++        raw.hardware_state = 103;
++        raw.iosurface_state = 104;
++        raw.outcome = 105;
++        raw.unknown_reason = 106;
++        raw.policy_flags = 0x8000_0003;
++        raw.os_flags = 0x8765_4321;
++        raw.observation_flags = 0x4000_0007;
++        let owned = unsafe { copy_one(&raw) }.unwrap();
++        let event = &owned.events[0];
++        assert_eq!(event.kind, VideoPathEventKind::Other(100));
++        assert_eq!(event.codec, VideoPathCodec::Other(101));
++        assert_eq!(event.chroma, VideoPathChroma::Other(102));
++        assert_eq!(event.hardware_state, VideoPathTruth::Other(103));
++        assert_eq!(event.iosurface_state, VideoPathTruth::Other(104));
++        assert_eq!(event.outcome, VideoPathOutcome::Other(105));
++        assert_eq!(event.unknown_reason, VideoPathUnknownReason::Other(106));
++        assert_eq!(event.policy_flags.bits(), 0x8000_0003);
++        assert_eq!(event.os_flags.bits(), 0x8765_4321);
++        assert_eq!(event.observation_flags.bits(), 0x4000_0007);
++    }
++
++    #[test]
++    fn accepts_larger_aligned_v1_stride_and_ignores_tail() {
++        let mut raw = raw_event(1, "extended");
++        raw.struct_size = 256;
++        let mut storage = vec![u64::MAX; 256 / mem::size_of::<u64>()];
++        let storage_bytes = storage.as_mut_ptr().cast::<u8>();
++        unsafe {
++            ptr::copy_nonoverlapping(
++                (&raw as *const sys::libvlc_video_path_event).cast::<u8>(),
++                storage_bytes,
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++        }
++        let owned = unsafe {
++            copy_video_path_batch(storage_bytes.cast::<sys::libvlc_video_path_event>(), 1)
++        }
++        .unwrap();
++        assert_eq!(owned.events[0].source_struct_size, 256);
++        assert_eq!(owned.events[0].text, "extended");
++    }
++
++    #[test]
++    fn walks_mixed_aligned_record_strides() {
++        let mut first = raw_event(1, "first");
++        first.struct_size = VIDEO_PATH_V1_PREFIX_SIZE as u16;
++        let mut second = raw_event(2, "second");
++        second.struct_size = 256;
++        let total_bytes = VIDEO_PATH_V1_PREFIX_SIZE + 256;
++        let mut storage = vec![0u64; total_bytes / mem::size_of::<u64>()];
++        let storage_bytes = storage.as_mut_ptr().cast::<u8>();
++        unsafe {
++            ptr::copy_nonoverlapping(
++                (&first as *const sys::libvlc_video_path_event).cast::<u8>(),
++                storage_bytes,
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++            ptr::copy_nonoverlapping(
++                (&second as *const sys::libvlc_video_path_event).cast::<u8>(),
++                storage_bytes.add(VIDEO_PATH_V1_PREFIX_SIZE),
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++        }
++        let batch = unsafe {
++            copy_video_path_batch(storage_bytes.cast::<sys::libvlc_video_path_event>(), 2)
++        }
++        .unwrap();
++        assert_eq!(batch.events.len(), 2);
++        assert_eq!(batch.events[0].text, "first");
++        assert_eq!(batch.events[1].text, "second");
++    }
++
++    #[test]
++    fn rejects_pointer_count_and_stride_bounds() {
++        assert!(unsafe { copy_video_path_batch(ptr::null(), 1) }.is_err());
++        let raw = raw_event(1, "");
++        assert!(unsafe { copy_video_path_batch(&raw, 0) }.is_err());
++        assert!(unsafe { copy_video_path_batch(&raw, 65) }.is_err());
++
++        for invalid_size in [191u16, 193, 1032] {
++            let mut invalid = raw_event(1, "");
++            invalid.struct_size = invalid_size;
++            assert!(unsafe { copy_one(&invalid) }.is_err());
++        }
++
++        let mut misaligned_storage = vec![0u64; 32];
++        unsafe {
++            ptr::copy_nonoverlapping(
++                (&raw as *const sys::libvlc_video_path_event).cast::<u8>(),
++                misaligned_storage.as_mut_ptr().cast::<u8>().add(1),
++                VIDEO_PATH_V1_PREFIX_SIZE,
++            );
++            assert!(copy_video_path_batch(
++                misaligned_storage
++                    .as_ptr()
++                    .cast::<u8>()
++                    .add(1)
++                    .cast::<sys::libvlc_video_path_event>(),
++                1,
++            )
++            .is_err());
++        }
++    }
++
++    #[test]
++    fn accepts_exact_aggregate_limit() {
++        let mut storage = vec![0u64; VIDEO_PATH_MAX_CALLBACK_BYTES / mem::size_of::<u64>()];
++        let storage_bytes = storage.as_mut_ptr().cast::<u8>();
++        for index in 0..VIDEO_PATH_MAX_RECORDS {
++            let mut raw = raw_event(index as u64 + 1, "");
++            raw.struct_size = VIDEO_PATH_MAX_RECORD_BYTES as u16;
++            unsafe {
++                ptr::copy_nonoverlapping(
++                    (&raw as *const sys::libvlc_video_path_event).cast::<u8>(),
++                    storage_bytes.add(index * VIDEO_PATH_MAX_RECORD_BYTES),
++                    VIDEO_PATH_V1_PREFIX_SIZE,
++                );
++            }
++        }
++        let result = unsafe {
++            copy_video_path_batch(
++                storage_bytes.cast::<sys::libvlc_video_path_event>(),
++                VIDEO_PATH_MAX_RECORDS,
++            )
++        }
++        .unwrap();
++        assert_eq!(result.events.len(), VIDEO_PATH_MAX_RECORDS);
++    }
++
++    #[test]
++    fn rejects_malformed_version_structural_fields_pts_and_text() {
++        let mut cases = Vec::new();
++
++        let mut version = raw_event(1, "");
++        version.version = 2;
++        cases.push(version);
++
++        let mut sequence = raw_event(1, "");
++        sequence.producer_seq = 0;
++        cases.push(sequence);
++
++        let mut kind = raw_event(1, "");
++        kind.kind = 0;
++        cases.push(kind);
++
++        let mut timestamp = raw_event(1, "");
++        timestamp.monotonic_ts = 0;
++        cases.push(timestamp);
++
++        let mut reserved = raw_event(1, "");
++        reserved.reserved[3] = 1;
++        cases.push(reserved);
++
++        let mut pts_sentinel = raw_event(1, "");
++        pts_sentinel.pts = 1;
++        cases.push(pts_sentinel);
++
++        let mut pts_valid = raw_event(1, "");
++        pts_valid.pts_valid = 2;
++        cases.push(pts_valid);
++
++        let mut unterminated = raw_event(1, "");
++        unterminated.text.fill(b'x' as c_char);
++        cases.push(unterminated);
++
++        let mut invalid_utf8 = raw_event(1, "");
++        invalid_utf8.text[0] = -1;
++        invalid_utf8.text[1] = 0;
++        cases.push(invalid_utf8);
++
++        for case in cases {
++            assert!(unsafe { copy_one(&case) }.is_err());
++        }
++    }
++
++    #[test]
++    fn validates_pts_and_native_loss_without_normalizing() {
++        let mut raw = raw_event(9, "");
++        raw.pts_valid = 1;
++        raw.pts = -17;
++        raw.callback_lost_events = 2;
++        raw.callback_loss_first_seq = 3;
++        raw.callback_loss_last_seq = 5;
++        raw.callback_loss_generation = 8;
++        let owned = unsafe { copy_one(&raw) }.unwrap();
++        assert_eq!(owned.events[0].pts, Some(-17));
++        assert_eq!(
++            owned.events[0].native_callback_loss,
++            Some(VideoPathCallbackLoss {
++                lost_events: 2,
++                first_sequence: 3,
++                last_sequence: 5,
++                generation: 8,
++            })
++        );
++
++        let mut malformed = raw;
++        malformed.callback_loss_generation = 0;
++        assert!(unsafe { copy_one(&malformed) }.is_err());
++
++        malformed = raw;
++        malformed.callback_loss_first_seq = 6;
++        assert!(unsafe { copy_one(&malformed) }.is_err());
++
++        malformed = raw;
++        malformed.callback_lost_events = 0;
++        assert!(unsafe { copy_one(&malformed) }.is_err());
++    }
++}
+diff --git a/src/sys.rs b/src/sys.rs
+index 63bafda93cc1cfd29ff01f9803766b7aac2fd9b0..38893b8c664640ab505d3490bf83589fc78f81c5 100644
+--- a/src/sys.rs
++++ b/src/sys.rs
+@@ -37,6 +37,11 @@ pub type libvlc_callback_t = unsafe extern "C" fn(*const libvlc_event_t, *mut c_
+ pub type va_list = *mut c_void;
+ pub type libvlc_log_cb = unsafe extern "C" fn(*mut c_void, c_int, *const libvlc_log_t, *const c_char, va_list);
+ pub type libvlc_metrics_cb = unsafe extern "C" fn(*mut c_void, entries: *const libvlc_metrics_entry, count: usize) -> c_int;
++pub type libvlc_video_path_cb = unsafe extern "C" fn(
++    *mut c_void,
++    events: *const libvlc_video_path_event,
++    count: usize,
++) -> c_int;
+ 
+ pub use crate::enums::LogLevel as libvlc_log_level;
+ 
+@@ -47,6 +52,44 @@ pub struct libvlc_metrics_entry {
+     pub value: i64,
+ }
+ 
++pub const LIBVLC_VIDEO_PATH_EVENT_VERSION: u16 = 1;
++pub const LIBVLC_VIDEO_PATH_TEXT_CAPACITY: usize = 64;
++
++#[repr(C)]
++#[derive(Clone, Copy)]
++pub struct libvlc_video_path_event {
++    pub version: u16,
++    pub struct_size: u16,
++    pub kind: u32,
++    pub producer_seq: u64,
++    pub monotonic_ts: i64,
++    pub pts: i64,
++    pub pts_valid: u8,
++    pub reserved: [u8; 7],
++    pub codec: u32,
++    pub chroma: u32,
++    pub profile: u32,
++    pub bit_depth: u32,
++    pub hardware_state: u32,
++    pub iosurface_state: u32,
++    pub outcome: u32,
++    pub unknown_reason: u32,
++    pub decoded_fourcc: u32,
++    pub policy_flags: u32,
++    pub os_flags: u32,
++    pub status: i32,
++    pub observation_flags: u32,
++    pub callback_lost_events: u64,
++    pub callback_loss_first_seq: u64,
++    pub callback_loss_last_seq: u64,
++    pub callback_loss_generation: u64,
++    pub text: [c_char; LIBVLC_VIDEO_PATH_TEXT_CAPACITY],
++}
++
++const _: [(); 192] = [(); std::mem::size_of::<libvlc_video_path_event>()];
++const _: [(); 8] = [(); std::mem::align_of::<libvlc_video_path_event>()];
++const _: [(); 128] = [(); std::mem::offset_of!(libvlc_video_path_event, text)];
++
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct libvlc_module_description_t
+@@ -568,6 +611,11 @@ extern "C" {
+         p_mi: *mut libvlc_media_player_t, p_equalizer: *mut libvlc_equalizer_t) -> c_int;
+     pub fn libvlc_media_player_set_metrics_callback(p_mi: *mut libvlc_media_player_t,
+         cb: libvlc_metrics_cb, sys: *mut c_void) -> c_int;
++    pub fn libvlc_media_player_set_video_path_callback(
++        p_mi: *mut libvlc_media_player_t,
++        cb: libvlc_video_path_cb,
++        sys: *mut c_void,
++    ) -> c_int;
+ }
+ 
+ // From libvlc_events.h

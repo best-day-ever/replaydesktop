@@ -5,10 +5,10 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: host-readiness-gate
 status: verifying
-stopped_at: Completed 01-10-PLAN.md
-last_updated: "2026-07-30T00:18:29.338Z"
-last_activity: 2026-07-30
-last_activity_desc: Completed 01-10-PLAN.md
+stopped_at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
+last_updated: "2026-08-01T16:57:02Z"
+last_activity: 2026-08-01
+last_activity_desc: "Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-26)
 Phase: 01 (host-readiness-gate) — EXECUTING
 Plan: 10 of 10
 Status: Phase complete — ready for verification
-Last activity: 2026-07-30 — Completed 01-10-PLAN.md
+Last activity: 2026-08-01 — Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending
 
 Progress: [██████████] 100%
 
@@ -70,6 +70,13 @@ Progress: [██████████] 100%
 | Phase 01 P10 | 58m | 3 tasks | 22 files |
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 10 added: Brokered Direct Access MVP
+- Phase 10 uses the public UDM Pro SE IPv4 fast path rather than a media relay:
+  Replay Control authorizes, a UDP knock proves the client source, UniFi opens
+  a temporary policy, and the workstation validates a second Kymux ticket.
 
 ### Decisions
 
@@ -116,6 +123,14 @@ Recent decisions affecting current work:
 - [Phase 01]: Advertise only tuples proven from the exact current NV12 lease; incompatible HEVC inputs and Ampere-ineligible AV1 stay terminal and non-advertised.
 - [Phase 01]: Use distinct post-repair archive schemas and dispatch verification by exact matching index/manifest contract so PASS support cannot loosen pre-reboot history.
 - [Phase 01]: Parse only a bounded IDR slice-header prefix while hashing and clearing the complete capped NVENC bitstream.
+- [Phase Quick 260730-mqr]: Map host allow_paste to Mac local-read/send and host allow_copy to Mac remote-write; never collapse directions.
+- [Phase Quick 260730-mqr]: Default clipboard off and create no pasteboard worker when disabled or both directions are refused.
+- [Phase Quick 260730-mqr]: Keep the prototype ClipboardEvent wire serialized; request IDs and deterministic simultaneous-peer conflict resolution require a future version.
+- [Phase Quick 260730-mqr]: Treat matched new-controller/new-service positional MessagePack IPC as the prototype boundary; mixed internal versions are unsupported.
+- [Phase Quick 260730-mqr]: macOS hosting is a platform port because pinned Kyber has no working macOS capture/encode/input sender.
+- [Phase 10]: Keep Replay Control and the UniFi gateway adapter as separate trust boundaries even when they run in one process; only Replay Control signs workstation tickets.
+- [Phase 10]: Keep the UDM Pro SE in the media fast path through static DNAT and temporary source-IP policy; Replay server code never relays Kymux packets.
+- [Phase 10]: Treat the source-IP UniFi lease as exposure reduction only; enrolled workstation TLS and a strict one-use Kymux ticket remain the authorization boundary.
 
 ### Pending Todos
 
@@ -125,6 +140,26 @@ None yet.
 
 - [Phase 5]: Exact Apple Silicon HEVC 4:4:4, AV1 4:2:0, and libVLC/native-player behavior remain runtime questions.
 - [Phase 9]: Real pre-M3/M3+ Mac and non-reference Linux distro hardware are required before their compatibility rows can be claimed.
+- [Phase 10]: The official UniFi adapter is implemented but real policy ordering,
+  pre/post-DNAT matching, source preservation, and activation latency remain
+  unverified on the target UDM Pro SE.
+- [Phase 10]: The strict Kymux ticket verifier is implemented and tested, but
+  the pinned Kyber workstation controller still uses its local pending-token
+  map and must be integrated before any workstation port is publicly exposed.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260730-iie | Prototype LAN connection without user-managed trust | 2026-07-30 | runtime-only |  | [260730-iie-make-prototype-lan-mode-require-no-user-](./quick/260730-iie-make-prototype-lan-mode-require-no-user-/) |
+| 260730-j91 | macOS technical GUI, live telemetry panel, audio/multi-monitor controls, and high-resolution scrolling | 2026-07-30 | ecdff71 | Needs Review | [260730-j91-build-and-publish-a-macos-technical-gui-](./quick/260730-j91-build-and-publish-a-macos-technical-gui-/) |
+| 260730-mqr | Bidirectional Text+HTML clipboard, directional policy gates, and private v0.3.0-spike.1 prerelease | 2026-07-30 | c1f48ad | human_needed | [260730-mqr-implement-privacy-correct-bidirectional-](./quick/260730-mqr-implement-privacy-correct-bidirectional-/) |
+| 260730-swz | Loss-aware Linux host capture, encode, payload, queue, drop, and forwarding telemetry | 2026-07-30 | fd3a11f | human_needed | [260730-swz-implement-the-linux-host-native-telemetr](./quick/260730-swz-implement-the-linux-host-native-telemetr/) |
+| 260730-w4b | Truthful macOS native codec/chroma, decoder, VideoToolbox, surface, drop, and enqueue telemetry | 2026-07-30 | 8ba945d | human_needed | [260730-w4b-expose-truthful-macos-native-decoder-tel](./quick/260730-w4b-expose-truthful-macos-native-decoder-tel/) |
+| 260731-263 | Host NvFBC capture-begin, accepted-batch sequence, and terminal-loss evidence | 2026-07-31 | ba5b985 | Verified | [260731-263-implement-the-loss-aware-rust-telemetry-](./quick/260731-263-implement-the-loss-aware-rust-telemetry-/) |
+| 260731-df1 | Prototype technical metrics cards and arm64 package | 2026-07-31 | eeeb5c6 | Needs Review | [260731-df1-prototype-only-technical-metrics-dashboa](./quick/260731-df1-prototype-only-technical-metrics-dashboa/) |
+| 260801-ou3 | All-interface direct-LAN TCP and UDP 8080 access | 2026-08-01 | runtime-only | Verified | [260801-ou3-allow-direct-lan-replaydesktop-prototype](./quick/260801-ou3-allow-direct-lan-replaydesktop-prototype/) |
+| 260801-ozj | Persistent NVIDIA X11 virtual displays and exactly-two-window Mac client | 2026-08-01 | 551d468 | Needs Review | [260801-ozj-prototype-persistent-x11-virtual-display](./quick/260801-ozj-prototype-persistent-x11-virtual-display/) |
 
 ## Deferred Items
 
@@ -134,6 +169,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-30T00:18:29.330Z
-Stopped at: Completed 01-10-PLAN.md
+Last session: 2026-08-01T16:57:02Z
+Stopped at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
 Resume file: None

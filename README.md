@@ -1,4 +1,305 @@
-# ReplayDesktop host readiness doctor
+# ReplayDesktop
+
+ReplayDesktop is currently an internal Linux-to-macOS remote-desktop
+prototype built on the pinned Kyber/Kymux stack.
+
+## Direct-admission control server
+
+The repository now includes a standalone single-organization control server in
+[`server/`](server/README.md). It provides local user/workstation
+administration, login and grants, one-use UDP source proof, ephemeral UDM Pro
+SE firewall policies, and source-bound Ed25519 Kymux tickets. Kymux media stays
+on the direct client-to-workstation path; the server is not a relay.
+
+The fake-gateway tracer is implemented and tested. Public deployment remains
+blocked on the documented live UDM policy-order/DNAT spike and on wiring the
+included strict ticket verifier into the pinned Kyber workstation accept path.
+
+## Apple Silicon prototype client
+
+The native technical clipboard spike is published as a private GitHub
+prerelease:
+
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.3.0-spike.1>
+
+Download `ReplayDesktop-arm64-clipboard-spike.zip`, expand it, and move
+`ReplayDesktop.app` to `/Applications`. Finder launch opens an AppKit control
+panel; `ReplayDesktop.app/Contents/MacOS/kyclient` remains the direct CLI
+fallback. The panel:
+
+- always launches the established Kymux/TLS-bypass/zero-video-buffer/metrics
+  baseline before adding visible operator choices;
+- labels H.264 4:2:0 as proven and HEVC 4:2:0, HEVC 4:4:4, and AV1 4:2:0 as
+  experimental/manual; AV1 4:4:4 is never offered;
+- maps audio and multi-monitor controls only to existing Kyber flags, with
+  total bitrate shared across active displays;
+- makes the Input control govern mouse plus focused-window keyboard
+  forwarding, keeps immersive system-shortcut suppression visibly unavailable
+  on macOS, and forces `--keyboard-grab=false`;
+- exposes an opt-in `Clipboard sync — Text + HTML, 60 KiB` control, independent
+  of general input, and negotiates host copy and paste policy separately before
+  touching the Mac pasteboard;
+- displays a bounded live tail of child output, Kyber logs, and
+  `metrics.json`; and
+- writes runtime logs and metrics under the user's Application Support
+  directory rather than inside the app.
+
+Current host qualification finds PulseAudio-on-PipeWire monitor sources and
+the GUI request starts Kyber's single Kymux audio service. The preserved
+four-channel M-Audio default monitor currently fails capture initialization
+with `Invalid argument` before Opus encoding begins, so this prerelease makes
+no working-audio claim. Choosing or adapting a compatible monitor remains
+follow-up work.
+
+This is an internal LAN/Tailscale prototype. The operator explicitly approved
+fixed development credentials, TLS certificate-verification bypass, and
+ad-hoc signing without notarization for this spike. Those exceptions are not
+production-safe and do not apply to a public release.
+
+The tracked `prototype/macos/engine-baseline.lock` binds packaging to the exact
+known raw-input `kyclient` SHA-256, executable-payload SHA-256, code-signature
+boundary, and pinned Kyber/Kysdk commits. Packaging fails if those engine bytes
+or source pins differ. The copied executable payload is verified unchanged,
+while its mutable signature envelope is regenerated so the finished app has a
+valid ad-hoc deep signature. The bundle also records and verifies its explicit
+package version, ReplayDesktop source range and digest, Xcode version/build,
+Swift version, SDK version/build, macOS deployment target, and raw-engine
+provenance.
+
+The original known-good CLI-only prerelease remains available and is not
+replaced:
+
+<https://github.com/best-day-ever/replaydesktop/releases/tag/v0.1.0-spike.1>
+
+Both packages:
+
+- support Apple Silicon only;
+- require macOS 15 Sequoia or newer;
+- are ad-hoc signed for internal testing, but are not notarized; and
+- contain no Kyber test certificates or private trust material.
+
+Because this build is not notarized, macOS may require the operator to approve
+the first launch through **System Settings → Privacy & Security → Open
+Anyway**. Do not disable Gatekeeper or strip quarantine metadata.
+
+The clipboard package has passed automated argument-matrix, engine-provenance,
+build-metadata, architecture, deployment-target, archive, raw-CLI, and
+code-signature checks. Physical cross-application Text/HTML copy and paste,
+macOS pasteboard privacy prompts, simultaneous real-user changes, Finder launch
+and GUI connection, rendered pixels/input, short trackpad scrolling, system
+audio, two-screen mode, and visibly changing telemetry remain explicit human
+UAT.
+The package was compiled with Xcode 26.2, the newest Xcode installed on the
+builder, rather than the planned Xcode 26.6 qualification lane.
+The prior `v0.2.0-spike.1`, `v0.2.0-spike.2`, and `v0.2.0-spike.3` assets
+remain immutable for audit.
+
+## Pinned Kyber source
+
+The official Kyber Desktop 0.27.0 source is recorded as a recursive submodule:
+
+```console
+git submodule update --init --recursive
+git -C upstream/kyber-desktop apply \
+  ../../patches/kyber/0001-secure-prototype-packaging.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0002-linux-disable-ffmpeg-vulkan.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
+  ../../../../../../patches/kyber/0008-txproto-host-telemetry.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/txproto apply \
+  ../../../../../../patches/kyber/0012-txproto-capture-begin.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0009-kymedia-host-telemetry-forwarding.patch
+git -C upstream/kyber-desktop/kysdk/kymedia apply \
+  ../../../../patches/kyber/0013-kymedia-host-evidence-sequence.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
+  ../../../../../../patches/kyber/0010-vlc-video-path-telemetry-abi.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc apply \
+  ../../../../../../patches/kyber/0011-vlc-macos-decoder-telemetry.patch
+git -C upstream/kyber-desktop/kysdk/kymedia/subprojects/vlc-rs apply \
+  ../../../../../../patches/kyber/0014-vlc-rs-video-path-bridge.patch
+git -C upstream/kyber-desktop/kysdk/kynput apply \
+  ../../../../patches/kyber/0004-linux-hires-wheel.patch
+git -C upstream/kyber-desktop/kysdk/kynput apply \
+  ../../../../patches/kyber/0005-kynput-macos-clipboard.patch
+git -C upstream/kyber-desktop/kysdk/kyctl apply \
+  ../../../../patches/kyber/0006-kyctl-clipboard-negotiation.patch
+git -C upstream/kyber-desktop apply \
+  ../../patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch
+```
+
+The first patch removes upstream test identities from Linux and macOS
+packages and supplies ReplayDesktop bundle metadata. The second keeps the
+Linux FFmpeg build on the CUDA/NVENC path while disabling its unused,
+currently incompatible Vulkan codec path. The fourth preserves the established
+macOS scroll conversion while emitting Linux `REL_WHEEL_HI_RES` and
+`REL_HWHEEL_HI_RES` events immediately, with accumulated legacy detents for
+compatibility. Patch 0005 adds the bounded native macOS pasteboard handler and
+strict Linux/wire clipboard validation. Patch 0006 carries the independently
+negotiated host copy/paste permissions into that handler before the client
+pipeline starts. Patch 0007 lets clipboard start that pipeline independently
+of mouse and keyboard input while leaving interactive handlers disabled.
+Patch 0008 fixes and instruments the bounded txproto host queues at the native
+capture, encode, and packet-sink ownership points. Apply it in txproto before
+patch 0009, which carries callback rejection and cumulative telemetry-loss
+facts through the Kymedia Rust forwarder. These facts remain host-local raw
+measurements; they do not claim cross-machine latency or scanout timing.
+
+Patch 0012 adds the missing real NvFBC begin observation. `capture_begin` is
+sampled on the host monotonic clock immediately before
+`nvFBCToCudaGrabFrame`; the same PTS-qualified batch is published only after
+the frame reaches the application-owned CUDA surface through the checked
+device-to-device copy. The resulting `capture_begin` to `acquired` interval is
+`host_capture_to_cuda_surface_ready`: it includes the NvFBC grab and the
+same-GPU copy. It is not scanout age or a claim about pure GPU capture time,
+and failed grabs, allocations, or copies do not publish orphan begin records.
+
+Patch 0013 gives every host forward attempt one monotonic producer sequence.
+Accepted batches preserve every native txproto entry in its original order
+and append `telemetry_forwarder_sequence`; rejected attempts use that same
+identity in coherent cumulative first/last-sequence and batch/entry loss
+state. Native callback rejection and the Rust forwarder's bounded-channel
+rejection are separate, correlated loss layers rather than interchangeable
+counts.
+
+After the callback-owned channel closes, accepted batches drain before one
+direct terminal record is sent through the still-open KyCom endpoint. The
+record carries the final attempted sequence, final accepted sequence (`0`
+means none), and the cumulative forwarder-loss snapshot. Only a terminal
+record actually observed by the consumer confirms producer completion. A
+disconnect without it must be classified as
+`producer_terminal_unconfirmed`; local send success is not remote receipt
+evidence.
+
+Verify this host evidence split without deploying, restarting the Linux user
+service, connecting a client, or changing an installed macOS application:
+
+```console
+scripts/verify-host-evidence-sequence.sh --source
+scripts/verify-host-evidence-sequence.sh --tests
+scripts/verify-host-evidence-sequence.sh --replay
+```
+
+Patch 0014 independently carries the native video-path callback through
+`vlc-rs`; patches 0015 and 0016 remain the Kyctl evidence ABI and client
+writer/reducer splits. Those layers consume this contract; they do not change
+the host meanings frozen here.
+
+Run `scripts/verify-host-telemetry.sh --source`, `--tests`, and `--replay` to
+check the patch allowlists, focused native/Rust gates, and clean pinned replay.
+The separate `--live` mode is an explicit, bounded host-service probe: it
+records the current service/config state, checks deployed NvFBC, NVENC, and
+telemetry evidence, and restores the original active state without printing
+configuration contents.
+
+Patch 0010 adds a separate, versioned, fixed-capacity video-path callback
+without changing the existing scalar metrics callback, keys, or meanings. It
+reports the compressed H.264/HEVC/AV1 codec, profile, chroma, and bit depth
+parsed from the received Kymux configuration, followed by the decoder module
+that VLC actually selected. Callback rejection is observable through coherent
+cumulative loss counts and producer sequence bounds; the native publisher
+does not serialize media or log event payloads.
+
+Patch 0011 adds the macOS-owned facts. Hardware use comes from
+`kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder` on the
+created VideoToolbox session; enable/require requests remain separate policy
+flags, and an unreadable or non-boolean property is explicitly Unknown.
+Compressed chroma is not inferred from the decoded surface:
+`decoded_fourcc` is the real `CVPixelBuffer` pixel format and IOSurface
+presence is observed independently. Decoder callbacks produce one typed
+terminal outcome for each correlated frame. The sample-buffer renderer
+separately reports failures, observable backpressure, and successful enqueue.
+
+The existing scalar `displayed` value remains unchanged, but means only
+`legacy_display_callback_returned`: VLC core can emit it after renderer
+early-return paths. It is not evidence of enqueue, physical presentation, or
+scanout. `renderer_sample_enqueued` is the distinct enqueue fact. Physical
+presentation, scanout timestamp, and layer queue depth remain explicitly
+Unknown because the current API path exposes no authoritative observation.
+
+Verify the native boundary in order:
+
+```console
+scripts/verify-macos-native-telemetry.sh --source
+scripts/verify-macos-native-telemetry.sh --tests
+scripts/verify-macos-native-telemetry.sh --replay
+scripts/verify-macos-native-telemetry.sh --mac-smoke finn@100.119.34.79
+```
+
+The Mac smoke copies only the verifier and exact patches, works under a
+mode-0700 temporary directory, builds/tests the pinned source without
+installing or replacing `ReplayDesktop.app`, returns a versioned manifest, and
+removes only its validated scratch directory. Its recorded Xcode version must
+be interpreted literally: Xcode 26.2 is compatibility evidence, not the
+project's Xcode 26.6 release qualification.
+
+Patch 0014 must be applied to `vlc-rs` at
+`7cbfc51313b4bb3ab07be51505b7054e4e2c366b` only after the exact VLC
+`0010` then `0011` boundary exists. Its callback accepts at most 64 records,
+1024 bytes per record, and 64 KiB per native call. It validates the complete
+version-one batch and copies the known 192-byte prefix plus bounded UTF-8 text
+into owned Rust values before invoking consumer code; no callback-owned
+pointer, slice, or text escapes the FFI call.
+
+The safe surface is
+`MediaPlayer::set_video_path_callback(&mut self, callback)` with
+`VideoPathCallbackEvent::{Records(Vec<VideoPathEvent>),
+ProducerTerminalUnconfirmed(VideoPathTerminal)}` and an explicit
+`VideoPathCallbackDisposition::{Accept, Reject}` result. Known enum values are
+typed, future discriminants and flag bits retain their raw values, and
+malformed sentinels are rejected. `VideoPathCallbackLoss` remains the native
+cumulative callback-loss tuple carried by accepted records; saturating
+bridge-rejected callback/record counts and their readable sequence bounds stay
+separate.
+
+Validation failure, consumer `Reject`, or consumer panic returns one bounded
+nonzero rejection to native libVLC without retry, waiting, payload logging, or
+unwinding through C. Native userdata is a monotonic, never-reused opaque ID,
+not a dereferenced Rust allocation. Callback entry resolves that ID through a
+bounded-lifetime registry and clones an `Arc` invocation guard before consumer
+dispatch, so callback-triggered owner drop cannot invalidate in-flight state.
+
+Rust calls `libvlc_media_player_release` before unregistering the ID. Calls
+that arrive during release can still resolve the guard; calls arriving after
+unregistration fail closed without touching freed memory. This deliberately
+does not treat the reference-count decrement as proof that native destruction
+completed. After unregistration Rust emits one local
+`ProducerTerminalUnconfirmed` control event, and the state is freed only after
+all in-flight guards finish. That event is not a native clean-completion
+acknowledgement, a final native-loss snapshot, or physical-presentation
+evidence. Kyctl consumption, GUI state, evidence reduction, and packaging
+remain outside patch 0014.
+
+Verify the Rust bridge locally and offline without deployment:
+
+```console
+scripts/verify-vlc-rs-video-path-bridge.sh --source
+scripts/verify-vlc-rs-video-path-bridge.sh --tests
+scripts/verify-vlc-rs-video-path-bridge.sh --replay
+```
+
+The prototype retains Kyber's existing clipboard event set. Requests are
+serialized and local Mac changes win over an in-flight remote fetch, but fully
+deterministic simultaneous cross-peer conflict resolution requires a future
+versioned generation/request ID.
+
+The rebuilt controller and `kynputservice` are a matched prototype pair:
+mixed-version internal MessagePack IPC is not supported. The external Kymux
+HTTP response remains tolerant of missing directional fields, and its legacy
+aggregate is enabled only when both host directions are authorized.
+
+## macOS hosting status
+
+Pinned Kyber 0.27.0 does not contain a working macOS sender. Its controller and
+Kymux pieces can compile on macOS, but the media server is disabled there and
+there is no ScreenCaptureKit capture backend, wired VideoToolbox host encoder,
+system-audio capture path, or safe macOS host-input injector. The narrowest
+host port is ScreenCaptureKit NV12 to H.264 VideoToolbox over the existing
+Kymux transport, followed by CoreGraphics input and reuse of this pasteboard
+adapter. That is a platform port, not a hidden build option in the current
+prototype.
+
+## Host readiness doctor
 
 `replay-host-doctor` is the first ReplayDesktop walking skeleton. It performs
 bounded, read-only host observations, derives one fail-closed G0 decision,

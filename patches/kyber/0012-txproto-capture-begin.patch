@@ -1,0 +1,127 @@
+diff --git a/src/iosys_nvfbc.c b/src/iosys_nvfbc.c
+index 7e5c891..0180d34 100644
+--- a/src/iosys_nvfbc.c
++++ b/src/iosys_nvfbc.c
+@@ -723,6 +723,7 @@ static void *nvfbc_capture_thread(void *s)
+         grabParams.pCUDADeviceBuffer = &cuDevicePtr;
+         grabParams.pFrameGrabInfo = &frameInfo;
+ 
++        int64_t capture_begin = av_gettime_relative();
+         fbcStatus = nvfbc.nvFBCToCudaGrabFrame(priv->fbc_handle, &grabParams);
+         if (fbcStatus != NVFBC_SUCCESS) {
+             log_nvfbc_error(ctx, priv->fbc_handle, "nvFBCToCudaGrabFrame");
+@@ -752,7 +753,13 @@ static void *nvfbc_capture_thread(void *s)
+         // device using ::cuMemcpyDtoD or ::cuMemcpyDtoH beforehand.
+ 
+         CUdeviceptr frameDevicePtr = (CUdeviceptr)frame->data[0];
+-        ctx->cuda->cuMemcpyDtoD(frameDevicePtr, cuDevicePtr,  frameInfo.dwByteSize);
++        CUresult cuResult = ctx->cuda->cuMemcpyDtoD(
++            frameDevicePtr, cuDevicePtr, frameInfo.dwByteSize);
++        if (cuResult != CUDA_SUCCESS) {
++            sp_log(entry, SP_LOG_WARN, "cuMemcpyDtoD() failed: %d\n", cuResult);
++            err = AVERROR_EXTERNAL;
++            goto fail;
++        }
+ 
+         int64_t ts = av_gettime_relative();
+ 
+@@ -769,6 +776,7 @@ static void *nvfbc_capture_thread(void *s)
+         if (ctx->metrics) {
+             const tx_metrics_entry metrics[] = {
+                 { .key = "pts", .value = frame_pts },
++                { .key = "capture_begin", .value = capture_begin },
+                 { .key = "acquired", .value = ts },
+             };
+             tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
+diff --git a/test/host_metrics.c b/test/host_metrics.c
+index 5a082e0..74d9e2a 100644
+--- a/test/host_metrics.c
++++ b/test/host_metrics.c
+@@ -130,6 +130,16 @@ static const tx_metrics_entry *find_metric(const MetricsCapture *capture,
+     return NULL;
+ }
+ 
++static size_t count_metric(const MetricsCapture *capture, const char *key)
++{
++    size_t count = 0;
++    for (size_t i = 0; i < capture->count; i++) {
++        if (strcmp(capture->entries[i].key, key) == 0)
++            count++;
++    }
++    return count;
++}
++
+ static void sleep_ms(long milliseconds)
+ {
+     struct timespec delay = {
+@@ -418,6 +428,62 @@ static void test_metrics_loss_and_helpers(void)
+                         "telemetry_callback_lost_entries_total"));
+ }
+ 
++static void test_capture_begin_batch(void)
++{
++    struct tx_metrics metrics;
++    MetricsCapture capture = { 0 };
++    const tx_metrics_entry successful_frame[] = {
++        { .key = "pts", .value = 41 },
++        { .key = "capture_begin", .value = 100 },
++        { .key = "acquired", .value = 103 },
++    };
++
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_metrics;
++    metrics.userdata = &capture;
++
++    tx_metrics_push(&metrics, successful_frame,
++                    sizeof(successful_frame) / sizeof(successful_frame[0]));
++    assert(capture.calls == 1);
++    assert(capture.count == 3);
++    assert(strcmp(capture.entries[0].key, "pts") == 0);
++    assert(strcmp(capture.entries[1].key, "capture_begin") == 0);
++    assert(strcmp(capture.entries[2].key, "acquired") == 0);
++    assert(find_metric(&capture, "pts")->value == 41);
++    assert(find_metric(&capture, "capture_begin")->value == 100);
++    assert(find_metric(&capture, "acquired")->value == 103);
++    assert(count_metric(&capture, "pts") == 1);
++    assert(count_metric(&capture, "capture_begin") == 1);
++    assert(count_metric(&capture, "acquired") == 1);
++    assert(find_metric(&capture, "capture_begin")->value <=
++           find_metric(&capture, "acquired")->value);
++
++    capture.reject = 1;
++    tx_metrics_push(&metrics, successful_frame,
++                    sizeof(successful_frame) / sizeof(successful_frame[0]));
++    assert(capture.calls == 2);
++    assert(atomic_load(&metrics.callback_lost_batches) == 1);
++    assert(atomic_load(&metrics.callback_lost_entries) == 3);
++
++    capture.reject = 0;
++    tx_metrics_push(&metrics, successful_frame,
++                    sizeof(successful_frame) / sizeof(successful_frame[0]));
++    assert(capture.calls == 3);
++    assert(capture.count == 5);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_batches_total")->value == 1);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_entries_total")->value == 3);
++    assert(strcmp(capture.entries[2].key, "pts") == 0);
++    assert(strcmp(capture.entries[3].key, "capture_begin") == 0);
++    assert(strcmp(capture.entries[4].key, "acquired") == 0);
++    assert(count_metric(&capture, "pts") == 1);
++    assert(count_metric(&capture, "capture_begin") == 1);
++    assert(count_metric(&capture, "acquired") == 1);
++    assert(find_metric(&capture, "capture_begin")->value == 100);
++    assert(find_metric(&capture, "acquired")->value == 103);
++}
++
+ static void test_metrics_forced_loss_publication(void)
+ {
+     struct tx_metrics metrics;
+@@ -517,6 +583,7 @@ int main(void)
+     test_fifo_limit_and_owner();
+     test_fifo_special_and_blocking_semantics();
+     test_metrics_loss_and_helpers();
++    test_capture_begin_batch();
+     test_metrics_forced_loss_publication();
+     test_metrics_concurrent_loss_publication();
+     puts("host_metrics: ok");

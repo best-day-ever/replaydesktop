@@ -1,0 +1,16 @@
+diff --git a/subprojects/packagefiles/ffmpeg/meson.build b/subprojects/packagefiles/ffmpeg/meson.build
+index d00b360..974c8e4 100644
+--- a/subprojects/packagefiles/ffmpeg/meson.build
++++ b/subprojects/packagefiles/ffmpeg/meson.build
+@@ -199,7 +199,10 @@ elif host_machine.system() == 'linux'
+     '--extra-cflags=-fPIC',
+     '--enable-nvenc',
+     '--enable-libdrm',
+-    '--enable-vulkan',
++    # The pinned Vulkan-Headers 1.4.313 do not expose the VP9 decode symbols
++    # required by FFmpeg 8.1. ReplayDesktop's Linux host uses CUDA/NVENC, not
++    # FFmpeg's Vulkan codec path, so keep it disabled for the prototype build.
++    '--disable-vulkan',
+     # Disable features autodetected from host -dev packages but unused by VLC;
+     # their system libs are not in _ext_deps, so they break the static link.
+     '--disable-sndio',

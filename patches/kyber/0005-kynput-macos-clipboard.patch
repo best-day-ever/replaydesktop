@@ -1,0 +1,2286 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 8abdefa..a0c2223 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -203,6 +203,15 @@ version = "2.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
+ 
++[[package]]
++name = "block2"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f"
++dependencies = [
++ "objc2",
++]
++
+ [[package]]
+ name = "bumpalo"
+ version = "3.15.4"
+@@ -900,6 +909,9 @@ dependencies = [
+  "mio",
+  "mockall",
+  "num",
++ "objc2",
++ "objc2-app-kit",
++ "objc2-foundation",
+  "png",
+  "raw-window-handle",
+  "regex",
+@@ -1274,6 +1286,105 @@ dependencies = [
+  "autocfg",
+ ]
+ 
++[[package]]
++name = "objc-sys"
++version = "0.3.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cdb91bdd390c7ce1a8607f35f3ca7151b65afc0ff5ff3b34fa350f7d7c7e4310"
++
++[[package]]
++name = "objc2"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "46a785d4eeff09c14c487497c162e92766fbb3e4059a71840cecc03d9a50b804"
++dependencies = [
++ "objc-sys",
++ "objc2-encode",
++]
++
++[[package]]
++name = "objc2-app-kit"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e4e89ad9e3d7d297152b17d39ed92cd50ca8063a89a9fa569046d41568891eff"
++dependencies = [
++ "bitflags 2.5.0",
++ "block2",
++ "libc",
++ "objc2",
++ "objc2-core-data",
++ "objc2-core-image",
++ "objc2-foundation",
++ "objc2-quartz-core",
++]
++
++[[package]]
++name = "objc2-core-data"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "617fbf49e071c178c0b24c080767db52958f716d9eabdf0890523aeae54773ef"
++dependencies = [
++ "bitflags 2.5.0",
++ "block2",
++ "objc2",
++ "objc2-foundation",
++]
++
++[[package]]
++name = "objc2-core-image"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "55260963a527c99f1819c4f8e3b47fe04f9650694ef348ffd2227e8196d34c80"
++dependencies = [
++ "block2",
++ "objc2",
++ "objc2-foundation",
++ "objc2-metal",
++]
++
++[[package]]
++name = "objc2-encode"
++version = "4.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
++
++[[package]]
++name = "objc2-foundation"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0ee638a5da3799329310ad4cfa62fbf045d5f56e3ef5ba4149e7452dcf89d5a8"
++dependencies = [
++ "bitflags 2.5.0",
++ "block2",
++ "libc",
++ "objc2",
++]
++
++[[package]]
++name = "objc2-metal"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "dd0cba1276f6023976a406a14ffa85e1fdd19df6b0f737b063b95f6c8c7aadd6"
++dependencies = [
++ "bitflags 2.5.0",
++ "block2",
++ "objc2",
++ "objc2-foundation",
++]
++
++[[package]]
++name = "objc2-quartz-core"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e42bee7bff906b14b167da2bac5efe6b6a07e6f7c0a21a7308d40c960242dc7a"
++dependencies = [
++ "bitflags 2.5.0",
++ "block2",
++ "objc2",
++ "objc2-foundation",
++ "objc2-metal",
++]
++
+ [[package]]
+ name = "object"
+ version = "0.32.2"
+diff --git a/kynput-rs/src/lib.rs b/kynput-rs/src/lib.rs
+index c93311c..680b2f2 100644
+--- a/kynput-rs/src/lib.rs
++++ b/kynput-rs/src/lib.rs
+@@ -461,6 +461,25 @@ impl Pipeline {
+         }
+     }
+ 
++    pub fn configure_clipboard(
++        &self,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++    ) -> Result<()> {
++        let ret = unsafe {
++            sys::kynput_pipeline_configure_clipboard(
++                self.ptr,
++                allow_local_read_send,
++                allow_remote_write,
++            )
++        };
++        if ret == 0 {
++            Ok(())
++        } else {
++            Err(Error::Generic)
++        }
++    }
++
+     pub fn get_input_sink(&self) -> Consumer {
+         Consumer {
+             ptr: unsafe { sys::kynput_pipeline_get_input_sink(self.ptr) },
+diff --git a/kynput/Cargo.toml b/kynput/Cargo.toml
+index deb681d..0572825 100644
+--- a/kynput/Cargo.toml
++++ b/kynput/Cargo.toml
+@@ -37,6 +37,9 @@ xcb = { version = "1.3.0", features = ["render", "x11", "xtest", "xfixes"] }
+ [target.'cfg(target_os = "macos")'.dependencies]
+ core-foundation = "0.9.4"
+ io-kit-sys = "0.4.1"
++objc2 = "=0.5.2"
++objc2-app-kit = { version = "=0.2.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
++objc2-foundation = { version = "=0.2.2", default-features = false, features = ["std", "NSArray", "NSObject", "NSString"] }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ vigem-client = { version = "0.1.2", features = ["unstable_ds4", "unstable_xtarget_notification"] }
+diff --git a/kynput/src/capi/mod.rs b/kynput/src/capi/mod.rs
+index 24a92a2..aae35c0 100644
+--- a/kynput/src/capi/mod.rs
++++ b/kynput/src/capi/mod.rs
+@@ -386,6 +386,18 @@ pub unsafe extern "C" fn kynput_pipeline_update_host_config(
+     result_to_c_int(ret)
+ }
+ 
++#[no_mangle]
++pub unsafe extern "C" fn kynput_pipeline_configure_clipboard(
++    pipeline: *mut kynput_Pipeline,
++    allow_local_read_send: bool,
++    allow_remote_write: bool,
++) -> c_int {
++    let ret = (*pipeline)
++        .pipeline
++        .configure_clipboard(allow_local_read_send, allow_remote_write);
++    result_to_c_int(ret)
++}
++
+ #[no_mangle]
+ pub unsafe extern "C" fn kynput_pipeline_get_input_sink(
+     pipeline: *mut kynput_Pipeline,
+diff --git a/kynput/src/linux/clipboard.rs b/kynput/src/linux/clipboard.rs
+index 36b4bee..2d86249 100644
+--- a/kynput/src/linux/clipboard.rs
++++ b/kynput/src/linux/clipboard.rs
+@@ -112,6 +112,33 @@ struct PendingPaste {
+     deadline: Instant,
+ }
+ 
++#[derive(Default)]
++struct LocalTransferBudget {
++    text_size: Option<usize>,
++    html_size: Option<usize>,
++}
++
++impl LocalTransferBudget {
++    fn reset(&mut self) {
++        *self = Self::default();
++    }
++
++    fn record(&mut self, format: ClipboardFormat, size: usize) -> bool {
++        let (text_size, html_size) = match format {
++            ClipboardFormat::Text => (Some(size), self.html_size),
++            ClipboardFormat::Html => (self.text_size, Some(size)),
++        };
++
++        if text_size.unwrap_or_default() + html_size.unwrap_or_default() > MAX_CLIPBOARD_SIZE {
++            return false;
++        }
++
++        self.text_size = text_size;
++        self.html_size = html_size;
++        true
++    }
++}
++
+ struct Backend {
+     poll: Poll,
+     queue: Arc<Mutex<VecDeque<InputPacket>>>,
+@@ -123,6 +150,7 @@ struct Backend {
+     remote_formats: Vec<ClipboardFormat>,
+     caps: ClipboardCaps,
+     pending_paste: Option<PendingPaste>,
++    local_transfer_budget: LocalTransferBudget,
+ }
+ 
+ impl Drop for Backend {
+@@ -268,6 +296,7 @@ impl Backend {
+             return Ok(());
+         }
+ 
++        self.local_transfer_budget.reset();
+         let formats = self.query_available_formats()?;
+         if formats.is_empty() {
+             return Ok(());
+@@ -378,6 +407,10 @@ impl Backend {
+             );
+             return Ok(vec![]);
+         }
++        if reply.bytes_after() != 0 {
++            warn!("Rejecting oversized TARGETS property");
++            return Ok(vec![]);
++        }
+ 
+         Ok(reply.value::<xcb::x::Atom>().to_vec())
+     }
+@@ -521,6 +554,7 @@ impl Backend {
+     fn on_selection_clear(&mut self) -> Result<()> {
+         info!("Clipboard ownership transferred to another application");
+         self.remote_formats.clear();
++        self.local_transfer_budget.reset();
+         Ok(())
+     }
+ 
+@@ -539,6 +573,7 @@ impl Backend {
+         }
+ 
+         self.remote_formats = formats;
++        self.local_transfer_budget.reset();
+         Ok(())
+     }
+ 
+@@ -568,17 +603,21 @@ impl Backend {
+         let data = self.read_local_clipboard(format)?;
+ 
+         let event = match data {
+-            Some(mut data) => {
++            Some(data) => {
+                 if data.is_too_large() {
+                     warn!(
+-                        "Clipboard data too large ({} bytes, max {}), truncating",
++                        "Rejecting clipboard data larger than the {} byte limit ({} bytes)",
++                        MAX_CLIPBOARD_SIZE,
+                         data.size(),
+-                        MAX_CLIPBOARD_SIZE
+                     );
+-                    data.truncate();
++                    ClipboardEvent::DataUnavailable { format }
++                } else if !self.local_transfer_budget.record(format, data.size()) {
++                    warn!("Rejecting clipboard representations larger than the combined limit");
++                    ClipboardEvent::DataUnavailable { format }
++                } else {
++                    debug!("on_data_request: got data, sending to remote");
++                    ClipboardEvent::Data(data)
+                 }
+-                debug!("on_data_request: got data, sending to remote");
+-                ClipboardEvent::Data(data)
+             }
+             None => {
+                 warn!("on_data_request: no data available for {format:?}");
+@@ -637,9 +676,19 @@ impl Backend {
+                             );
+                             return Ok(None);
+                         }
++                        if reply.bytes_after() != 0 {
++                            warn!("Rejecting oversized X11 clipboard property");
++                            return Ok(None);
++                        }
+ 
+                         let bytes = reply.value::<u8>();
+-                        let text = String::from_utf8_lossy(bytes).into_owned();
++                        let text = match String::from_utf8(bytes.to_vec()) {
++                            Ok(text) => text,
++                            Err(_) => {
++                                warn!("Rejecting X11 clipboard data with invalid UTF-8");
++                                return Ok(None);
++                            }
++                        };
+                         debug!("read_local_clipboard: got {} bytes", text.len());
+                         let data = match format {
+                             ClipboardFormat::Text => ClipboardData::Text(text),
+@@ -746,6 +795,7 @@ impl Backend {
+             remote_formats: vec![],
+             caps: ClipboardCaps::new(allow_read, allow_write),
+             pending_paste: None,
++            local_transfer_budget: LocalTransferBudget::default(),
+         })
+     }
+ }
+@@ -817,3 +867,44 @@ impl InputHandler for ClipboardHandler {
+         Some(vec![InputType::Clipboard])
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::LocalTransferBudget;
++    use crate::types::{ClipboardFormat, MAX_CLIPBOARD_SIZE};
++
++    #[test]
++    fn combined_transfer_budget_accepts_exact_limit() {
++        let mut budget = LocalTransferBudget::default();
++        assert!(budget.record(ClipboardFormat::Text, MAX_CLIPBOARD_SIZE / 2));
++        assert!(budget.record(
++            ClipboardFormat::Html,
++            MAX_CLIPBOARD_SIZE - MAX_CLIPBOARD_SIZE / 2
++        ));
++    }
++
++    #[test]
++    fn combined_transfer_budget_rejects_oversize_without_consuming_budget() {
++        let mut budget = LocalTransferBudget::default();
++        assert!(budget.record(ClipboardFormat::Text, MAX_CLIPBOARD_SIZE - 1));
++        assert!(!budget.record(ClipboardFormat::Html, 2));
++        assert!(budget.record(ClipboardFormat::Html, 1));
++    }
++
++    #[test]
++    fn repeated_format_replaces_its_previous_size() {
++        let mut budget = LocalTransferBudget::default();
++        assert!(budget.record(ClipboardFormat::Text, MAX_CLIPBOARD_SIZE - 10));
++        assert!(budget.record(ClipboardFormat::Text, 10));
++        assert!(budget.record(ClipboardFormat::Html, MAX_CLIPBOARD_SIZE - 10));
++    }
++
++    #[test]
++    fn reset_starts_a_new_local_generation() {
++        let mut budget = LocalTransferBudget::default();
++        assert!(budget.record(ClipboardFormat::Text, MAX_CLIPBOARD_SIZE));
++        assert!(!budget.record(ClipboardFormat::Html, 1));
++        budget.reset();
++        assert!(budget.record(ClipboardFormat::Html, MAX_CLIPBOARD_SIZE));
++    }
++}
+diff --git a/kynput/src/macos/mod.rs b/kynput/src/macos/mod.rs
+index 0526f73..4954291 100644
+--- a/kynput/src/macos/mod.rs
++++ b/kynput/src/macos/mod.rs
+@@ -19,7 +19,9 @@
+ // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ mod client_keyboard_mouse;
++mod clipboard;
+ mod pipeline_config;
+ 
+ pub use client_keyboard_mouse::ClientKeyboardMouseHandler;
++pub use clipboard::ClipboardHandler;
+ pub use pipeline_config::PipelineConfigBuilder;
+diff --git a/kynput/src/macos/pipeline_config.rs b/kynput/src/macos/pipeline_config.rs
+index 7936933..38bd6a2 100644
+--- a/kynput/src/macos/pipeline_config.rs
++++ b/kynput/src/macos/pipeline_config.rs
+@@ -20,7 +20,7 @@
+ 
+ use std::sync::Arc;
+ 
+-use crate::macos::ClientKeyboardMouseHandler;
++use crate::macos::{ClientKeyboardMouseHandler, ClipboardHandler};
+ #[cfg(feature = "sdl2")]
+ use crate::sdl2::ClientGamepadHandler;
+ use crate::{
+@@ -51,6 +51,19 @@ impl InputPipelineConfigBuilder for PipelineConfigBuilder {
+             }));
+         }
+ 
++        // Clipboard permissions are configured only after the Kymux response
++        // has independently negotiated host allow_paste/allow_copy. The
++        // dormant handler makes clipboard capability discoverable without
++        // touching NSPasteboard; both false means start() creates no worker.
++        builders.push(Box::new(move |router| {
++            Ok(Arc::new(ClipboardHandler::new(
++                InputTarget::Host,
++                router,
++                false,
++                false,
++            )?))
++        }));
++
+         Some(InputPipelineConfig {
+             target: InputTarget::Client,
+             cursor_format: Default::default(),
+diff --git a/kynput/src/pipeline.rs b/kynput/src/pipeline.rs
+index d0093eb..302960a 100644
+--- a/kynput/src/pipeline.rs
++++ b/kynput/src/pipeline.rs
+@@ -58,6 +58,17 @@ pub trait InputHandler: MaybeSendSync {
+         Ok(())
+     }
+ 
++    /// Apply the requested and host-negotiated clipboard directions before
++    /// [`InputPipeline::start`]. Handlers that do not manage a clipboard
++    /// ignore this configuration.
++    fn configure_clipboard(
++        self: Arc<Self>,
++        _allow_local_read_send: bool,
++        _allow_remote_write: bool,
++    ) -> Result<()> {
++        Ok(())
++    }
++
+     /// If the implementation also implements [`InputConsumer`] trait, this method must be
+     /// implemented.
+     ///
+@@ -207,6 +218,19 @@ impl InputPipeline {
+         Ok(())
+     }
+ 
++    /// Configure clipboard directions before handlers are started.
++    pub fn configure_clipboard(
++        &self,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++    ) -> Result<()> {
++        for handler in self.handlers.lock()?.iter().cloned() {
++            handler.configure_clipboard(allow_local_read_send, allow_remote_write)?;
++        }
++
++        Ok(())
++    }
++
+     /// Plug the network sink to the [`InputRouter`].
+     pub fn plug_network(&self, network: Arc<dyn InputConsumer>) -> Result<()> {
+         self.router.plug_network_consumer(network)
+diff --git a/kynput/src/types/clipboard.rs b/kynput/src/types/clipboard.rs
+index 71ad7a2..15bc1b6 100644
+--- a/kynput/src/types/clipboard.rs
++++ b/kynput/src/types/clipboard.rs
+@@ -41,6 +41,10 @@ impl ClipboardFormat {
+     const ID_HTML: u8 = 1;
+ 
+     fn deserialize(buf: &mut impl Buf) -> Result<Self> {
++        if !buf.has_remaining() {
++            return Err(Error::InvalidType);
++        }
++
+         match buf.get_u8() {
+             Self::ID_TEXT => Ok(Self::Text),
+             Self::ID_HTML => Ok(Self::Html),
+@@ -98,26 +102,26 @@ impl ClipboardData {
+     }
+ 
+     fn deserialize(buf: &mut impl Buf) -> Result<Self> {
+-        match ClipboardFormat::deserialize(buf)? {
+-            ClipboardFormat::Text => {
+-                let len = buf.get_u32();
+-                let bytes = buf.copy_to_bytes(len as usize);
+-
+-                from_utf8(&bytes[..])
+-                    .map(String::from)
+-                    .map(Self::Text)
+-                    .map_err(|_| Error::InvalidType)
+-            }
+-            ClipboardFormat::Html => {
+-                let len = buf.get_u32();
+-                let bytes = buf.copy_to_bytes(len as usize);
+-
+-                from_utf8(&bytes[..])
+-                    .map(String::from)
+-                    .map(Self::Html)
+-                    .map_err(|_| Error::InvalidType)
+-            }
++        let format = ClipboardFormat::deserialize(buf)?;
++        if buf.remaining() < std::mem::size_of::<u32>() {
++            return Err(Error::InvalidType);
++        }
++
++        let len = buf.get_u32() as usize;
++        if len > MAX_CLIPBOARD_SIZE {
++            return Err(Error::PacketTooBig);
++        }
++        if buf.remaining() != len {
++            return Err(Error::InvalidType);
+         }
++
++        let bytes = buf.copy_to_bytes(len);
++        let text = from_utf8(&bytes).map_err(|_| Error::BadEncoding)?;
++
++        Ok(match format {
++            ClipboardFormat::Text => Self::Text(text.to_owned()),
++            ClipboardFormat::Html => Self::Html(text.to_owned()),
++        })
+     }
+ 
+     fn serialize_to(&self, out: &mut BytesMut) {
+@@ -185,10 +189,20 @@ impl ClipboardEvent {
+     pub const FILTERABLE: bool = false;
+ 
+     pub fn deserialize(mut buf: impl Buf) -> Result<Self> {
++        if !buf.has_remaining() {
++            return Err(Error::InvalidType);
++        }
++
+         let type_ = buf.get_u8();
+         let input = match type_ {
+             ClipboardEvent::ID_CHANGE => {
++                if buf.remaining() < std::mem::size_of::<u16>() {
++                    return Err(Error::InvalidType);
++                }
+                 let num_formats = buf.get_u16();
++                if num_formats > 2 || buf.remaining() < num_formats as usize {
++                    return Err(Error::InvalidType);
++                }
+                 let formats = (0..num_formats)
+                     .map(|_| ClipboardFormat::deserialize(&mut buf))
+                     .collect::<Result<Vec<_>>>()?;
+@@ -212,6 +226,10 @@ impl ClipboardEvent {
+             }
+         };
+ 
++        if buf.has_remaining() {
++            return Err(Error::InvalidType);
++        }
++
+         Ok(input)
+     }
+ }
+@@ -223,11 +241,7 @@ mod tests {
+     #[test]
+     fn serialize_deserialize_change() {
+         let evt = ClipboardEvent::Change {
+-            formats: vec![
+-                ClipboardFormat::Text,
+-                ClipboardFormat::Html,
+-                ClipboardFormat::Text,
+-            ],
++            formats: vec![ClipboardFormat::Text, ClipboardFormat::Html],
+         };
+ 
+         let data = evt.serialize();
+@@ -294,4 +308,92 @@ mod tests {
+             panic!("Expected Text variant");
+         }
+     }
++
++    #[test]
++    fn rejects_empty_and_truncated_events_without_panicking() {
++        assert!(matches!(
++            ClipboardEvent::deserialize(&[][..]),
++            Err(Error::InvalidType)
++        ));
++        assert!(matches!(
++            ClipboardEvent::deserialize(&[ClipboardEvent::ID_CHANGE][..]),
++            Err(Error::InvalidType)
++        ));
++        assert!(matches!(
++            ClipboardEvent::deserialize(
++                &[ClipboardEvent::ID_DATA, ClipboardFormat::ID_TEXT, 0, 0, 0][..]
++            ),
++            Err(Error::InvalidType)
++        ));
++    }
++
++    #[test]
++    fn rejects_declared_data_larger_than_packet_or_limit() {
++        let truncated = [
++            ClipboardEvent::ID_DATA,
++            ClipboardFormat::ID_TEXT,
++            0,
++            0,
++            0,
++            2,
++            b'a',
++        ];
++        assert!(matches!(
++            ClipboardEvent::deserialize(&truncated[..]),
++            Err(Error::InvalidType)
++        ));
++
++        let oversize = (MAX_CLIPBOARD_SIZE as u32 + 1).to_be_bytes();
++        let packet = [
++            &[ClipboardEvent::ID_DATA, ClipboardFormat::ID_TEXT][..],
++            &oversize,
++        ]
++        .concat();
++        assert!(matches!(
++            ClipboardEvent::deserialize(&packet[..]),
++            Err(Error::PacketTooBig)
++        ));
++    }
++
++    #[test]
++    fn rejects_invalid_utf8_and_trailing_bytes() {
++        let invalid_utf8 = [
++            ClipboardEvent::ID_DATA,
++            ClipboardFormat::ID_TEXT,
++            0,
++            0,
++            0,
++            1,
++            0xff,
++        ];
++        assert!(matches!(
++            ClipboardEvent::deserialize(&invalid_utf8[..]),
++            Err(Error::BadEncoding)
++        ));
++
++        let mut trailing = ClipboardEvent::DataRequest {
++            format: ClipboardFormat::Text,
++        }
++        .serialize();
++        trailing.push(0);
++        assert!(matches!(
++            ClipboardEvent::deserialize(&trailing[..]),
++            Err(Error::InvalidType)
++        ));
++    }
++
++    #[test]
++    fn rejects_unknown_or_excessive_change_formats() {
++        let too_many = [ClipboardEvent::ID_CHANGE, 0, 3, 0, 1, 0];
++        assert!(matches!(
++            ClipboardEvent::deserialize(&too_many[..]),
++            Err(Error::InvalidType)
++        ));
++
++        let unknown = [ClipboardEvent::ID_CHANGE, 0, 1, 7];
++        assert!(matches!(
++            ClipboardEvent::deserialize(&unknown[..]),
++            Err(Error::InvalidType)
++        ));
++    }
+ }
+diff --git a/kynputservice-types/src/lib.rs b/kynputservice-types/src/lib.rs
+index d70c267..a8cbff1 100644
+--- a/kynputservice-types/src/lib.rs
++++ b/kynputservice-types/src/lib.rs
+@@ -45,7 +45,9 @@ pub struct ServiceConfig {
+     pub cursor_format: CursorFormat,
+     pub gamepad_force_xbox360: Option<bool>,
+     #[serde(default)]
+-    pub clipboard: bool,
++    pub clipboard_allow_copy: bool,
++    #[serde(default)]
++    pub clipboard_allow_paste: bool,
+ }
+ 
+ #[derive(Serialize, Deserialize, Debug)]
+@@ -67,7 +69,12 @@ pub enum Command {
+ 
+ #[derive(Serialize, Deserialize, Debug)]
+ pub enum Event {
+-    Connected { clipboard: bool },
++    Connected {
++        #[serde(default)]
++        clipboard_allow_copy: bool,
++        #[serde(default)]
++        clipboard_allow_paste: bool,
++    },
+     Disconnected,
+     Quit,
+ }
+diff --git a/kynputservice/src/lib.rs b/kynputservice/src/lib.rs
+index d39e304..0206e19 100644
+--- a/kynputservice/src/lib.rs
++++ b/kynputservice/src/lib.rs
+@@ -52,6 +52,8 @@ impl NetworkStreamObserver for NetworkSink {
+ struct Service {
+     pipeline: Pipeline,
+     host_network: NetworkStream,
++    clipboard_allow_copy: bool,
++    clipboard_allow_paste: bool,
+ }
+ 
+ impl Service {
+@@ -66,6 +68,11 @@ impl Service {
+             Default::default()
+         });
+ 
++        let clipboard_allow_copy =
++            service_config.clipboard_allow_copy && config.clipboard_allow_copy();
++        let clipboard_allow_paste =
++            service_config.clipboard_allow_paste && config.clipboard_allow_paste();
++
+         let pipeline_config = kynput_rs::Config::default_host(
+             host_config.convert(),
+             kynput_rs::ServiceConfig::new(
+@@ -73,8 +80,8 @@ impl Service {
+                 service_config
+                     .gamepad_force_xbox360
+                     .unwrap_or_else(|| config.gamepad_force_xbox360()),
+-                service_config.clipboard && config.clipboard_allow_copy(),
+-                service_config.clipboard && config.clipboard_allow_paste(),
++                clipboard_allow_copy,
++                clipboard_allow_paste,
+                 config.keyboard_key_repeat(),
+             ),
+         );
+@@ -92,6 +99,8 @@ impl Service {
+         Ok(Self {
+             host_network,
+             pipeline,
++            clipboard_allow_copy,
++            clipboard_allow_paste,
+         })
+     }
+ 
+@@ -139,7 +148,10 @@ pub async fn run(mut worker: Worker<Command, Event>) -> Result<()> {
+                     .accept(
+                         cmd_id,
+                         Some(Event::Connected {
+-                            clipboard: tcp_service.pipeline.produces_type(InputType::Clipboard),
++                            clipboard_allow_copy: tcp_service.clipboard_allow_copy
++                                && tcp_service.pipeline.produces_type(InputType::Clipboard),
++                            clipboard_allow_paste: tcp_service.clipboard_allow_paste
++                                && tcp_service.pipeline.produces_type(InputType::Clipboard),
+                         }),
+                     )
+                     .await?;
+@@ -164,7 +176,10 @@ pub async fn run(mut worker: Worker<Command, Event>) -> Result<()> {
+                     .accept(
+                         cmd_id,
+                         Some(Event::Connected {
+-                            clipboard: kymux_service.pipeline.produces_type(InputType::Clipboard),
++                            clipboard_allow_copy: kymux_service.clipboard_allow_copy
++                                && kymux_service.pipeline.produces_type(InputType::Clipboard),
++                            clipboard_allow_paste: kymux_service.clipboard_allow_paste
++                                && kymux_service.pipeline.produces_type(InputType::Clipboard),
+                         }),
+                     )
+                     .await?;
+diff --git a/kynput/src/macos/clipboard.rs b/kynput/src/macos/clipboard.rs
+new file mode 100644
+index 0000000..cda5055
+--- /dev/null
++++ b/kynput/src/macos/clipboard.rs
+@@ -0,0 +1,1361 @@
++// Project Kyber: clipboard.rs
++// Copyright © 2022-2026 Kyber SAS
++// SPDX-License-Identifier: LicenseRef-Kyber-Commercial OR AGPL-3.0-or-later
++//
++// This file is both under dual license: AGPLv3 and a Commercial one.
++//
++// ----
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU Affero General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU Affero General Public License for more details.
++//
++// You should have received a copy of the GNU Affero General Public License
++// along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++use std::collections::VecDeque;
++use std::sync::{
++    atomic::{AtomicBool, Ordering},
++    mpsc::{self, Receiver, RecvTimeoutError, Sender},
++    Arc, Mutex, Weak,
++};
++use std::thread::{self, JoinHandle};
++use std::time::Duration;
++
++use log::{debug, info};
++
++use crate::pipeline::{InputConsumerHandle, InputHandler};
++use crate::types::{ClipboardData, ClipboardFormat, MAX_CLIPBOARD_SIZE};
++use crate::{
++    ClipboardEvent, Error, InputConsumer, InputPacket, InputTarget, InputType, Payload, Result,
++};
++
++#[cfg(target_os = "macos")]
++use objc2::rc::{autoreleasepool, Retained};
++#[cfg(target_os = "macos")]
++use objc2::runtime::ProtocolObject;
++#[cfg(target_os = "macos")]
++use objc2_app_kit::{
++    NSPasteboard, NSPasteboardItem, NSPasteboardTypeHTML, NSPasteboardTypeString,
++    NSPasteboardWriting,
++};
++#[cfg(target_os = "macos")]
++use objc2_foundation::{NSArray, NSString};
++
++const CLIPBOARD_WORKER_NAME: &str = "kynput-macos-clipboard";
++const POLL_INTERVAL: Duration = Duration::from_millis(150);
++
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++struct ClipboardSnapshot {
++    text: Option<String>,
++    html: Option<String>,
++}
++
++impl ClipboardSnapshot {
++    fn size(&self) -> usize {
++        self.text.as_ref().map_or(0, String::len) + self.html.as_ref().map_or(0, String::len)
++    }
++
++    fn is_within_limit(&self) -> bool {
++        self.size() <= MAX_CLIPBOARD_SIZE
++    }
++
++    fn formats(&self) -> Vec<ClipboardFormat> {
++        let mut formats = Vec::with_capacity(2);
++        if self.text.is_some() {
++            formats.push(ClipboardFormat::Text);
++        }
++        if self.html.is_some() {
++            formats.push(ClipboardFormat::Html);
++        }
++        formats
++    }
++
++    fn data(&self, format: ClipboardFormat) -> Option<ClipboardData> {
++        match format {
++            ClipboardFormat::Text => self.text.clone().map(ClipboardData::Text),
++            ClipboardFormat::Html => self.html.clone().map(ClipboardData::Html),
++        }
++    }
++
++    fn set_data(&mut self, data: ClipboardData) {
++        match data {
++            ClipboardData::Text(text) => self.text = Some(text),
++            ClipboardData::Html(html) => self.html = Some(html),
++        }
++    }
++}
++
++/// Pasteboard access boundary.
++///
++/// Implementations are created and used only on the clipboard worker. In
++/// particular, the production implementation must not be constructed on the
++/// caller thread because obtaining the pasteboard is itself an AppKit call.
++trait PasteboardBackend {
++    fn change_count(&mut self) -> Result<i64>;
++    fn read_snapshot(&mut self) -> Result<ClipboardSnapshot>;
++
++    /// Replace all supported representations as one logical pasteboard item.
++    ///
++    /// The returned count is the change count produced by the write. This
++    /// avoids a separate change-count read when local clipboard access is
++    /// denied but remote writes are allowed.
++    fn write_snapshot(&mut self, snapshot: &ClipboardSnapshot) -> Result<i64>;
++}
++
++type PasteboardFactory = Box<dyn FnOnce() -> Result<Box<dyn PasteboardBackend>> + Send + 'static>;
++
++#[cfg(target_os = "macos")]
++struct NativePasteboard {
++    pasteboard: Retained<NSPasteboard>,
++}
++
++#[cfg(target_os = "macos")]
++impl NativePasteboard {
++    fn general() -> Result<Box<dyn PasteboardBackend>> {
++        let pasteboard = unsafe { NSPasteboard::generalPasteboard() };
++        Ok(Box::new(Self { pasteboard }))
++    }
++
++    #[cfg(test)]
++    fn named(name: &str) -> Result<Box<dyn PasteboardBackend>> {
++        let name = NSString::from_str(name);
++        let pasteboard = unsafe { NSPasteboard::pasteboardWithName(&name) };
++        Ok(Box::new(Self { pasteboard }))
++    }
++}
++
++#[cfg(target_os = "macos")]
++impl PasteboardBackend for NativePasteboard {
++    fn change_count(&mut self) -> Result<i64> {
++        Ok(unsafe { self.pasteboard.changeCount() } as i64)
++    }
++
++    fn read_snapshot(&mut self) -> Result<ClipboardSnapshot> {
++        autoreleasepool(|pool| {
++            let text = unsafe {
++                self.pasteboard
++                    .stringForType(NSPasteboardTypeString)
++                    .map(|value| value.as_str(pool).to_owned())
++            };
++            let html = unsafe {
++                self.pasteboard
++                    .stringForType(NSPasteboardTypeHTML)
++                    .map(|value| value.as_str(pool).to_owned())
++            };
++            Ok(ClipboardSnapshot { text, html })
++        })
++    }
++
++    fn write_snapshot(&mut self, snapshot: &ClipboardSnapshot) -> Result<i64> {
++        autoreleasepool(|_| {
++            let item = unsafe { NSPasteboardItem::new() };
++
++            if let Some(text) = snapshot.text.as_deref() {
++                let text = NSString::from_str(text);
++                if !unsafe { item.setString_forType(&text, NSPasteboardTypeString) } {
++                    return Err(Error::Rejected);
++                }
++            }
++
++            if let Some(html) = snapshot.html.as_deref() {
++                let html = NSString::from_str(html);
++                if !unsafe { item.setString_forType(&html, NSPasteboardTypeHTML) } {
++                    return Err(Error::Rejected);
++                }
++            }
++
++            let change_count = unsafe { self.pasteboard.clearContents() } as i64;
++            if snapshot.formats().is_empty() {
++                return Ok(change_count);
++            }
++
++            let item: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
++                ProtocolObject::from_retained(item);
++            let items = NSArray::from_vec(vec![item]);
++            if !unsafe { self.pasteboard.writeObjects(&items) } {
++                return Err(Error::Rejected);
++            }
++
++            // Record the post-write value rather than assuming writeObjects
++            // preserves clearContents' count on every supported macOS build.
++            // This query is part of the authorized remote-write transaction,
++            // never the disabled local polling path.
++            Ok(unsafe { self.pasteboard.changeCount() } as i64)
++        })
++    }
++}
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct ClipboardPermissions {
++    allow_local_read_send: bool,
++    allow_remote_write: bool,
++}
++
++impl ClipboardPermissions {
++    fn any(self) -> bool {
++        self.allow_local_read_send || self.allow_remote_write
++    }
++}
++
++struct RemoteFetch {
++    generation: u64,
++    formats: Vec<ClipboardFormat>,
++    next_index: usize,
++    outstanding: Option<ClipboardFormat>,
++    snapshot: ClipboardSnapshot,
++}
++
++impl RemoteFetch {
++    fn new(generation: u64, formats: Vec<ClipboardFormat>) -> Self {
++        Self {
++            generation,
++            formats,
++            next_index: 0,
++            outstanding: None,
++            snapshot: ClipboardSnapshot::default(),
++        }
++    }
++}
++
++struct ClipboardWorker {
++    pasteboard: Box<dyn PasteboardBackend>,
++    remote: Weak<dyn InputConsumer>,
++    target: InputTarget,
++    permissions: ClipboardPermissions,
++    last_change_count: Option<i64>,
++    self_write_change_count: Option<i64>,
++    last_known_snapshot: Option<ClipboardSnapshot>,
++    last_known_invalid: bool,
++    local_snapshot: Option<ClipboardSnapshot>,
++    next_remote_generation: u64,
++    remote_fetch: Option<RemoteFetch>,
++    stale_responses: VecDeque<ClipboardFormat>,
++    stop_requested: Arc<AtomicBool>,
++}
++
++impl ClipboardWorker {
++    fn new(
++        mut pasteboard: Box<dyn PasteboardBackend>,
++        remote: Weak<dyn InputConsumer>,
++        target: InputTarget,
++        permissions: ClipboardPermissions,
++        stop_requested: Arc<AtomicBool>,
++    ) -> Result<Self> {
++        let last_change_count = if permissions.allow_local_read_send {
++            // Establish a baseline without reading or advertising the current
++            // clipboard. Existing content predates explicit user consent for
++            // this session.
++            Some(pasteboard.change_count()?)
++        } else {
++            None
++        };
++
++        Ok(Self {
++            pasteboard,
++            remote,
++            target,
++            permissions,
++            last_change_count,
++            self_write_change_count: None,
++            last_known_snapshot: None,
++            last_known_invalid: false,
++            local_snapshot: None,
++            next_remote_generation: 0,
++            remote_fetch: None,
++            stale_responses: VecDeque::new(),
++            stop_requested,
++        })
++    }
++
++    fn send_event(&self, event: ClipboardEvent) -> Result<()> {
++        if self.stop_requested.load(Ordering::Acquire) {
++            return Ok(());
++        }
++        if let Some(remote) = self.remote.upgrade() {
++            remote.consume(InputPacket::new(self.target, Payload::Clipboard(event)))?;
++        }
++        Ok(())
++    }
++
++    fn cancel_remote_fetch(&mut self) {
++        if let Some(mut fetch) = self.remote_fetch.take() {
++            if let Some(format) = fetch.outstanding.take() {
++                self.stale_responses.push_back(format);
++            }
++            debug!("Cancelled clipboard remote generation {}", fetch.generation);
++        }
++    }
++
++    /// Check for a local change. Returns true when a new valid or invalid
++    /// local generation was observed, including a same-content generation
++    /// that deliberately did not produce a network packet.
++    fn poll_local_change(&mut self) -> Result<bool> {
++        if self.stop_requested.load(Ordering::Acquire) || !self.permissions.allow_local_read_send {
++            return Ok(false);
++        }
++
++        let change_count = self.pasteboard.change_count()?;
++        if self.last_change_count == Some(change_count) {
++            return Ok(false);
++        }
++        self.last_change_count = Some(change_count);
++
++        if self.self_write_change_count == Some(change_count) {
++            self.self_write_change_count = None;
++            return Ok(false);
++        }
++        self.self_write_change_count = None;
++
++        let snapshot = self.pasteboard.read_snapshot()?;
++        if !snapshot.is_within_limit() {
++            self.cancel_remote_fetch();
++            self.local_snapshot = None;
++            self.last_known_snapshot = None;
++
++            if self.last_known_invalid {
++                return Ok(true);
++            }
++
++            self.last_known_invalid = true;
++            self.send_event(ClipboardEvent::Change {
++                formats: Vec::new(),
++            })?;
++            return Ok(true);
++        }
++
++        if !self.last_known_invalid && self.last_known_snapshot.as_ref() == Some(&snapshot) {
++            // Re-owning identical content must not create an echo. Do not
++            // create a new advertised snapshot when no Change was sent.
++            return Ok(true);
++        }
++
++        self.cancel_remote_fetch();
++        self.last_known_invalid = false;
++        self.last_known_snapshot = Some(snapshot.clone());
++        self.local_snapshot = Some(snapshot.clone());
++        self.send_event(ClipboardEvent::Change {
++            formats: snapshot.formats(),
++        })?;
++        Ok(true)
++    }
++
++    fn canonical_remote_formats(formats: Vec<ClipboardFormat>) -> Vec<ClipboardFormat> {
++        let mut canonical = Vec::with_capacity(2);
++        if formats.contains(&ClipboardFormat::Text) {
++            canonical.push(ClipboardFormat::Text);
++        }
++        if formats.contains(&ClipboardFormat::Html) {
++            canonical.push(ClipboardFormat::Html);
++        }
++        canonical
++    }
++
++    fn on_remote_change(&mut self, formats: Vec<ClipboardFormat>) -> Result<()> {
++        self.cancel_remote_fetch();
++        self.next_remote_generation = self.next_remote_generation.wrapping_add(1);
++        let generation = self.next_remote_generation;
++        self.remote_fetch = Some(RemoteFetch::new(
++            generation,
++            Self::canonical_remote_formats(formats),
++        ));
++        self.advance_remote_fetch()
++    }
++
++    fn drain_stale_response(&mut self, format: ClipboardFormat) -> Result<bool> {
++        let Some(expected) = self.stale_responses.front().copied() else {
++            return Ok(false);
++        };
++
++        if expected == format {
++            self.stale_responses.pop_front();
++            self.advance_remote_fetch()?;
++        } else {
++            debug!("Ignoring unsolicited clipboard response while draining a stale generation");
++        }
++        Ok(true)
++    }
++
++    fn on_remote_data(&mut self, data: ClipboardData) -> Result<()> {
++        let format = data.format();
++        if self.drain_stale_response(format)? {
++            return Ok(());
++        }
++
++        let Some(fetch) = self.remote_fetch.as_mut() else {
++            debug!("Ignoring unsolicited clipboard data");
++            return Ok(());
++        };
++        if fetch.outstanding != Some(format) {
++            debug!("Ignoring clipboard data for an unrequested format");
++            return Ok(());
++        }
++
++        // The response consumed the one outstanding request. If validation
++        // fails, no stale response remains to drain.
++        fetch.outstanding = None;
++        if data.size() > MAX_CLIPBOARD_SIZE {
++            self.remote_fetch = None;
++            return Ok(());
++        }
++
++        fetch.snapshot.set_data(data);
++        if !fetch.snapshot.is_within_limit() {
++            self.remote_fetch = None;
++            return Ok(());
++        }
++
++        fetch.next_index += 1;
++        self.advance_remote_fetch()
++    }
++
++    fn on_remote_unavailable(&mut self, format: ClipboardFormat) -> Result<()> {
++        if self.drain_stale_response(format)? {
++            return Ok(());
++        }
++
++        let is_expected = self
++            .remote_fetch
++            .as_ref()
++            .is_some_and(|fetch| fetch.outstanding == Some(format));
++        if is_expected {
++            // Atomicity requires abandoning the whole generation rather than
++            // publishing whichever representation arrived first.
++            self.remote_fetch = None;
++        } else {
++            debug!("Ignoring unsolicited clipboard-unavailable response");
++        }
++        Ok(())
++    }
++
++    fn advance_remote_fetch(&mut self) -> Result<()> {
++        if self.stop_requested.load(Ordering::Acquire) || !self.stale_responses.is_empty() {
++            return Ok(());
++        }
++
++        enum Next {
++            Wait,
++            Request(ClipboardFormat),
++            Commit,
++        }
++
++        let next = match self.remote_fetch.as_ref() {
++            None => return Ok(()),
++            Some(fetch) if fetch.outstanding.is_some() => Next::Wait,
++            Some(fetch) if fetch.next_index < fetch.formats.len() => {
++                Next::Request(fetch.formats[fetch.next_index])
++            }
++            Some(_) => Next::Commit,
++        };
++
++        match next {
++            Next::Wait => Ok(()),
++            Next::Request(format) => {
++                if let Some(fetch) = self.remote_fetch.as_mut() {
++                    fetch.outstanding = Some(format);
++                }
++                self.send_event(ClipboardEvent::DataRequest { format })
++            }
++            Next::Commit => {
++                // A real local pasteboard change that raced with the fetch
++                // wins. This check happens immediately before the only write.
++                if self.poll_local_change()? {
++                    return Ok(());
++                }
++                if self.stop_requested.load(Ordering::Acquire) {
++                    self.remote_fetch = None;
++                    return Ok(());
++                }
++                let snapshot = self.remote_fetch.take().ok_or(Error::Rejected)?.snapshot;
++                self.commit_remote_snapshot(snapshot)
++            }
++        }
++    }
++
++    fn commit_remote_snapshot(&mut self, snapshot: ClipboardSnapshot) -> Result<()> {
++        if !snapshot.is_within_limit() {
++            return Ok(());
++        }
++        if !self.last_known_invalid && self.last_known_snapshot.as_ref() == Some(&snapshot) {
++            return Ok(());
++        }
++
++        let change_count = self.pasteboard.write_snapshot(&snapshot)?;
++        self.last_known_invalid = false;
++        self.last_known_snapshot = Some(snapshot);
++        self.local_snapshot = None;
++
++        if self.permissions.allow_local_read_send {
++            self.last_change_count = Some(change_count);
++            self.self_write_change_count = Some(change_count);
++        }
++        Ok(())
++    }
++
++    fn on_data_request(&mut self, format: ClipboardFormat) -> Result<()> {
++        let event = self
++            .local_snapshot
++            .as_ref()
++            .and_then(|snapshot| snapshot.data(format))
++            .map(ClipboardEvent::Data)
++            .unwrap_or(ClipboardEvent::DataUnavailable { format });
++        self.send_event(event)
++    }
++
++    fn on_packet(&mut self, packet: InputPacket) -> Result<()> {
++        let Payload::Clipboard(event) = packet.payload else {
++            return Err(Error::InvalidType);
++        };
++
++        match event {
++            ClipboardEvent::Change { formats } if self.permissions.allow_remote_write => {
++                self.on_remote_change(formats)
++            }
++            ClipboardEvent::Data(data) if self.permissions.allow_remote_write => {
++                self.on_remote_data(data)
++            }
++            ClipboardEvent::DataUnavailable { format } if self.permissions.allow_remote_write => {
++                self.on_remote_unavailable(format)
++            }
++            ClipboardEvent::DataRequest { format } if self.permissions.allow_local_read_send => {
++                self.on_data_request(format)
++            }
++            _ => {
++                debug!("Ignoring unauthorized clipboard event");
++                Ok(())
++            }
++        }
++    }
++}
++
++enum WorkerCommand {
++    Packet(InputPacket),
++    Stop,
++    #[cfg(test)]
++    Poll(Sender<Result<()>>),
++    #[cfg(test)]
++    Barrier(Sender<()>),
++}
++
++struct WorkerHandle {
++    sender: Sender<WorkerCommand>,
++    join_handle: JoinHandle<Result<()>>,
++    stop_requested: Arc<AtomicBool>,
++}
++
++impl WorkerHandle {
++    fn stop(self) -> Result<()> {
++        self.stop_requested.store(true, Ordering::Release);
++        // A disconnected worker is still joined so a backend error is not
++        // hidden behind the channel error.
++        let send_result = self.sender.send(WorkerCommand::Stop);
++        let join_result = self.join_handle.join().map_err(|_| Error::ThreadPanicked)?;
++        join_result?;
++        send_result?;
++        Ok(())
++    }
++}
++
++fn worker_entry(
++    receiver: Receiver<WorkerCommand>,
++    factory: PasteboardFactory,
++    remote: Weak<dyn InputConsumer>,
++    target: InputTarget,
++    permissions: ClipboardPermissions,
++    ready: Sender<bool>,
++    stop_requested: Arc<AtomicBool>,
++) -> Result<()> {
++    let pasteboard = match factory() {
++        Ok(pasteboard) => pasteboard,
++        Err(error) => {
++            let _ = ready.send(false);
++            return Err(error);
++        }
++    };
++    let mut worker = match ClipboardWorker::new(
++        pasteboard,
++        remote,
++        target,
++        permissions,
++        stop_requested.clone(),
++    ) {
++        Ok(worker) => worker,
++        Err(error) => {
++            let _ = ready.send(false);
++            return Err(error);
++        }
++    };
++    ready.send(true)?;
++
++    loop {
++        if stop_requested.load(Ordering::Acquire) {
++            return Ok(());
++        }
++        match receiver.recv_timeout(POLL_INTERVAL) {
++            Ok(WorkerCommand::Packet(packet)) => {
++                if stop_requested.load(Ordering::Acquire) {
++                    return Ok(());
++                }
++                // Poll before every response as well as on the timer so local
++                // changes cannot lose merely because network traffic is busy.
++                worker.poll_local_change()?;
++                worker.on_packet(packet)?;
++            }
++            Ok(WorkerCommand::Stop) => return Ok(()),
++            #[cfg(test)]
++            Ok(WorkerCommand::Poll(done)) => {
++                let result = worker.poll_local_change().map(|_| ());
++                let should_stop = result.is_err();
++                let _ = done.send(result);
++                if should_stop {
++                    return Err(Error::Rejected);
++                }
++            }
++            #[cfg(test)]
++            Ok(WorkerCommand::Barrier(done)) => {
++                let _ = done.send(());
++            }
++            Err(RecvTimeoutError::Timeout) => {
++                worker.poll_local_change()?;
++            }
++            Err(RecvTimeoutError::Disconnected) => return Ok(()),
++        }
++    }
++}
++
++struct HandlerState {
++    permissions: ClipboardPermissions,
++    factory: Option<PasteboardFactory>,
++    worker: Option<WorkerHandle>,
++    started: bool,
++}
++
++pub struct ClipboardHandler {
++    remote: Weak<dyn InputConsumer>,
++    target: InputTarget,
++    state: Mutex<HandlerState>,
++}
++
++impl ClipboardHandler {
++    #[cfg(target_os = "macos")]
++    pub fn new(
++        target: InputTarget,
++        remote: Weak<dyn InputConsumer>,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++    ) -> Result<Self> {
++        Ok(Self::with_factory(
++            target,
++            remote,
++            allow_local_read_send,
++            allow_remote_write,
++            Box::new(NativePasteboard::general),
++        ))
++    }
++
++    fn with_factory(
++        target: InputTarget,
++        remote: Weak<dyn InputConsumer>,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++        factory: PasteboardFactory,
++    ) -> Self {
++        Self {
++            remote,
++            target,
++            state: Mutex::new(HandlerState {
++                permissions: ClipboardPermissions {
++                    allow_local_read_send,
++                    allow_remote_write,
++                },
++                factory: Some(factory),
++                worker: None,
++                started: false,
++            }),
++        }
++    }
++
++    /// Configure the independently negotiated clipboard directions.
++    ///
++    /// This must be called after negotiation and before `InputPipeline::start`.
++    /// `allow_local_read_send` maps to host `allow_paste`;
++    /// `allow_remote_write` maps to host `allow_copy`.
++    pub fn configure_permissions(
++        &self,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++    ) -> Result<()> {
++        let mut state = self.state.lock()?;
++        if state.started {
++            return Err(Error::Rejected);
++        }
++        state.permissions = ClipboardPermissions {
++            allow_local_read_send,
++            allow_remote_write,
++        };
++        Ok(())
++    }
++
++    fn start_worker(&self) -> Result<()> {
++        let mut state = self.state.lock()?;
++        if state.started {
++            return Err(Error::Rejected);
++        }
++        state.started = true;
++
++        if !state.permissions.any() {
++            info!("macOS clipboard disabled");
++            return Ok(());
++        }
++
++        let permissions = state.permissions;
++        info!(
++            "macOS clipboard enabled: allow_local_read_send={} allow_remote_write={}",
++            permissions.allow_local_read_send, permissions.allow_remote_write
++        );
++        let Some(factory) = state.factory.take() else {
++            state.started = false;
++            return Err(Error::Rejected);
++        };
++        let (sender, receiver) = mpsc::channel();
++        let (ready_sender, ready_receiver) = mpsc::channel();
++        let remote = self.remote.clone();
++        let target = self.target;
++        let stop_requested = Arc::new(AtomicBool::new(false));
++        let worker_stop_requested = stop_requested.clone();
++        let join_handle = match thread::Builder::new()
++            .name(CLIPBOARD_WORKER_NAME.to_owned())
++            .spawn(move || {
++                worker_entry(
++                    receiver,
++                    factory,
++                    remote,
++                    target,
++                    permissions,
++                    ready_sender,
++                    worker_stop_requested,
++                )
++            }) {
++            Ok(join_handle) => join_handle,
++            Err(error) => {
++                state.started = false;
++                return Err(error.into());
++            }
++        };
++
++        let ready = match ready_receiver.recv() {
++            Ok(ready) => ready,
++            Err(error) => {
++                state.started = false;
++                drop(state);
++                let _ = join_handle.join();
++                return Err(error.into());
++            }
++        };
++        match ready {
++            true => {
++                state.worker = Some(WorkerHandle {
++                    sender,
++                    join_handle,
++                    stop_requested,
++                });
++                Ok(())
++            }
++            false => {
++                state.started = false;
++                drop(state);
++                join_handle.join().map_err(|_| Error::ThreadPanicked)??;
++                Err(Error::Rejected)
++            }
++        }
++    }
++
++    fn stop_worker(&self) -> Result<()> {
++        let worker = {
++            let mut state = self.state.lock()?;
++            if !state.started {
++                return Ok(());
++            }
++            state.started = false;
++            state.worker.take()
++        };
++
++        if let Some(worker) = worker {
++            worker.stop()?;
++        }
++        Ok(())
++    }
++
++    #[cfg(test)]
++    fn poll_for_test(&self) -> Result<()> {
++        let sender = self
++            .state
++            .lock()?
++            .worker
++            .as_ref()
++            .map(|worker| worker.sender.clone());
++        let Some(sender) = sender else {
++            return Ok(());
++        };
++        let (done_sender, done_receiver) = mpsc::channel();
++        sender.send(WorkerCommand::Poll(done_sender))?;
++        done_receiver.recv()?
++    }
++
++    #[cfg(test)]
++    fn barrier_for_test(&self) -> Result<()> {
++        let sender = self
++            .state
++            .lock()?
++            .worker
++            .as_ref()
++            .map(|worker| worker.sender.clone());
++        let Some(sender) = sender else {
++            return Ok(());
++        };
++        let (done_sender, done_receiver) = mpsc::channel();
++        sender.send(WorkerCommand::Barrier(done_sender))?;
++        done_receiver.recv()?;
++        Ok(())
++    }
++}
++
++impl InputConsumer for ClipboardHandler {
++    fn consume(&self, packet: InputPacket) -> Result<()> {
++        let sender = self
++            .state
++            .lock()?
++            .worker
++            .as_ref()
++            .map(|worker| worker.sender.clone());
++        if let Some(sender) = sender {
++            sender.send(WorkerCommand::Packet(packet))?;
++        }
++        Ok(())
++    }
++}
++
++impl InputHandler for ClipboardHandler {
++    fn start(self: Arc<Self>) -> Result<()> {
++        self.start_worker()
++    }
++
++    fn stop(self: Arc<Self>) -> Result<()> {
++        self.stop_worker()
++    }
++
++    fn configure_clipboard(
++        self: Arc<Self>,
++        allow_local_read_send: bool,
++        allow_remote_write: bool,
++    ) -> Result<()> {
++        self.configure_permissions(allow_local_read_send, allow_remote_write)
++    }
++
++    fn to_consumer(self: Arc<Self>) -> Option<InputConsumerHandle> {
++        Some(InputConsumerHandle {
++            consumer: self,
++            handled_types: vec![InputType::Clipboard],
++        })
++    }
++
++    fn produced_types(self: Arc<Self>) -> Option<Vec<InputType>> {
++        Some(vec![InputType::Clipboard])
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    use std::sync::atomic::{AtomicBool, Ordering};
++
++    #[derive(Default)]
++    struct FakePasteboardState {
++        change_count: i64,
++        snapshot: ClipboardSnapshot,
++        change_count_calls: usize,
++        read_calls: usize,
++        writes: Vec<ClipboardSnapshot>,
++        operation_threads: Vec<String>,
++    }
++
++    #[derive(Clone)]
++    struct FakePasteboardControl {
++        state: Arc<Mutex<FakePasteboardState>>,
++    }
++
++    impl FakePasteboardControl {
++        fn replace_locally(&self, snapshot: ClipboardSnapshot) {
++            let mut state = self.state.lock().unwrap();
++            state.change_count += 1;
++            state.snapshot = snapshot;
++        }
++
++        fn stats(&self) -> (usize, usize, Vec<ClipboardSnapshot>, Vec<String>) {
++            let state = self.state.lock().unwrap();
++            (
++                state.change_count_calls,
++                state.read_calls,
++                state.writes.clone(),
++                state.operation_threads.clone(),
++            )
++        }
++    }
++
++    struct FakePasteboard {
++        state: Arc<Mutex<FakePasteboardState>>,
++        dropped: Arc<AtomicBool>,
++    }
++
++    impl FakePasteboard {
++        fn record_thread(state: &mut FakePasteboardState) {
++            state
++                .operation_threads
++                .push(thread::current().name().unwrap_or("<unnamed>").to_owned());
++        }
++    }
++
++    impl Drop for FakePasteboard {
++        fn drop(&mut self) {
++            self.dropped.store(true, Ordering::SeqCst);
++        }
++    }
++
++    impl PasteboardBackend for FakePasteboard {
++        fn change_count(&mut self) -> Result<i64> {
++            let mut state = self.state.lock()?;
++            Self::record_thread(&mut state);
++            state.change_count_calls += 1;
++            Ok(state.change_count)
++        }
++
++        fn read_snapshot(&mut self) -> Result<ClipboardSnapshot> {
++            let mut state = self.state.lock()?;
++            Self::record_thread(&mut state);
++            state.read_calls += 1;
++            Ok(state.snapshot.clone())
++        }
++
++        fn write_snapshot(&mut self, snapshot: &ClipboardSnapshot) -> Result<i64> {
++            let mut state = self.state.lock()?;
++            Self::record_thread(&mut state);
++            state.change_count += 1;
++            state.snapshot = snapshot.clone();
++            state.writes.push(snapshot.clone());
++            Ok(state.change_count)
++        }
++    }
++
++    #[derive(Default)]
++    struct RecordingConsumer {
++        packets: Mutex<Vec<InputPacket>>,
++    }
++
++    impl RecordingConsumer {
++        fn events(&self) -> Vec<ClipboardEvent> {
++            self.packets
++                .lock()
++                .unwrap()
++                .iter()
++                .filter_map(|packet| match &packet.payload {
++                    Payload::Clipboard(event) => Some(event.clone()),
++                    _ => None,
++                })
++                .collect()
++        }
++
++        fn clear(&self) {
++            self.packets.lock().unwrap().clear();
++        }
++    }
++
++    impl InputConsumer for RecordingConsumer {
++        fn consume(&self, packet: InputPacket) -> Result<()> {
++            self.packets.lock()?.push(packet);
++            Ok(())
++        }
++    }
++
++    struct Harness {
++        handler: Arc<ClipboardHandler>,
++        pasteboard: FakePasteboardControl,
++        consumer: Arc<RecordingConsumer>,
++        factory_called: Arc<AtomicBool>,
++        backend_dropped: Arc<AtomicBool>,
++    }
++
++    impl Harness {
++        fn new(
++            allow_local_read_send: bool,
++            allow_remote_write: bool,
++            initial: ClipboardSnapshot,
++        ) -> Self {
++            let state = Arc::new(Mutex::new(FakePasteboardState {
++                change_count: 7,
++                snapshot: initial,
++                ..Default::default()
++            }));
++            let pasteboard = FakePasteboardControl {
++                state: state.clone(),
++            };
++            let factory_called = Arc::new(AtomicBool::new(false));
++            let backend_dropped = Arc::new(AtomicBool::new(false));
++            let factory_called_clone = factory_called.clone();
++            let backend_dropped_clone = backend_dropped.clone();
++            let factory: PasteboardFactory = Box::new(move || {
++                factory_called_clone.store(true, Ordering::SeqCst);
++                Ok(Box::new(FakePasteboard {
++                    state,
++                    dropped: backend_dropped_clone,
++                }))
++            });
++
++            let consumer = Arc::new(RecordingConsumer::default());
++            let consumer_dyn: Arc<dyn InputConsumer> = consumer.clone();
++            let handler = Arc::new(ClipboardHandler::with_factory(
++                InputTarget::Host,
++                Arc::downgrade(&consumer_dyn),
++                allow_local_read_send,
++                allow_remote_write,
++                factory,
++            ));
++
++            Self {
++                handler,
++                pasteboard,
++                consumer,
++                factory_called,
++                backend_dropped,
++            }
++        }
++
++        fn start(&self) {
++            self.handler.clone().start().unwrap();
++        }
++
++        fn stop(&self) {
++            self.handler.clone().stop().unwrap();
++        }
++
++        fn poll(&self) {
++            self.handler.poll_for_test().unwrap();
++        }
++
++        fn send(&self, event: ClipboardEvent) {
++            self.handler
++                .consume(InputPacket::new(
++                    InputTarget::Client,
++                    Payload::Clipboard(event),
++                ))
++                .unwrap();
++            self.handler.barrier_for_test().unwrap();
++        }
++    }
++
++    fn snapshot(text: Option<&str>, html: Option<&str>) -> ClipboardSnapshot {
++        ClipboardSnapshot {
++            text: text.map(str::to_owned),
++            html: html.map(str::to_owned),
++        }
++    }
++
++    #[test]
++    fn baseline_then_local_snapshot_is_lazy_and_immutable() {
++        let harness = Harness::new(true, false, snapshot(Some("preexisting"), None));
++        harness.start();
++
++        let (change_calls, read_calls, writes, _) = harness.pasteboard.stats();
++        assert_eq!(change_calls, 1);
++        assert_eq!(read_calls, 0);
++        assert!(writes.is_empty());
++        assert!(harness.consumer.events().is_empty());
++
++        harness
++            .pasteboard
++            .replace_locally(snapshot(Some("local text"), Some("<b>local</b>")));
++        harness.poll();
++        assert_eq!(
++            harness.consumer.events(),
++            vec![ClipboardEvent::Change {
++                formats: vec![ClipboardFormat::Text, ClipboardFormat::Html]
++            }]
++        );
++
++        // Mutate the fake backing value without changing its generation. The
++        // response must come from the immutable advertised snapshot.
++        harness.pasteboard.state.lock().unwrap().snapshot =
++            snapshot(Some("unrelated later value"), None);
++        harness.send(ClipboardEvent::DataRequest {
++            format: ClipboardFormat::Text,
++        });
++        assert_eq!(
++            harness.consumer.events().last(),
++            Some(&ClipboardEvent::Data(ClipboardData::Text(
++                "local text".to_owned()
++            )))
++        );
++        assert_eq!(harness.pasteboard.stats().1, 1);
++        harness.stop();
++    }
++
++    #[test]
++    fn exact_combined_limit_is_accepted_and_oversize_is_not_advertised() {
++        let harness = Harness::new(true, false, ClipboardSnapshot::default());
++        harness.start();
++
++        harness.pasteboard.replace_locally(ClipboardSnapshot {
++            text: Some("x".repeat(MAX_CLIPBOARD_SIZE - 1)),
++            html: Some("y".to_owned()),
++        });
++        harness.poll();
++        assert_eq!(
++            harness.consumer.events().last(),
++            Some(&ClipboardEvent::Change {
++                formats: vec![ClipboardFormat::Text, ClipboardFormat::Html]
++            })
++        );
++
++        harness.pasteboard.replace_locally(ClipboardSnapshot {
++            text: Some("x".repeat(MAX_CLIPBOARD_SIZE)),
++            html: Some("y".to_owned()),
++        });
++        harness.poll();
++        assert_eq!(
++            harness.consumer.events().last(),
++            Some(&ClipboardEvent::Change {
++                formats: Vec::new()
++            })
++        );
++        harness.stop();
++    }
++
++    #[test]
++    fn remote_formats_are_fetched_sequentially_and_committed_once() {
++        let harness = Harness::new(false, true, ClipboardSnapshot::default());
++        harness.start();
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Html, ClipboardFormat::Text],
++        });
++        assert_eq!(
++            harness.consumer.events(),
++            vec![ClipboardEvent::DataRequest {
++                format: ClipboardFormat::Text
++            }]
++        );
++        assert!(harness.pasteboard.stats().2.is_empty());
++
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "remote text".to_owned(),
++        )));
++        assert_eq!(
++            harness.consumer.events().last(),
++            Some(&ClipboardEvent::DataRequest {
++                format: ClipboardFormat::Html
++            })
++        );
++        assert!(harness.pasteboard.stats().2.is_empty());
++
++        harness.send(ClipboardEvent::Data(ClipboardData::Html(
++            "<i>remote</i>".to_owned(),
++        )));
++        assert_eq!(
++            harness.pasteboard.stats().2,
++            vec![snapshot(Some("remote text"), Some("<i>remote</i>"))]
++        );
++        harness.stop();
++    }
++
++    #[test]
++    fn stale_and_unsolicited_responses_never_reach_the_pasteboard() {
++        let harness = Harness::new(false, true, ClipboardSnapshot::default());
++        harness.start();
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text],
++        });
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Html],
++        });
++
++        // The second generation cannot issue its request until the old
++        // response has been drained.
++        assert_eq!(harness.consumer.events().len(), 1);
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "stale text".to_owned(),
++        )));
++        assert_eq!(
++            harness.consumer.events().last(),
++            Some(&ClipboardEvent::DataRequest {
++                format: ClipboardFormat::Html
++            })
++        );
++
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "unsolicited text".to_owned(),
++        )));
++        assert!(harness.pasteboard.stats().2.is_empty());
++        harness.send(ClipboardEvent::Data(ClipboardData::Html(
++            "<b>fresh</b>".to_owned(),
++        )));
++        assert_eq!(
++            harness.pasteboard.stats().2,
++            vec![snapshot(None, Some("<b>fresh</b>"))]
++        );
++        harness.stop();
++    }
++
++    #[test]
++    fn local_copy_wins_a_remote_fetch_race() {
++        let harness = Harness::new(true, true, ClipboardSnapshot::default());
++        harness.start();
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text],
++        });
++        harness
++            .pasteboard
++            .replace_locally(snapshot(Some("local winner"), None));
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "remote loser".to_owned(),
++        )));
++
++        assert!(harness.pasteboard.stats().2.is_empty());
++        assert!(harness.consumer.events().contains(&ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text]
++        }));
++        harness.stop();
++    }
++
++    #[test]
++    fn self_writes_and_same_content_reownership_are_suppressed() {
++        let harness = Harness::new(true, true, ClipboardSnapshot::default());
++        harness.start();
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text],
++        });
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "same content".to_owned(),
++        )));
++        harness.consumer.clear();
++
++        harness.poll();
++        assert!(harness.consumer.events().is_empty());
++        assert_eq!(harness.pasteboard.stats().1, 0);
++
++        harness
++            .pasteboard
++            .replace_locally(snapshot(Some("same content"), None));
++        harness.poll();
++        assert!(harness.consumer.events().is_empty());
++        assert_eq!(harness.pasteboard.stats().2.len(), 1);
++        harness.stop();
++    }
++
++    #[test]
++    fn invalid_remote_generation_is_never_partially_written() {
++        let harness = Harness::new(false, true, ClipboardSnapshot::default());
++        harness.start();
++        harness.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text, ClipboardFormat::Html],
++        });
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "x".repeat(MAX_CLIPBOARD_SIZE),
++        )));
++        harness.send(ClipboardEvent::Data(ClipboardData::Html("y".to_owned())));
++        assert!(harness.pasteboard.stats().2.is_empty());
++
++        harness.send(ClipboardEvent::Data(ClipboardData::Text(
++            "unsolicited".to_owned(),
++        )));
++        assert!(harness.pasteboard.stats().2.is_empty());
++        harness.stop();
++    }
++
++    #[test]
++    fn denied_directions_perform_no_directional_operations() {
++        let local_denied = Harness::new(false, true, ClipboardSnapshot::default());
++        local_denied.start();
++        assert_eq!(local_denied.pasteboard.stats().0, 0);
++        assert_eq!(local_denied.pasteboard.stats().1, 0);
++        local_denied.send(ClipboardEvent::DataRequest {
++            format: ClipboardFormat::Text,
++        });
++        assert!(local_denied.consumer.events().is_empty());
++        assert_eq!(local_denied.pasteboard.stats().0, 0);
++        assert_eq!(local_denied.pasteboard.stats().1, 0);
++        local_denied.stop();
++
++        let remote_denied = Harness::new(true, false, ClipboardSnapshot::default());
++        remote_denied.start();
++        remote_denied.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text],
++        });
++        remote_denied.send(ClipboardEvent::Data(ClipboardData::Text(
++            "ignored".to_owned(),
++        )));
++        assert!(remote_denied.pasteboard.stats().2.is_empty());
++        remote_denied.stop();
++    }
++
++    #[test]
++    fn both_denied_creates_no_worker_and_stop_joins_active_worker() {
++        let disabled = Harness::new(false, false, ClipboardSnapshot::default());
++        disabled.start();
++        assert!(!disabled.factory_called.load(Ordering::SeqCst));
++        disabled.send(ClipboardEvent::Change {
++            formats: vec![ClipboardFormat::Text],
++        });
++        disabled.stop();
++        assert!(!disabled.backend_dropped.load(Ordering::SeqCst));
++
++        let active = Harness::new(true, false, ClipboardSnapshot::default());
++        active.start();
++        active.stop();
++        assert!(active.backend_dropped.load(Ordering::SeqCst));
++        let (_, _, _, threads) = active.pasteboard.stats();
++        assert!(!threads.is_empty());
++        assert!(threads.iter().all(|name| name == CLIPBOARD_WORKER_NAME));
++    }
++
++    #[test]
++    fn permissions_can_only_be_configured_before_start() {
++        let harness = Harness::new(false, false, ClipboardSnapshot::default());
++        harness
++            .handler
++            .clone()
++            .configure_clipboard(true, false)
++            .unwrap();
++        harness.start();
++        assert!(harness.factory_called.load(Ordering::SeqCst));
++        assert!(harness
++            .handler
++            .clone()
++            .configure_clipboard(false, false)
++            .is_err());
++        harness.stop();
++    }
++
++    #[cfg(target_os = "macos")]
++    #[test]
++    fn named_pasteboard_round_trip_never_uses_general_pasteboard() {
++        use std::time::{SystemTime, UNIX_EPOCH};
++
++        let nonce = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let name = format!(
++            "com.kyber.kynput.clipboard-test.{}.{}",
++            std::process::id(),
++            nonce
++        );
++        let mut pasteboard = NativePasteboard::named(&name).unwrap();
++        let expected = snapshot(Some("named text"), Some("<p>named html</p>"));
++        pasteboard.write_snapshot(&expected).unwrap();
++        assert_eq!(pasteboard.read_snapshot().unwrap(), expected);
++    }
++}
+diff --git a/kynput/tests/macos_clipboard_core.rs b/kynput/tests/macos_clipboard_core.rs
+new file mode 100644
+index 0000000..cc61ebf
+--- /dev/null
++++ b/kynput/tests/macos_clipboard_core.rs
+@@ -0,0 +1,141 @@
++// Compile the platform-neutral macOS clipboard state machine on non-macOS
++// builders. On macOS the same tests are compiled as unit tests with the real
++// crate types, plus the uniquely named NSPasteboard integration test.
++#![cfg(not(target_os = "macos"))]
++#![allow(dead_code)]
++
++use std::sync::{Arc, PoisonError};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum InputTarget {
++    Client,
++    Host,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum Payload {
++    Clipboard(ClipboardEvent),
++    Other,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct InputPacket {
++    pub target: InputTarget,
++    pub payload: Payload,
++}
++
++impl InputPacket {
++    pub fn new(target: InputTarget, payload: Payload) -> Self {
++        Self { target, payload }
++    }
++}
++
++pub trait InputConsumer: Send + Sync {
++    fn consume(&self, packet: InputPacket) -> Result<()>;
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum InputType {
++    Clipboard,
++}
++
++#[derive(Debug)]
++pub enum Error {
++    Rejected,
++    InvalidType,
++    ThreadPanicked,
++    ChannelReceive,
++    ChannelSend,
++    Io(std::io::Error),
++}
++
++pub type Result<T> = std::result::Result<T, Error>;
++
++impl<T> From<PoisonError<T>> for Error {
++    fn from(_: PoisonError<T>) -> Self {
++        Self::ThreadPanicked
++    }
++}
++
++impl From<std::io::Error> for Error {
++    fn from(error: std::io::Error) -> Self {
++        Self::Io(error)
++    }
++}
++
++impl From<std::sync::mpsc::RecvError> for Error {
++    fn from(_: std::sync::mpsc::RecvError) -> Self {
++        Self::ChannelReceive
++    }
++}
++
++impl<T> From<std::sync::mpsc::SendError<T>> for Error {
++    fn from(_: std::sync::mpsc::SendError<T>) -> Self {
++        Self::ChannelSend
++    }
++}
++
++pub mod pipeline {
++    use super::*;
++
++    pub struct InputConsumerHandle {
++        pub consumer: Arc<dyn InputConsumer>,
++        pub handled_types: Vec<InputType>,
++    }
++
++    pub trait InputHandler: Send + Sync {
++        fn start(self: Arc<Self>) -> Result<()>;
++        fn stop(self: Arc<Self>) -> Result<()>;
++        fn configure_clipboard(
++            self: Arc<Self>,
++            allow_local_read_send: bool,
++            allow_remote_write: bool,
++        ) -> Result<()>;
++        fn to_consumer(self: Arc<Self>) -> Option<InputConsumerHandle>;
++        fn produced_types(self: Arc<Self>) -> Option<Vec<InputType>>;
++    }
++}
++
++pub mod types {
++    pub const MAX_CLIPBOARD_SIZE: usize = 60 * 1024;
++
++    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
++    pub enum ClipboardFormat {
++        Text,
++        Html,
++    }
++
++    #[derive(Clone, Debug, PartialEq, Eq)]
++    pub enum ClipboardData {
++        Text(String),
++        Html(String),
++    }
++
++    impl ClipboardData {
++        pub fn format(&self) -> ClipboardFormat {
++            match self {
++                Self::Text(_) => ClipboardFormat::Text,
++                Self::Html(_) => ClipboardFormat::Html,
++            }
++        }
++
++        pub fn size(&self) -> usize {
++            match self {
++                Self::Text(value) | Self::Html(value) => value.len(),
++            }
++        }
++    }
++}
++
++pub use types::{ClipboardData, ClipboardFormat};
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ClipboardEvent {
++    Change { formats: Vec<ClipboardFormat> },
++    Data(ClipboardData),
++    DataRequest { format: ClipboardFormat },
++    DataUnavailable { format: ClipboardFormat },
++}
++
++#[path = "../src/macos/clipboard.rs"]
++mod clipboard;

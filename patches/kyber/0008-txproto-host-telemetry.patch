@@ -1,0 +1,1312 @@
+diff --git a/meson.build b/meson.build
+index bc915be..d166022 100644
+--- a/meson.build
++++ b/meson.build
+@@ -100,6 +100,19 @@ features = '"base'
+ subdir('scripts')
+ subdir('src')
+ 
++host_metrics = executable(
++    'host_metrics',
++    'test/host_metrics.c',
++    dependencies: [
++        libtxproto,
++        threads_dep,
++        dependency('libavcodec'),
++        dependency('libavutil'),
++    ],
++    include_directories: include_directories('src'),
++)
++test('host_metrics', host_metrics)
++
+ conf.set('COMPILER', '"' + cc.get_id() + ' ' + cc.version() + '"')
+ conf.set('FEATURE_SET', features + '"')
+ 
+diff --git a/src/encode.c b/src/encode.c
+index c853604..4a5f8ad 100644
+--- a/src/encode.c
++++ b/src/encode.c
+@@ -612,6 +612,7 @@ static void *encoding_thread(void *arg)
+     EncodingContext *ctx = arg;
+     int ret = 0, flush = 0;
+     AVPacket *out_pkt = NULL;
++    int64_t dropped_packets = 0;
+ 
+     sp_set_thread_name_self(sp_class_get_name(ctx));
+ 
+@@ -769,18 +770,65 @@ static void *encoding_thread(void *arg)
+             out_pkt->opaque = (void *)(intptr_t)sp_class_get_id(ctx);
+             out_pkt->time_base = ctx->avctx->time_base;
+ 
+-            if (ctx->metrics) {
+-                const tx_metrics_entry metrics[] = {
+-                    { .key = "pts", .value = out_pkt->pts },
+-                    { .key = "encoded", .value = av_gettime_relative() },
+-                };
+-                tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
+-            }
++            int64_t packet_pts = out_pkt->pts;
++            int64_t packet_size = out_pkt->size;
++            int64_t encoded_ts = av_gettime_relative();
++            if (ctx->metrics)
++                tx_metrics_emit_payload(
++                    ctx->metrics, packet_pts, "encoded", encoded_ts,
++                    "encoded_payload_bytes", packet_size);
+ 
+             sp_log(ctx, SP_LOG_TRACE, "Pushing packet to FIFO, pts = %f\n",
+                    av_q2d(ctx->avctx->time_base) * out_pkt->pts);
+ 
+-            sp_packet_fifo_push(ctx->dst_packets, out_pkt);
++            ret = sp_packet_fifo_push(ctx->dst_packets, out_pkt);
++            if (ret == AVERROR(ENOBUFS)) {
++                dropped_packets++;
++                if (ctx->metrics) {
++                    int depth;
++                    int limit;
++                    int owner = sp_packet_fifo_get_effective_bound(
++                        ctx->dst_packets, &depth, &limit);
++                    if (owner == PACKET_FIFO_OWNER_OK) {
++                        tx_metrics_emit_drop(
++                            ctx->metrics, packet_pts, av_gettime_relative(),
++                            TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++                            TX_METRICS_REASON_FIFO_FULL,
++                            depth, limit, dropped_packets);
++                    } else {
++                        tx_metrics_emit_drop_unavailable(
++                            ctx->metrics, packet_pts, av_gettime_relative(),
++                            TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++                            TX_METRICS_REASON_FIFO_FULL,
++                            dropped_packets, owner);
++                    }
++                }
++                av_packet_free(&out_pkt);
++                ret = 0;
++                continue;
++            } else if (ret < 0) {
++                sp_log(ctx, SP_LOG_ERROR,
++                       "Unable to push encoded packet to FIFO: %s!\n",
++                       av_err2str(ret));
++                pthread_mutex_unlock(&ctx->lock);
++                goto fail;
++            } else if (ctx->metrics) {
++                int depth;
++                int limit;
++                int owner = sp_packet_fifo_get_effective_bound(
++                    ctx->dst_packets, &depth, &limit);
++                if (owner == PACKET_FIFO_OWNER_OK) {
++                    tx_metrics_emit_queue(
++                        ctx->metrics, packet_pts,
++                        TX_METRICS_QUEUE_STAGE_ENCODED_PACKET,
++                        depth, limit);
++                } else {
++                    tx_metrics_emit_queue_unavailable(
++                        ctx->metrics, packet_pts,
++                        TX_METRICS_QUEUE_STAGE_ENCODED_PACKET,
++                        owner);
++                }
++            }
+ 
+             sp_eventlist_dispatch(ctx, ctx->events, SP_EVENT_ON_CONFIG | SP_EVENT_ON_INIT, NULL);
+ 
+diff --git a/src/fifo_template.c b/src/fifo_template.c
+index c50cee6..8afdda4 100644
+--- a/src/fifo_template.c
++++ b/src/fifo_template.c
+@@ -21,6 +21,7 @@
+ typedef struct SNAME {
+     TYPE **queued;
+     int num_queued;
++    int num_data_queued;
+     int max_queued;
+     FNAME block_flags;
+     unsigned int queued_alloc_size;
+@@ -32,6 +33,16 @@ typedef struct SNAME {
+     SPBufferList *sources;
+ } SNAME;
+ 
++enum {
++    SP_FIFO_OWNER_RESULT_OK = 0,
++    SP_FIFO_OWNER_RESULT_NO_DESTINATION = 2,
++    SP_FIFO_OWNER_RESULT_AMBIGUOUS = 3,
++    SP_FIFO_OWNER_RESULT_UNBOUNDED = 4,
++    SP_FIFO_OWNER_RESULT_CHANGED = 5,
++};
++
++int RENAME(fifo_get_effective_bound)(AVBufferRef *src, int *depth, int *limit);
++
+ static AVBufferRef *find_ref_by_data(AVBufferRef *entry, void *opaque)
+ {
+     if (entry->data == opaque)
+@@ -161,7 +172,7 @@ int RENAME(fifo_is_full)(AVBufferRef *src)
+     if (!ctx->max_queued)
+         ret = 1; /* max_queued = 0 -> always full */
+     else if (ctx->max_queued > 0)
+-        ret = ctx->num_queued > (ctx->max_queued + 1);
++        ret = ctx->num_data_queued >= ctx->max_queued;
+     pthread_mutex_unlock(&ctx->lock);
+     return ret;
+ }
+@@ -190,11 +201,69 @@ int RENAME(fifo_get_max_size)(AVBufferRef *src)
+     return ret;
+ }
+ 
++int RENAME(fifo_get_effective_bound)(AVBufferRef *src, int *depth, int *limit)
++{
++    if (!src || !depth || !limit)
++        return SP_FIFO_OWNER_RESULT_NO_DESTINATION;
++
++    SNAME *ctx = (SNAME *)src->data;
++    AVBufferRef *owner = NULL;
++
++    pthread_mutex_lock(&ctx->lock);
++    if (ctx->max_queued > 0) {
++        *depth = ctx->num_data_queued;
++        *limit = ctx->max_queued;
++        pthread_mutex_unlock(&ctx->lock);
++        return SP_FIFO_OWNER_RESULT_OK;
++    }
++    if (ctx->max_queued < 0) {
++        pthread_mutex_unlock(&ctx->lock);
++        return SP_FIFO_OWNER_RESULT_UNBOUNDED;
++    }
++
++    int destinations = sp_bufferlist_len(ctx->dests);
++    if (destinations == 1)
++        owner = sp_bufferlist_ref(ctx->dests, sp_bufferlist_find_fn_first, NULL);
++    pthread_mutex_unlock(&ctx->lock);
++
++    if (destinations == 0)
++        return SP_FIFO_OWNER_RESULT_NO_DESTINATION;
++    if (destinations != 1 || !owner)
++        return SP_FIFO_OWNER_RESULT_AMBIGUOUS;
++
++    SNAME *owner_ctx = (SNAME *)owner->data;
++    pthread_mutex_lock(&owner_ctx->lock);
++    int owner_depth = owner_ctx->num_data_queued;
++    int owner_limit = owner_ctx->max_queued;
++    pthread_mutex_unlock(&owner_ctx->lock);
++
++    pthread_mutex_lock(&ctx->lock);
++    AVBufferRef *current = NULL;
++    destinations = sp_bufferlist_len(ctx->dests);
++    if (ctx->max_queued == 0 && destinations == 1)
++        current = sp_bufferlist_ref(ctx->dests, sp_bufferlist_find_fn_first, NULL);
++    int unchanged = current && current->data == owner->data;
++    pthread_mutex_unlock(&ctx->lock);
++
++    av_buffer_unref(&current);
++    av_buffer_unref(&owner);
++
++    if (!unchanged)
++        return SP_FIFO_OWNER_RESULT_CHANGED;
++    if (owner_limit <= 0)
++        return SP_FIFO_OWNER_RESULT_UNBOUNDED;
++
++    *depth = owner_depth;
++    *limit = owner_limit;
++    return SP_FIFO_OWNER_RESULT_OK;
++}
++
+ void RENAME(fifo_set_max_queued)(AVBufferRef *dst, int max_queued)
+ {
+     SNAME *ctx = (SNAME *)dst->data;
+     pthread_mutex_lock(&ctx->lock);
+     ctx->max_queued = max_queued;
++    pthread_cond_broadcast(&ctx->cond_out);
+     pthread_mutex_unlock(&ctx->lock);
+ }
+ 
+@@ -243,12 +312,9 @@ int RENAME(fifo_push)(AVBufferRef *dst, TYPE *in)
+     SNAME *ctx = (SNAME *)dst->data;
+     pthread_mutex_lock(&ctx->lock);
+ 
+-    if (ctx->max_queued == 0)
+-        goto distribute;
+-
+     /* Block or error, but only for non-NULL pushes */
+-    if (in && (ctx->max_queued != -1) &&
+-        (ctx->num_queued > (ctx->max_queued + 1))) {
++    while (in && ctx->max_queued > 0 &&
++           ctx->num_data_queued >= ctx->max_queued) {
+         if (!(ctx->block_flags & FRENAME(BLOCK_MAX_OUTPUT))) {
+             err = AVERROR(ENOBUFS);
+             goto unlock;
+@@ -257,17 +323,29 @@ int RENAME(fifo_push)(AVBufferRef *dst, TYPE *in)
+         pthread_cond_wait(&ctx->cond_out, &ctx->lock);
+     }
+ 
++    if (ctx->max_queued == 0)
++        goto distribute;
++
++    TYPE *cloned = CLONE_FN(in);
++    if (in && !cloned) {
++        err = AVERROR(ENOMEM);
++        goto unlock;
++    }
++
+     unsigned int oalloc = ctx->queued_alloc_size;
+     TYPE **fq = av_fast_realloc(ctx->queued, &ctx->queued_alloc_size,
+                                 sizeof(TYPE *)*(ctx->num_queued + 1));
+     if (!fq) {
+         ctx->queued_alloc_size = oalloc;
++        FREE_FN(&cloned);
+         err = AVERROR(ENOMEM);
+         goto unlock;
+     }
+ 
+     ctx->queued = fq;
+-    ctx->queued[ctx->num_queued++] = CLONE_FN(in);
++    ctx->queued[ctx->num_queued++] = cloned;
++    if (in)
++        ctx->num_data_queued++;
+ 
+     pthread_cond_signal(&ctx->cond_in);
+ 
+@@ -303,7 +381,7 @@ int RENAME(fifo_pop_flags)(AVBufferRef *src, TYPE **dst, FNAME flags)
+     SNAME *ctx = (SNAME *)src->data;
+     pthread_mutex_lock(&ctx->lock);
+ 
+-    if (!ctx->num_queued) {
++    while (!ctx->num_queued) {
+         if ((flags & FRENAME(PULL_NO_BLOCK)) ||
+             !(ctx->block_flags & FRENAME(BLOCK_NO_INPUT))) {
+             ret = AVERROR(EAGAIN);
+@@ -314,8 +392,11 @@ int RENAME(fifo_pop_flags)(AVBufferRef *src, TYPE **dst, FNAME flags)
+     }
+ 
+     out = ctx->queued[0];
++    if (out)
++        ctx->num_data_queued--;
+     ctx->num_queued--;
+     assert(ctx->num_queued >= 0);
++    assert(ctx->num_data_queued >= 0);
+ 
+     memmove(&ctx->queued[0], &ctx->queued[1], ctx->num_queued*sizeof(TYPE *));
+ 
+@@ -346,7 +427,7 @@ TYPE *RENAME(fifo_peek)(AVBufferRef *src)
+     SNAME *ctx = (SNAME *)src->data;
+     pthread_mutex_lock(&ctx->lock);
+ 
+-    if (!ctx->num_queued) {
++    while (!ctx->num_queued) {
+         if (!(ctx->block_flags & FRENAME(BLOCK_NO_INPUT)))
+             goto unlock;
+ 
+diff --git a/src/include/libtxproto/fifo_frame.h b/src/include/libtxproto/fifo_frame.h
+index 856d23f..d9e8fa4 100644
+--- a/src/include/libtxproto/fifo_frame.h
++++ b/src/include/libtxproto/fifo_frame.h
+@@ -27,6 +27,14 @@ enum SPFrameFIFOFlags {
+     FRAME_FIFO_PULL_NO_BLOCK    = (1 << 2),
+ };
+ 
++enum SPFrameFIFOOwnerResult {
++    FRAME_FIFO_OWNER_OK = 0,
++    FRAME_FIFO_OWNER_NO_DESTINATION = 2,
++    FRAME_FIFO_OWNER_AMBIGUOUS = 3,
++    FRAME_FIFO_OWNER_UNBOUNDED = 4,
++    FRAME_FIFO_OWNER_CHANGED = 5,
++};
++
+ #define FRENAME(x) FRAME_FIFO_ ## x
+ #define RENAME(x)  sp_frame_ ##x
+ #define FNAME      enum SPFrameFIFOFlags
+@@ -40,6 +48,7 @@ AVBufferRef *RENAME(fifo_ref)(AVBufferRef *src, int max_queued, FNAME block_flag
+ int RENAME(fifo_is_full)(AVBufferRef *src);
+ int RENAME(fifo_get_size)(AVBufferRef *src);
+ int RENAME(fifo_get_max_size)(AVBufferRef *src);
++int RENAME(fifo_get_effective_bound)(AVBufferRef *src, int *depth, int *limit);
+ 
+ /* Modify */
+ void RENAME(fifo_set_max_queued)(AVBufferRef *dst, int max_queued);
+diff --git a/src/include/libtxproto/fifo_packet.h b/src/include/libtxproto/fifo_packet.h
+index ecc7fb9..0f7fd95 100644
+--- a/src/include/libtxproto/fifo_packet.h
++++ b/src/include/libtxproto/fifo_packet.h
+@@ -27,6 +27,14 @@ enum SPPacketFIFOFlags {
+     PACKET_FIFO_PULL_NO_BLOCK    = (1 << 2),
+ };
+ 
++enum SPPacketFIFOOwnerResult {
++    PACKET_FIFO_OWNER_OK = 0,
++    PACKET_FIFO_OWNER_NO_DESTINATION = 2,
++    PACKET_FIFO_OWNER_AMBIGUOUS = 3,
++    PACKET_FIFO_OWNER_UNBOUNDED = 4,
++    PACKET_FIFO_OWNER_CHANGED = 5,
++};
++
+ #define FRENAME(x) PACKET_FIFO_ ## x
+ #define RENAME(x)  sp_packet_ ##x
+ #define FNAME      enum SPPacketFIFOFlags
+@@ -40,6 +48,7 @@ AVBufferRef *RENAME(fifo_ref)(AVBufferRef *src, int max_queued, FNAME block_flag
+ int RENAME(fifo_is_full)(AVBufferRef *src);
+ int RENAME(fifo_get_size)(AVBufferRef *src);
+ int RENAME(fifo_get_max_size)(AVBufferRef *src);
++int RENAME(fifo_get_effective_bound)(AVBufferRef *src, int *depth, int *limit);
+ 
+ /* Modify */
+ void RENAME(fifo_set_max_queued)(AVBufferRef *dst, int max_queued);
+diff --git a/src/include/libtxproto/metrics.h b/src/include/libtxproto/metrics.h
+index 29eac4f..c1a1b06 100644
+--- a/src/include/libtxproto/metrics.h
++++ b/src/include/libtxproto/metrics.h
+@@ -18,9 +18,12 @@
+ 
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdatomic.h>
+ 
+ #pragma once
+ 
++#define TX_METRICS_MAX_BATCH_ENTRIES 32
++
+ typedef struct tx_metrics_entry {
+     const char *key;
+     int64_t value;
+@@ -30,7 +33,88 @@ typedef int (*tx_metrics_cb)(const struct tx_metrics_entry *entries,
+                              size_t count,
+                              void *userdata);
+ 
++enum tx_metrics_queue_stage {
++    TX_METRICS_QUEUE_STAGE_CAPTURE = 1,
++    TX_METRICS_QUEUE_STAGE_ENCODED_PACKET = 2,
++    TX_METRICS_QUEUE_STAGE_PACKET_SINK = 3,
++};
++
++enum tx_metrics_drop_stage {
++    TX_METRICS_DROP_STAGE_CAPTURE = 1,
++    TX_METRICS_DROP_STAGE_ENCODED_PACKET = 2,
++};
++
++enum tx_metrics_reason {
++    TX_METRICS_REASON_FIFO_FULL = 1,
++    TX_METRICS_REASON_OWNER_NO_DESTINATION = 2,
++    TX_METRICS_REASON_OWNER_AMBIGUOUS = 3,
++    TX_METRICS_REASON_OWNER_UNBOUNDED = 4,
++    TX_METRICS_REASON_OWNER_CHANGED = 5,
++};
++
+ struct tx_metrics {
+     tx_metrics_cb cb;
+     void *userdata;
++    atomic_uint_fast64_t callback_loss_publication;
++    atomic_uint_fast64_t callback_lost_batches;
++    atomic_uint_fast64_t callback_lost_entries;
+ };
++
++/*
++ * The low bits count active loss writers and the upper bits count completed
++ * loss updates. A writer increments the active count before touching either
++ * cumulative field, then advances the generation and decrements the active
++ * count with one atomic operation. A reader accepts one bounded snapshot only
++ * when this word is unchanged and has no active writer. Sixteen active bits
++ * cover the fixed producer-thread set; the remaining 48 bits defer generation
++ * wrap beyond any practical session lifetime.
++ */
++#define TX_METRICS_LOSS_ACTIVE_BITS 16
++#define TX_METRICS_LOSS_ACTIVE_MASK \
++    ((((uint_fast64_t)1) << TX_METRICS_LOSS_ACTIVE_BITS) - 1)
++#define TX_METRICS_LOSS_COMPLETION \
++    (((uint_fast64_t)1) << TX_METRICS_LOSS_ACTIVE_BITS)
++
++static inline void tx_metrics_loss_update_begin(struct tx_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication, 1,
++                              memory_order_seq_cst);
++}
++
++static inline void tx_metrics_loss_update_end(struct tx_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication,
++                              TX_METRICS_LOSS_COMPLETION - 1,
++                              memory_order_seq_cst);
++}
++
++int tx_metrics_emit_payload(struct tx_metrics *metrics,
++                            int64_t pts,
++                            const char *legacy_stage_key,
++                            int64_t stage_timestamp,
++                            const char *payload_key,
++                            int64_t payload_bytes);
++int tx_metrics_emit_queue(struct tx_metrics *metrics,
++                          int64_t pts,
++                          enum tx_metrics_queue_stage stage,
++                          int64_t depth,
++                          int64_t limit);
++int tx_metrics_emit_queue_unavailable(struct tx_metrics *metrics,
++                                      int64_t pts,
++                                      enum tx_metrics_queue_stage stage,
++                                      enum tx_metrics_reason reason);
++int tx_metrics_emit_drop(struct tx_metrics *metrics,
++                         int64_t pts,
++                         int64_t timestamp,
++                         enum tx_metrics_drop_stage stage,
++                         enum tx_metrics_reason reason,
++                         int64_t depth,
++                         int64_t limit,
++                         int64_t total);
++int tx_metrics_emit_drop_unavailable(struct tx_metrics *metrics,
++                                     int64_t pts,
++                                     int64_t timestamp,
++                                     enum tx_metrics_drop_stage stage,
++                                     enum tx_metrics_reason reason,
++                                     int64_t total,
++                                     enum tx_metrics_reason owner_reason);
+diff --git a/src/iosys_nvfbc.c b/src/iosys_nvfbc.c
+index e0fee54..7e5c891 100644
+--- a/src/iosys_nvfbc.c
++++ b/src/iosys_nvfbc.c
+@@ -765,9 +765,10 @@ static void *nvfbc_capture_thread(void *s)
+         fe->avg_frame_rate  = priv->framerate;
+         fe->rotation        = ROTATION_IDENTITY;
+ 
++        int64_t frame_pts = frame->pts;
+         if (ctx->metrics) {
+             const tx_metrics_entry metrics[] = {
+-                { .key = "pts", .value = frame->pts },
++                { .key = "pts", .value = frame_pts },
+                 { .key = "acquired", .value = ts },
+             };
+             tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
+@@ -778,6 +779,25 @@ static void *nvfbc_capture_thread(void *s)
+ 
+         if (err == AVERROR(ENOBUFS)) {
+             priv->dropped_frames++;
++            if (ctx->metrics) {
++                int depth;
++                int limit;
++                int owner = sp_frame_fifo_get_effective_bound(
++                    entry->frames, &depth, &limit);
++                if (owner == FRAME_FIFO_OWNER_OK) {
++                    tx_metrics_emit_drop(
++                        ctx->metrics, frame_pts, av_gettime_relative(),
++                        TX_METRICS_DROP_STAGE_CAPTURE,
++                        TX_METRICS_REASON_FIFO_FULL,
++                        depth, limit, priv->dropped_frames);
++                } else {
++                    tx_metrics_emit_drop_unavailable(
++                        ctx->metrics, frame_pts, av_gettime_relative(),
++                        TX_METRICS_DROP_STAGE_CAPTURE,
++                        TX_METRICS_REASON_FIFO_FULL,
++                        priv->dropped_frames, owner);
++                }
++            }
+             sp_log(entry, SP_LOG_WARN, "Dropping frame (%i dropped so far)!\n",
+                 priv->dropped_frames);
+ 
+@@ -790,6 +810,20 @@ static void *nvfbc_capture_thread(void *s)
+             sp_log(entry, SP_LOG_ERROR, "Unable to push frame to FIFO: %s!\n",
+                    av_err2str(err));
+             break;
++        } else if (ctx->metrics) {
++            int depth;
++            int limit;
++            int owner = sp_frame_fifo_get_effective_bound(
++                entry->frames, &depth, &limit);
++            if (owner == FRAME_FIFO_OWNER_OK) {
++                tx_metrics_emit_queue(
++                    ctx->metrics, frame_pts,
++                    TX_METRICS_QUEUE_STAGE_CAPTURE, depth, limit);
++            } else {
++                tx_metrics_emit_queue_unavailable(
++                    ctx->metrics, frame_pts,
++                    TX_METRICS_QUEUE_STAGE_CAPTURE, owner);
++            }
+         }
+     }
+ 
+diff --git a/src/metrics.c b/src/metrics.c
+index 4c4bf6e..5ac0650 100644
+--- a/src/metrics.c
++++ b/src/metrics.c
+@@ -19,13 +19,226 @@
+ #include "metrics.h"
+ 
+ #include <assert.h>
++#include <errno.h>
++#include <limits.h>
++
++#include <libavutil/error.h>
++
++static uint_fast64_t atomic_saturating_add(atomic_uint_fast64_t *value,
++                                           uint_fast64_t increment)
++{
++    uint_fast64_t current = atomic_load_explicit(value, memory_order_seq_cst);
++
++    for (;;) {
++        uint_fast64_t next = UINT_FAST64_MAX - current < increment
++                           ? UINT_FAST64_MAX
++                           : current + increment;
++        if (atomic_compare_exchange_weak_explicit(value, &current, next,
++                                                  memory_order_seq_cst,
++                                                  memory_order_seq_cst))
++            return next;
++    }
++}
++
++static int64_t metrics_counter_value(uint_fast64_t value)
++{
++    return value > INT64_MAX ? INT64_MAX : (int64_t)value;
++}
++
++static void record_callback_loss(struct tx_metrics *metrics, size_t count)
++{
++    /* An empty call contains no telemetry entry to account as lost. */
++    if (count == 0)
++        return;
++
++    tx_metrics_loss_update_begin(metrics);
++    atomic_saturating_add(&metrics->callback_lost_entries, count);
++    atomic_saturating_add(&metrics->callback_lost_batches, 1);
++    tx_metrics_loss_update_end(metrics);
++}
++
++static int snapshot_callback_loss(struct tx_metrics *metrics,
++                                  uint_fast64_t *lost_batches,
++                                  uint_fast64_t *lost_entries)
++{
++    uint_fast64_t publication_before =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++    if (publication_before & TX_METRICS_LOSS_ACTIVE_MASK)
++        return 0;
++
++    uint_fast64_t batches =
++        atomic_load_explicit(&metrics->callback_lost_batches,
++                             memory_order_seq_cst);
++    uint_fast64_t entries =
++        atomic_load_explicit(&metrics->callback_lost_entries,
++                             memory_order_seq_cst);
++    uint_fast64_t publication_after =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++
++    if (publication_before != publication_after ||
++        (publication_after & TX_METRICS_LOSS_ACTIVE_MASK) ||
++        ((batches == 0) != (entries == 0)))
++        return 0;
++
++    *lost_batches = batches;
++    *lost_entries = entries;
++    return 1;
++}
+ 
+ void tx_metrics_init(struct tx_metrics *metrics) {
+     metrics->cb = NULL;
++    metrics->userdata = NULL;
++    atomic_init(&metrics->callback_loss_publication, 0);
++    atomic_init(&metrics->callback_lost_batches, 0);
++    atomic_init(&metrics->callback_lost_entries, 0);
+ }
+ 
+ void tx_metrics_push(struct tx_metrics *metrics,
+                      const tx_metrics_entry *entries, size_t count) {
+     assert(metrics->cb);
+-    metrics->cb(entries, count, metrics->userdata);
++
++    tx_metrics_entry batch[TX_METRICS_MAX_BATCH_ENTRIES];
++    size_t batch_count = 0;
++    uint_fast64_t lost_batches;
++    uint_fast64_t lost_entries;
++
++    if (snapshot_callback_loss(metrics, &lost_batches, &lost_entries) &&
++        lost_batches != 0) {
++        batch[batch_count++] = (tx_metrics_entry) {
++            .key = "telemetry_callback_lost_batches_total",
++            .value = metrics_counter_value(lost_batches),
++        };
++        batch[batch_count++] = (tx_metrics_entry) {
++            .key = "telemetry_callback_lost_entries_total",
++            .value = metrics_counter_value(lost_entries),
++        };
++    }
++
++    if (!entries || count > TX_METRICS_MAX_BATCH_ENTRIES - batch_count) {
++        record_callback_loss(metrics, count);
++        return;
++    }
++
++    for (size_t i = 0; i < count; i++)
++        batch[batch_count++] = entries[i];
++
++    if (metrics->cb(batch, batch_count, metrics->userdata) != 0)
++        record_callback_loss(metrics, batch_count);
++}
++
++int tx_metrics_emit_payload(struct tx_metrics *metrics,
++                            int64_t pts,
++                            const char *legacy_stage_key,
++                            int64_t stage_timestamp,
++                            const char *payload_key,
++                            int64_t payload_bytes)
++{
++    if (!metrics || !legacy_stage_key || !payload_key || payload_bytes < 0)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = legacy_stage_key, .value = stage_timestamp },
++        { .key = payload_key, .value = payload_bytes },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
++}
++
++int tx_metrics_emit_queue(struct tx_metrics *metrics,
++                          int64_t pts,
++                          enum tx_metrics_queue_stage stage,
++                          int64_t depth,
++                          int64_t limit)
++{
++    if (!metrics || stage < TX_METRICS_QUEUE_STAGE_CAPTURE ||
++        stage > TX_METRICS_QUEUE_STAGE_PACKET_SINK ||
++        depth < 0 || limit <= 0 || depth > limit)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = "queue_stage", .value = stage },
++        { .key = "queue_depth", .value = depth },
++        { .key = "queue_limit", .value = limit },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
++}
++
++int tx_metrics_emit_queue_unavailable(struct tx_metrics *metrics,
++                                      int64_t pts,
++                                      enum tx_metrics_queue_stage stage,
++                                      enum tx_metrics_reason reason)
++{
++    if (!metrics || stage < TX_METRICS_QUEUE_STAGE_CAPTURE ||
++        stage > TX_METRICS_QUEUE_STAGE_PACKET_SINK ||
++        reason < TX_METRICS_REASON_OWNER_NO_DESTINATION ||
++        reason > TX_METRICS_REASON_OWNER_CHANGED)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = "queue_stage", .value = stage },
++        { .key = "queue_owner_unavailable", .value = reason },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
++}
++
++int tx_metrics_emit_drop(struct tx_metrics *metrics,
++                         int64_t pts,
++                         int64_t timestamp,
++                         enum tx_metrics_drop_stage stage,
++                         enum tx_metrics_reason reason,
++                         int64_t depth,
++                         int64_t limit,
++                         int64_t total)
++{
++    if (!metrics || stage < TX_METRICS_DROP_STAGE_CAPTURE ||
++        stage > TX_METRICS_DROP_STAGE_ENCODED_PACKET ||
++        reason != TX_METRICS_REASON_FIFO_FULL ||
++        depth < 0 || limit <= 0 || depth > limit || total < 0)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = "dropped", .value = timestamp },
++        { .key = "drop_stage", .value = stage },
++        { .key = "drop_reason", .value = reason },
++        { .key = "queue_depth", .value = depth },
++        { .key = "queue_limit", .value = limit },
++        { .key = "drop_total", .value = total },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
++}
++
++int tx_metrics_emit_drop_unavailable(struct tx_metrics *metrics,
++                                     int64_t pts,
++                                     int64_t timestamp,
++                                     enum tx_metrics_drop_stage stage,
++                                     enum tx_metrics_reason reason,
++                                     int64_t total,
++                                     enum tx_metrics_reason owner_reason)
++{
++    if (!metrics || stage < TX_METRICS_DROP_STAGE_CAPTURE ||
++        stage > TX_METRICS_DROP_STAGE_ENCODED_PACKET ||
++        reason != TX_METRICS_REASON_FIFO_FULL || total < 0 ||
++        owner_reason < TX_METRICS_REASON_OWNER_NO_DESTINATION ||
++        owner_reason > TX_METRICS_REASON_OWNER_CHANGED)
++        return AVERROR(EINVAL);
++
++    const tx_metrics_entry entries[] = {
++        { .key = "pts", .value = pts },
++        { .key = "dropped", .value = timestamp },
++        { .key = "drop_stage", .value = stage },
++        { .key = "drop_reason", .value = reason },
++        { .key = "drop_total", .value = total },
++        { .key = "queue_owner_unavailable", .value = owner_reason },
++    };
++    tx_metrics_push(metrics, entries, sizeof(entries) / sizeof(entries[0]));
++    return 0;
+ }
+diff --git a/src/packet_sink.c b/src/packet_sink.c
+index 3ce3d2e..3935f76 100644
+--- a/src/packet_sink.c
++++ b/src/packet_sink.c
+@@ -205,11 +205,23 @@ packet_sink_thread(void *arg) {
+         }
+ 
+         if (ctx->metrics) {
+-            const tx_metrics_entry metrics[] = {
+-                { .key = "pts", .value = in_pkt->pts },
+-                { .key = "sent", .value = av_gettime_relative() },
+-            };
+-            tx_metrics_push(ctx->metrics, metrics, SP_ARRAY_ELEMS(metrics));
++            tx_metrics_emit_payload(
++                ctx->metrics, in_pkt->pts, "sent", av_gettime_relative(),
++                "sent_payload_bytes", in_pkt->size);
++
++            int depth;
++            int limit;
++            int owner = sp_packet_fifo_get_effective_bound(
++                ctx->src_packets, &depth, &limit);
++            if (owner == PACKET_FIFO_OWNER_OK) {
++                tx_metrics_emit_queue(
++                    ctx->metrics, in_pkt->pts,
++                    TX_METRICS_QUEUE_STAGE_PACKET_SINK, depth, limit);
++            } else {
++                tx_metrics_emit_queue_unavailable(
++                    ctx->metrics, in_pkt->pts,
++                    TX_METRICS_QUEUE_STAGE_PACKET_SINK, owner);
++            }
+         }
+ 
+         av_packet_free(&in_pkt);
+diff --git a/test/host_metrics.c b/test/host_metrics.c
+new file mode 100644
+index 0000000..5a082e0
+--- /dev/null
++++ b/test/host_metrics.c
+@@ -0,0 +1,524 @@
++/*
++ * This file is part of txproto.
++ *
++ * txproto is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <assert.h>
++#include <errno.h>
++#include <pthread.h>
++#include <stdatomic.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <time.h>
++
++#include <libavutil/error.h>
++#include <libavcodec/packet.h>
++#include <libtxproto/fifo_packet.h>
++#include <libtxproto/metrics.h>
++
++#include "metrics.h"
++
++typedef struct MetricsCapture {
++    int reject;
++    int calls;
++    tx_metrics_entry entries[TX_METRICS_MAX_BATCH_ENTRIES];
++    size_t count;
++} MetricsCapture;
++
++typedef struct Producer {
++    AVBufferRef *fifo;
++    AVPacket *packet;
++    atomic_int *completed;
++    int result;
++} Producer;
++
++typedef struct ForcedLossPublisher {
++    struct tx_metrics *metrics;
++    atomic_int phase;
++} ForcedLossPublisher;
++
++typedef struct LossStressCapture {
++    atomic_uint_fast64_t rejected_batches;
++    atomic_uint_fast64_t rejected_entries;
++    atomic_uint_fast64_t observer_last_batches[2];
++    atomic_uint_fast64_t observer_last_entries[2];
++    atomic_int invalid_snapshots;
++} LossStressCapture;
++
++typedef struct LossStressWorker {
++    struct tx_metrics *metrics;
++    atomic_int *ready;
++    atomic_int *go;
++    int observer_id;
++    int iterations;
++} LossStressWorker;
++
++static int capture_metrics(const tx_metrics_entry *entries, size_t count,
++                           void *userdata)
++{
++    MetricsCapture *capture = userdata;
++    assert(count <= TX_METRICS_MAX_BATCH_ENTRIES);
++    capture->calls++;
++    capture->count = count;
++    memcpy(capture->entries, entries, count * sizeof(*entries));
++    return capture->reject;
++}
++
++static int capture_concurrent_metrics(const tx_metrics_entry *entries,
++                                      size_t count, void *userdata)
++{
++    LossStressCapture *capture = userdata;
++    int reject = 0;
++    int observer_id = -1;
++    int have_lost_batches = 0;
++    int have_lost_entries = 0;
++    uint_fast64_t lost_batches = 0;
++    uint_fast64_t lost_entries = 0;
++
++    assert(count <= TX_METRICS_MAX_BATCH_ENTRIES);
++    for (size_t i = 0; i < count; i++) {
++        if (strcmp(entries[i].key, "force_reject") == 0)
++            reject = 1;
++        else if (strcmp(entries[i].key, "observer_id") == 0)
++            observer_id = (int)entries[i].value;
++        else if (strcmp(entries[i].key,
++                        "telemetry_callback_lost_batches_total") == 0) {
++            have_lost_batches = 1;
++            lost_batches = (uint_fast64_t)entries[i].value;
++        } else if (strcmp(entries[i].key,
++                          "telemetry_callback_lost_entries_total") == 0) {
++            have_lost_entries = 1;
++            lost_entries = (uint_fast64_t)entries[i].value;
++        }
++    }
++
++    if (have_lost_batches != have_lost_entries ||
++        (have_lost_batches &&
++         (lost_batches == 0 || lost_entries == 0 ||
++          lost_entries < lost_batches)))
++        atomic_fetch_add(&capture->invalid_snapshots, 1);
++
++    if (have_lost_batches && observer_id >= 0 && observer_id < 2) {
++        uint_fast64_t previous_batches = atomic_exchange(
++            &capture->observer_last_batches[observer_id], lost_batches);
++        uint_fast64_t previous_entries = atomic_exchange(
++            &capture->observer_last_entries[observer_id], lost_entries);
++        if (lost_batches < previous_batches || lost_entries < previous_entries)
++            atomic_fetch_add(&capture->invalid_snapshots, 1);
++    }
++
++    if (reject) {
++        atomic_fetch_add(&capture->rejected_batches, 1);
++        atomic_fetch_add(&capture->rejected_entries, count);
++        return 1;
++    }
++    return 0;
++}
++
++static const tx_metrics_entry *find_metric(const MetricsCapture *capture,
++                                           const char *key)
++{
++    for (size_t i = 0; i < capture->count; i++) {
++        if (strcmp(capture->entries[i].key, key) == 0)
++            return &capture->entries[i];
++    }
++    return NULL;
++}
++
++static void sleep_ms(long milliseconds)
++{
++    struct timespec delay = {
++        .tv_sec = milliseconds / 1000,
++        .tv_nsec = (milliseconds % 1000) * 1000000,
++    };
++    nanosleep(&delay, NULL);
++}
++
++static int wait_for_completed(atomic_int *completed, int expected)
++{
++    for (int i = 0; i < 200; i++) {
++        if (atomic_load(completed) == expected)
++            return 0;
++        sleep_ms(5);
++    }
++    return -1;
++}
++
++static void *blocking_producer(void *userdata)
++{
++    Producer *producer = userdata;
++    producer->result = sp_packet_fifo_push(producer->fifo, producer->packet);
++    atomic_fetch_add(producer->completed, 1);
++    return NULL;
++}
++
++static void *forced_loss_publisher(void *userdata)
++{
++    ForcedLossPublisher *publisher = userdata;
++
++    tx_metrics_loss_update_begin(publisher->metrics);
++    atomic_store(&publisher->metrics->callback_lost_batches, 1);
++    atomic_store(&publisher->phase, 1);
++    while (atomic_load(&publisher->phase) != 2)
++        sleep_ms(1);
++    atomic_store(&publisher->metrics->callback_lost_entries, 3);
++    tx_metrics_loss_update_end(publisher->metrics);
++    atomic_store(&publisher->phase, 3);
++    return NULL;
++}
++
++static void *loss_stress_worker(void *userdata)
++{
++    LossStressWorker *worker = userdata;
++    atomic_fetch_add(worker->ready, 1);
++    while (!atomic_load(worker->go))
++        sleep_ms(1);
++
++    for (int i = 0; i < worker->iterations; i++) {
++        tx_metrics_entry entry = {
++            .key = worker->observer_id < 0 ? "force_reject" : "observer_id",
++            .value = worker->observer_id,
++        };
++        tx_metrics_push(worker->metrics, &entry, 1);
++    }
++    return NULL;
++}
++
++static AVPacket *packet_new(int64_t pts, int size)
++{
++    AVPacket *packet = av_packet_alloc();
++    assert(packet);
++    assert(av_new_packet(packet, size) == 0);
++    packet->pts = pts;
++    return packet;
++}
++
++static void test_fifo_limit_and_owner(void)
++{
++    AVBufferRef *fifo = sp_packet_fifo_create(NULL, 1, 0);
++    AVPacket *first = packet_new(1, 4);
++    AVPacket *second = packet_new(2, 4);
++    assert(fifo);
++
++    assert(sp_packet_fifo_push(fifo, first) == 0);
++    assert(sp_packet_fifo_get_size(fifo) == 1);
++    assert(sp_packet_fifo_is_full(fifo));
++    assert(sp_packet_fifo_push(fifo, second) == AVERROR(ENOBUFS));
++
++    int depth = -1;
++    int limit = -1;
++    assert(sp_packet_fifo_get_effective_bound(fifo, &depth, &limit) ==
++           PACKET_FIFO_OWNER_OK);
++    assert(depth == 1);
++    assert(limit == 1);
++
++    AVPacket *popped = sp_packet_fifo_pop(fifo);
++    assert(popped);
++    av_packet_free(&popped);
++    assert(!sp_packet_fifo_is_full(fifo));
++    assert(sp_packet_fifo_push(fifo, second) == 0);
++    popped = sp_packet_fifo_pop(fifo);
++    assert(popped);
++    av_packet_free(&popped);
++
++    AVBufferRef *source = sp_packet_fifo_create(NULL, 0, 0);
++    AVBufferRef *bounded = sp_packet_fifo_create(NULL, 2, 0);
++    AVBufferRef *other = sp_packet_fifo_create(NULL, 2, 0);
++    AVBufferRef *unlimited = sp_packet_fifo_create(NULL, -1, 0);
++    assert(source && bounded && other && unlimited);
++
++    assert(sp_packet_fifo_get_effective_bound(source, &depth, &limit) ==
++           PACKET_FIFO_OWNER_NO_DESTINATION);
++    assert(sp_packet_fifo_mirror(bounded, source) == 0);
++    assert(sp_packet_fifo_push(source, first) == 0);
++    assert(sp_packet_fifo_get_effective_bound(source, &depth, &limit) ==
++           PACKET_FIFO_OWNER_OK);
++    assert(depth == 1);
++    assert(limit == 2);
++
++    assert(sp_packet_fifo_mirror(other, source) == 0);
++    assert(sp_packet_fifo_get_effective_bound(source, &depth, &limit) ==
++           PACKET_FIFO_OWNER_AMBIGUOUS);
++    assert(sp_packet_fifo_unmirror(other, source) == 0);
++    assert(sp_packet_fifo_unmirror(bounded, source) == 0);
++    assert(sp_packet_fifo_mirror(unlimited, source) == 0);
++    assert(sp_packet_fifo_get_effective_bound(source, &depth, &limit) ==
++           PACKET_FIFO_OWNER_UNBOUNDED);
++    assert(sp_packet_fifo_unmirror(unlimited, source) == 0);
++
++    popped = sp_packet_fifo_pop(bounded);
++    assert(popped);
++    av_packet_free(&popped);
++    av_buffer_unref(&unlimited);
++    av_buffer_unref(&other);
++    av_buffer_unref(&bounded);
++    av_buffer_unref(&source);
++    av_packet_free(&second);
++    av_packet_free(&first);
++    av_buffer_unref(&fifo);
++}
++
++static void test_fifo_special_and_blocking_semantics(void)
++{
++    AVPacket *packet = packet_new(3, 4);
++    AVBufferRef *unlimited = sp_packet_fifo_create(NULL, -1, 0);
++    AVBufferRef *passthrough = sp_packet_fifo_create(NULL, 0, 0);
++    AVBufferRef *destination = sp_packet_fifo_create(NULL, 1, 0);
++    assert(unlimited && passthrough && destination);
++
++    for (int i = 0; i < 4; i++)
++        assert(sp_packet_fifo_push(unlimited, packet) == 0);
++    assert(sp_packet_fifo_get_size(unlimited) == 4);
++    assert(sp_packet_fifo_push(unlimited, NULL) == 0);
++
++    assert(sp_packet_fifo_mirror(destination, passthrough) == 0);
++    assert(sp_packet_fifo_push(passthrough, packet) == 0);
++    assert(sp_packet_fifo_get_size(passthrough) == 0);
++    assert(sp_packet_fifo_get_size(destination) == 1);
++    assert(sp_packet_fifo_push(passthrough, NULL) == 0);
++    assert(sp_packet_fifo_unmirror(destination, passthrough) == 0);
++
++    AVPacket *popped = sp_packet_fifo_pop(destination);
++    assert(popped);
++    av_packet_free(&popped);
++    popped = sp_packet_fifo_pop(destination);
++    assert(!popped);
++
++    AVBufferRef *blocking = sp_packet_fifo_create(
++        NULL, 1, PACKET_FIFO_BLOCK_MAX_OUTPUT);
++    assert(blocking);
++    assert(sp_packet_fifo_push(blocking, packet) == 0);
++
++    atomic_int completed = ATOMIC_VAR_INIT(0);
++    AVPacket *packet_a = packet_new(4, 4);
++    AVPacket *packet_b = packet_new(5, 4);
++    Producer producers[] = {
++        { .fifo = blocking, .packet = packet_a, .completed = &completed },
++        { .fifo = blocking, .packet = packet_b, .completed = &completed },
++    };
++    pthread_t threads[2];
++    assert(pthread_create(&threads[0], NULL, blocking_producer, &producers[0]) == 0);
++    assert(pthread_create(&threads[1], NULL, blocking_producer, &producers[1]) == 0);
++
++    sleep_ms(25);
++    assert(atomic_load(&completed) == 0);
++    sp_packet_fifo_set_max_queued(blocking, 1);
++    sleep_ms(25);
++    assert(atomic_load(&completed) == 0);
++    assert(sp_packet_fifo_get_size(blocking) == 1);
++
++    popped = sp_packet_fifo_pop(blocking);
++    assert(popped);
++    av_packet_free(&popped);
++    assert(wait_for_completed(&completed, 1) == 0);
++    assert(sp_packet_fifo_get_size(blocking) == 1);
++
++    popped = sp_packet_fifo_pop(blocking);
++    assert(popped);
++    av_packet_free(&popped);
++    assert(wait_for_completed(&completed, 2) == 0);
++    assert(sp_packet_fifo_get_size(blocking) == 1);
++
++    popped = sp_packet_fifo_pop(blocking);
++    assert(popped);
++    av_packet_free(&popped);
++    assert(pthread_join(threads[0], NULL) == 0);
++    assert(pthread_join(threads[1], NULL) == 0);
++    assert(producers[0].result == 0);
++    assert(producers[1].result == 0);
++
++    av_packet_free(&packet_b);
++    av_packet_free(&packet_a);
++    av_buffer_unref(&blocking);
++    av_buffer_unref(&destination);
++    av_buffer_unref(&passthrough);
++    av_buffer_unref(&unlimited);
++    av_packet_free(&packet);
++}
++
++static void test_metrics_loss_and_helpers(void)
++{
++    struct tx_metrics metrics;
++    MetricsCapture capture = { .reject = 1 };
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_metrics;
++    metrics.userdata = &capture;
++
++    assert(tx_metrics_emit_payload(&metrics, 10, "encoded", 20,
++                                   "encoded_payload_bytes", 30) == 0);
++    assert(capture.calls == 1);
++    capture.reject = 0;
++    assert(tx_metrics_emit_queue(&metrics, 10,
++                                 TX_METRICS_QUEUE_STAGE_ENCODED_PACKET,
++                                 1, 2) == 0);
++    assert(capture.calls == 2);
++    assert(capture.count == 6);
++    assert(find_metric(&capture, "telemetry_callback_lost_batches_total")->value == 1);
++    assert(find_metric(&capture, "telemetry_callback_lost_entries_total")->value == 3);
++    assert(find_metric(&capture, "pts")->value == 10);
++    assert(find_metric(&capture, "queue_stage")->value ==
++           TX_METRICS_QUEUE_STAGE_ENCODED_PACKET);
++    assert(find_metric(&capture, "queue_depth")->value == 1);
++    assert(find_metric(&capture, "queue_limit")->value == 2);
++
++    assert(tx_metrics_emit_queue_unavailable(
++               &metrics, 10, TX_METRICS_QUEUE_STAGE_CAPTURE,
++               TX_METRICS_REASON_OWNER_AMBIGUOUS) == 0);
++    assert(find_metric(&capture, "queue_owner_unavailable")->value ==
++           TX_METRICS_REASON_OWNER_AMBIGUOUS);
++
++    assert(tx_metrics_emit_drop(&metrics, 11, 21,
++                                TX_METRICS_DROP_STAGE_CAPTURE,
++                                TX_METRICS_REASON_FIFO_FULL,
++                                1, 1, 4) == 0);
++    assert(find_metric(&capture, "dropped")->value == 21);
++    assert(find_metric(&capture, "drop_stage")->value ==
++           TX_METRICS_DROP_STAGE_CAPTURE);
++    assert(find_metric(&capture, "drop_reason")->value ==
++           TX_METRICS_REASON_FIFO_FULL);
++    assert(find_metric(&capture, "drop_total")->value == 4);
++
++    assert(tx_metrics_emit_drop_unavailable(
++               &metrics, 12, 22, TX_METRICS_DROP_STAGE_ENCODED_PACKET,
++               TX_METRICS_REASON_FIFO_FULL, 5,
++               TX_METRICS_REASON_OWNER_CHANGED) == 0);
++    assert(find_metric(&capture, "drop_total")->value == 5);
++    assert(find_metric(&capture, "queue_owner_unavailable")->value ==
++           TX_METRICS_REASON_OWNER_CHANGED);
++    assert(!find_metric(&capture, "queue_depth"));
++    assert(!find_metric(&capture, "queue_limit"));
++
++    int calls = capture.calls;
++    assert(tx_metrics_emit_payload(&metrics, 1, "encoded", 2,
++                                   "encoded_payload_bytes", -1) == AVERROR(EINVAL));
++    assert(tx_metrics_emit_queue(&metrics, 1, TX_METRICS_QUEUE_STAGE_CAPTURE,
++                                 -1, 1) == AVERROR(EINVAL));
++    assert(tx_metrics_emit_drop(&metrics, 1, 2,
++                                TX_METRICS_DROP_STAGE_CAPTURE,
++                                TX_METRICS_REASON_FIFO_FULL,
++                                2, 1, 1) == AVERROR(EINVAL));
++    assert(capture.calls == calls);
++
++    struct tx_metrics accepted;
++    MetricsCapture accepted_capture = { 0 };
++    tx_metrics_init(&accepted);
++    accepted.cb = capture_metrics;
++    accepted.userdata = &accepted_capture;
++    assert(tx_metrics_emit_payload(&accepted, 1, "sent", 2,
++                                   "sent_payload_bytes", 3) == 0);
++    assert(accepted_capture.count == 3);
++    assert(!find_metric(&accepted_capture,
++                        "telemetry_callback_lost_batches_total"));
++    assert(!find_metric(&accepted_capture,
++                        "telemetry_callback_lost_entries_total"));
++}
++
++static void test_metrics_forced_loss_publication(void)
++{
++    struct tx_metrics metrics;
++    MetricsCapture capture = { 0 };
++    ForcedLossPublisher publisher = {
++        .metrics = &metrics,
++        .phase = ATOMIC_VAR_INIT(0),
++    };
++    pthread_t thread;
++
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_metrics;
++    metrics.userdata = &capture;
++    assert(pthread_create(&thread, NULL, forced_loss_publisher, &publisher) == 0);
++    assert(wait_for_completed(&publisher.phase, 1) == 0);
++
++    assert(tx_metrics_emit_payload(&metrics, 1, "encoded", 2,
++                                   "encoded_payload_bytes", 3) == 0);
++    assert(!find_metric(&capture,
++                        "telemetry_callback_lost_batches_total"));
++    assert(!find_metric(&capture,
++                        "telemetry_callback_lost_entries_total"));
++
++    atomic_store(&publisher.phase, 2);
++    assert(wait_for_completed(&publisher.phase, 3) == 0);
++    assert(pthread_join(thread, NULL) == 0);
++
++    assert(tx_metrics_emit_queue(&metrics, 1,
++                                 TX_METRICS_QUEUE_STAGE_CAPTURE,
++                                 1, 1) == 0);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_batches_total")->value == 1);
++    assert(find_metric(&capture,
++                       "telemetry_callback_lost_entries_total")->value == 3);
++}
++
++static void test_metrics_concurrent_loss_publication(void)
++{
++    enum {
++        REJECTERS = 4,
++        OBSERVERS = 2,
++        ITERATIONS = 4000,
++        WORKERS = REJECTERS + OBSERVERS,
++    };
++    struct tx_metrics metrics;
++    LossStressCapture stress = { 0 };
++    LossStressWorker workers[WORKERS];
++    pthread_t threads[WORKERS];
++    atomic_int ready = ATOMIC_VAR_INIT(0);
++    atomic_int go = ATOMIC_VAR_INIT(0);
++
++    tx_metrics_init(&metrics);
++    metrics.cb = capture_concurrent_metrics;
++    metrics.userdata = &stress;
++
++    for (int i = 0; i < WORKERS; i++) {
++        workers[i] = (LossStressWorker) {
++            .metrics = &metrics,
++            .ready = &ready,
++            .go = &go,
++            .observer_id = i < REJECTERS ? -1 : i - REJECTERS,
++            .iterations = ITERATIONS,
++        };
++        assert(pthread_create(&threads[i], NULL, loss_stress_worker,
++                              &workers[i]) == 0);
++    }
++    assert(wait_for_completed(&ready, WORKERS) == 0);
++    atomic_store(&go, 1);
++    for (int i = 0; i < WORKERS; i++)
++        assert(pthread_join(threads[i], NULL) == 0);
++
++    uint_fast64_t expected_batches = atomic_load(&stress.rejected_batches);
++    uint_fast64_t expected_entries = atomic_load(&stress.rejected_entries);
++    assert(expected_batches == REJECTERS * ITERATIONS);
++    assert(expected_entries >= expected_batches);
++    assert(atomic_load(&metrics.callback_lost_batches) == expected_batches);
++    assert(atomic_load(&metrics.callback_lost_entries) == expected_entries);
++    assert(atomic_load(&metrics.callback_loss_publication) ==
++           expected_batches * TX_METRICS_LOSS_COMPLETION);
++    assert(atomic_load(&stress.invalid_snapshots) == 0);
++
++    MetricsCapture final_capture = { 0 };
++    metrics.cb = capture_metrics;
++    metrics.userdata = &final_capture;
++    tx_metrics_entry final_entry = { .key = "observer_id", .value = 0 };
++    tx_metrics_push(&metrics, &final_entry, 1);
++    assert(find_metric(&final_capture,
++                       "telemetry_callback_lost_batches_total")->value ==
++           (int64_t)expected_batches);
++    assert(find_metric(&final_capture,
++                       "telemetry_callback_lost_entries_total")->value ==
++           (int64_t)expected_entries);
++}
++
++int main(void)
++{
++    test_fifo_limit_and_owner();
++    test_fifo_special_and_blocking_semantics();
++    test_metrics_loss_and_helpers();
++    test_metrics_forced_loss_publication();
++    test_metrics_concurrent_loss_publication();
++    puts("host_metrics: ok");
++    return 0;
++}

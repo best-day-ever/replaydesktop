@@ -1,0 +1,1535 @@
+diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
+index 8e1bfd61a94362504da484ec6baeb1d6fcc821b6..2814dd8ea0cd3d8634c36c82e2350da23fff6303 100644
+--- a/include/vlc/libvlc_media_player.h
++++ b/include/vlc/libvlc_media_player.h
+@@ -3318,6 +3318,17 @@ LIBVLC_API
+ int libvlc_media_player_set_metrics_callback(libvlc_media_player_t *mp,
+                                              libvlc_metrics_cb cb, void *sys);
+ 
++/**
++ * Install the additive video-path telemetry callback for this player run.
++ *
++ * The callback is immutable once installed and must be attached before
++ * playback starts. Duplicate or active-playback replacement fails.
++ */
++LIBVLC_API
++int libvlc_media_player_set_video_path_callback(libvlc_media_player_t *mp,
++                                                libvlc_video_path_cb cb,
++                                                void *sys);
++
+ /** @} libvlc_media_player_concurrency */
+ 
+ /** @} media_player */
+diff --git a/include/vlc/libvlc_metrics.h b/include/vlc/libvlc_metrics.h
+index fd5a6db78a2d323954e3b322bf30da40e7f852fa..a8c29170f918579f67b8e4cc9515bbd5816e3fdc 100644
+--- a/include/vlc/libvlc_metrics.h
++++ b/include/vlc/libvlc_metrics.h
+@@ -13,4 +13,126 @@ typedef int (*libvlc_metrics_cb)(void *sys,
+                                  const struct libvlc_metrics_entry *entries,
+                                  size_t count);
+ 
++#define LIBVLC_VIDEO_PATH_EVENT_VERSION UINT16_C(1)
++#define LIBVLC_VIDEO_PATH_TEXT_CAPACITY 64
++
++enum libvlc_video_path_event_kind {
++    LIBVLC_VIDEO_PATH_EVENT_BITSTREAM_CONFIG = 1,
++    LIBVLC_VIDEO_PATH_EVENT_DECODER_MODULE = 2,
++    LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_SESSION = 3,
++    LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME = 4,
++    LIBVLC_VIDEO_PATH_EVENT_DECODED_SURFACE = 5,
++    LIBVLC_VIDEO_PATH_EVENT_RENDERER = 6,
++    LIBVLC_VIDEO_PATH_EVENT_OBSERVATION_LIMIT = 7,
++};
++
++enum libvlc_video_path_codec {
++    LIBVLC_VIDEO_PATH_CODEC_UNKNOWN = 0,
++    LIBVLC_VIDEO_PATH_CODEC_H264 = 1,
++    LIBVLC_VIDEO_PATH_CODEC_HEVC = 2,
++    LIBVLC_VIDEO_PATH_CODEC_AV1 = 3,
++};
++
++enum libvlc_video_path_chroma {
++    LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN = 0,
++    LIBVLC_VIDEO_PATH_CHROMA_MONOCHROME = 1,
++    LIBVLC_VIDEO_PATH_CHROMA_420 = 2,
++    LIBVLC_VIDEO_PATH_CHROMA_422 = 3,
++    LIBVLC_VIDEO_PATH_CHROMA_444 = 4,
++};
++
++enum libvlc_video_path_truth {
++    LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN = 0,
++    LIBVLC_VIDEO_PATH_TRUTH_NO = 1,
++    LIBVLC_VIDEO_PATH_TRUTH_YES = 2,
++};
++
++enum libvlc_video_path_unknown_reason {
++    LIBVLC_VIDEO_PATH_UNKNOWN_NONE = 0,
++    LIBVLC_VIDEO_PATH_UNKNOWN_BITSTREAM_CONFIG_UNPARSEABLE = 1,
++    LIBVLC_VIDEO_PATH_UNKNOWN_CODEC_UNSUPPORTED = 2,
++    LIBVLC_VIDEO_PATH_UNKNOWN_HARDWARE_PROPERTY_UNAVAILABLE = 3,
++    LIBVLC_VIDEO_PATH_UNKNOWN_PHYSICAL_PRESENTATION_UNAVAILABLE = 4,
++    LIBVLC_VIDEO_PATH_UNKNOWN_SCANOUT_TIMESTAMP_UNAVAILABLE = 5,
++    LIBVLC_VIDEO_PATH_UNKNOWN_LAYER_QUEUE_DEPTH_UNAVAILABLE = 6,
++};
++
++enum libvlc_video_path_outcome {
++    LIBVLC_VIDEO_PATH_OUTCOME_NONE = 0,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_SUCCESS = 1,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_FRAME_DROPPED = 2,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_STATUS_ERROR = 3,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_NULL_BUFFER = 4,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_DISCARDED_OUTPUT = 5,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_INVALID_PTS = 6,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_EMPTY_BUFFER = 7,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_FORMAT_FAILURE = 8,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_PICTURE_ALLOCATION_FAILURE = 9,
++    LIBVLC_VIDEO_PATH_OUTCOME_VT_ATTACHMENT_FAILURE = 10,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_ABSENT = 20,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_CONVERSION_FAILURE = 21,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_FORMAT_DESCRIPTION_FAILURE = 22,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_BUFFER_FAILURE = 23,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_BACKPRESSURE = 24,
++    LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_ENQUEUED = 25,
++    /*
++     * This name documents the unchanged scalar "displayed" key. It is not a
++     * presentation or enqueue outcome and must never be normalized as one.
++     */
++    LIBVLC_VIDEO_PATH_OUTCOME_LEGACY_DISPLAY_CALLBACK_RETURNED = 26,
++};
++
++enum libvlc_video_path_policy_flag {
++    LIBVLC_VIDEO_PATH_POLICY_HW_ENABLE_REQUESTED = 1u << 0,
++    LIBVLC_VIDEO_PATH_POLICY_HW_REQUIRE_REQUESTED = 1u << 1,
++};
++
++enum libvlc_video_path_observation_flag {
++    LIBVLC_VIDEO_PATH_OBSERVATION_PHYSICAL_PRESENTATION = 1u << 0,
++    LIBVLC_VIDEO_PATH_OBSERVATION_SCANOUT_TIMESTAMP = 1u << 1,
++    LIBVLC_VIDEO_PATH_OBSERVATION_LAYER_QUEUE_DEPTH = 1u << 2,
++};
++
++/**
++ * Additive immutable video-path telemetry record.
++ *
++ * Producers always set version and struct_size. Consumers must check both and
++ * ignore trailing bytes from newer records. The callback-owned pointer and
++ * bounded text remain valid only until the callback returns.
++ */
++struct libvlc_video_path_event {
++    uint16_t version;
++    uint16_t struct_size;
++    uint32_t kind;
++    uint64_t producer_seq;
++    int64_t monotonic_ts;
++    int64_t pts;
++    uint8_t pts_valid;
++    uint8_t reserved[7];
++
++    uint32_t codec;
++    uint32_t chroma;
++    uint32_t profile;
++    uint32_t bit_depth;
++    uint32_t hardware_state;
++    uint32_t iosurface_state;
++    uint32_t outcome;
++    uint32_t unknown_reason;
++    uint32_t decoded_fourcc;
++    uint32_t policy_flags;
++    uint32_t os_flags;
++    int32_t status;
++    uint32_t observation_flags;
++
++    uint64_t callback_lost_events;
++    uint64_t callback_loss_first_seq;
++    uint64_t callback_loss_last_seq;
++    uint64_t callback_loss_generation;
++
++    char text[LIBVLC_VIDEO_PATH_TEXT_CAPACITY];
++};
++
++typedef int (*libvlc_video_path_cb)(
++    void *sys, const struct libvlc_video_path_event *events, size_t count);
++
+ #endif
+diff --git a/include/vlc_metrics.h b/include/vlc_metrics.h
+index 80632096e3f5391137cfaeab5579ae196b0f6a54..0b6ee74c035fe330aad22bc5ac01557c0e47fbec 100644
+--- a/include/vlc_metrics.h
++++ b/include/vlc_metrics.h
+@@ -10,6 +10,8 @@
+ 
+ typedef struct libvlc_metrics_entry vlc_metrics_entry;
+ typedef libvlc_metrics_cb vlc_metrics_cb;
++typedef struct libvlc_video_path_event vlc_video_path_event;
++typedef libvlc_video_path_cb vlc_video_path_cb;
+ 
+ struct vlc_metrics;
+ 
+@@ -20,4 +22,16 @@ VLC_API
+ int vlc_metrics_Push(struct vlc_metrics *metrics,
+                      const vlc_metrics_entry *entries, size_t count);
+ 
++VLC_API
++int vlc_metrics_PushVideoPath(struct vlc_metrics *metrics,
++                              vlc_video_path_event *event);
++
++VLC_API
++void vlc_video_path_event_Init(vlc_video_path_event *event, uint32_t kind,
++                               bool pts_valid, int64_t pts);
++
++VLC_API
++void vlc_video_path_event_SetText(vlc_video_path_event *event,
++                                  const char *text);
++
+ #endif
+diff --git a/include/vlc_player.h b/include/vlc_player.h
+index 37768430f7da994e370b2f6cfdc48a6769ae6245..805cdee882f7cf0215ab1b75e53107abdf2c37f1 100644
+--- a/include/vlc_player.h
++++ b/include/vlc_player.h
+@@ -3397,6 +3397,10 @@ VLC_API int
+ vlc_player_SetMetricsCallback(vlc_player_t *player,
+                               vlc_metrics_cb cb, void *sys);
+ 
++VLC_API int
++vlc_player_SetVideoPathCallback(vlc_player_t *player,
++                                vlc_video_path_cb cb, void *sys);
++
+ /** @} vlc_player__events */
+ 
+ /**
+diff --git a/lib/libvlc.sym b/lib/libvlc.sym
+index 97f08f8eb40f9ba42ee45c07c937648c384468e3..f7522db918bed77f096a52e68903a1e586ddc57f 100644
+--- a/lib/libvlc.sym
++++ b/lib/libvlc.sym
+@@ -299,3 +299,4 @@ libvlc_picture_list_count
+ libvlc_picture_list_destroy
+ libvlc_abi_version
+ libvlc_media_player_set_metrics_callback
++libvlc_media_player_set_video_path_callback
+diff --git a/lib/media_player.c b/lib/media_player.c
+index 33112ebb8a152e62c414169c9a76c47ad346cfe1..e38bb6f25967dfd0072276039c871456ce87cc02 100644
+--- a/lib/media_player.c
++++ b/lib/media_player.c
+@@ -2556,7 +2556,20 @@ libvlc_media_player_time_point_get_next_date(const libvlc_media_player_time_poin
+ int libvlc_media_player_set_metrics_callback(libvlc_media_player_t *mp,
+                                              libvlc_metrics_cb cb, void *sys)
+ {
+-    return vlc_player_SetMetricsCallback(mp->player, cb, sys);
++    vlc_player_Lock(mp->player);
++    int ret = vlc_player_SetMetricsCallback(mp->player, cb, sys);
++    vlc_player_Unlock(mp->player);
++    return ret;
++}
++
++int libvlc_media_player_set_video_path_callback(libvlc_media_player_t *mp,
++                                                libvlc_video_path_cb cb,
++                                                void *sys)
++{
++    vlc_player_Lock(mp->player);
++    int ret = vlc_player_SetVideoPathCallback(mp->player, cb, sys);
++    vlc_player_Unlock(mp->player);
++    return ret;
+ }
+ 
+ #include <vlc_vout_display.h>
+diff --git a/modules/access/kymux.c b/modules/access/kymux.c
+index 18bd8e66d4e701652757ff83b0fe6317a7094bda..21a254e26ded462a9eb8c7f3ff32e7cb6f1f1912 100644
+--- a/modules/access/kymux.c
++++ b/modules/access/kymux.c
+@@ -29,15 +29,11 @@
+ #include <vlc_stream.h>
+ #include <vlc_tls.h>
+ #include <vlc_url.h>
++#include "kymux_video_config.h"
+ #include "../packetizer/h264_nal.h"
+ #include "../packetizer/hevc_nal.h"
+ #include "../packetizer/hxxx_nal.h"
+ 
+-#define KYMUX_CODEC_H264 UINT32_C(0x68323634)
+-#define KYMUX_CODEC_H265 UINT32_C(0x68323635)
+-#define KYMUX_CODEC_AV1 UINT32_C(0x00617631)
+-#define KYMUX_CODEC_OPUS UINT32_C(0x6F707573)
+-
+ #ifdef __ANDROID__
+ static void fill_dimension_h264(const block_t *block, es_format_t *fmt)
+ {
+@@ -242,6 +238,28 @@ static void set_rotation(es_format_t *fmt, uint8_t rotation)
+     }
+ }
+ 
++static void
++publish_video_config(stream_t *stream, uint32_t codec, const block_t *block)
++{
++    struct vlc_metrics *metrics = vlc_metrics_Get(VLC_OBJECT(stream));
++    if (!metrics)
++        return;
++
++    struct kymux_video_config config;
++    (void) kymux_video_config_Inspect(codec, block->p_buffer,
++                                      block->i_buffer, &config);
++
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_BITSTREAM_CONFIG, false, 0);
++    event.codec = config.codec;
++    event.chroma = config.chroma;
++    event.profile = config.profile;
++    event.bit_depth = config.bit_depth;
++    event.unknown_reason = config.unknown_reason;
++    (void) vlc_metrics_PushVideoPath(metrics, &event);
++}
++
+ static int Demux(stream_t *stream)
+ {
+     struct sys *sys = stream->p_sys;
+@@ -315,6 +333,8 @@ static int Demux(stream_t *stream)
+             if (sys->es)
+                 es_out_Del(stream->out, sys->es);
+ 
++            publish_video_config(stream, sys->pending_codec, block);
++
+             vlc_fourcc_t fourcc = get_vlc_video_codec(sys->pending_codec);
+ 
+             es_format_t fmt;
+diff --git a/modules/access/kymux_video_config.c b/modules/access/kymux_video_config.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..eebae79b355e2a0c2d99d6717f99404a871e3226
+--- /dev/null
++++ b/modules/access/kymux_video_config.c
+@@ -0,0 +1,276 @@
++/*****************************************************************************
++ * kymux_video_config.c: bounded production Kymux video config inspection
++ *****************************************************************************/
++
++#ifdef HAVE_CONFIG_H
++# include "config.h"
++#endif
++
++#include "kymux_video_config.h"
++
++#include <assert.h>
++#include <string.h>
++#include <vlc_common.h>
++#include <vlc_es.h>
++#include <vlc_fourcc.h>
++#include <vlc/libvlc_metrics.h>
++
++#include "../packetizer/av1_obu.h"
++#include "../packetizer/h264_nal.h"
++#include "../packetizer/hevc_nal.h"
++#include "../packetizer/hxxx_nal.h"
++
++static uint32_t
++codec_from_kymux(uint32_t codec)
++{
++    switch (codec)
++    {
++        case KYMUX_CODEC_H264:
++            return LIBVLC_VIDEO_PATH_CODEC_H264;
++        case KYMUX_CODEC_H265:
++            return LIBVLC_VIDEO_PATH_CODEC_HEVC;
++        case KYMUX_CODEC_AV1:
++            return LIBVLC_VIDEO_PATH_CODEC_AV1;
++        default:
++            return LIBVLC_VIDEO_PATH_CODEC_UNKNOWN;
++    }
++}
++
++static uint32_t
++chroma_from_idc(uint8_t idc)
++{
++    switch (idc)
++    {
++        case 0:
++            return LIBVLC_VIDEO_PATH_CHROMA_MONOCHROME;
++        case 1:
++            return LIBVLC_VIDEO_PATH_CHROMA_420;
++        case 2:
++            return LIBVLC_VIDEO_PATH_CHROMA_422;
++        case 3:
++            return LIBVLC_VIDEO_PATH_CHROMA_444;
++        default:
++            return LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN;
++    }
++}
++
++static bool
++inspect_h264(const uint8_t *data, size_t size,
++             struct kymux_video_config *out)
++{
++    hxxx_iterator_ctx_t iterator;
++    const uint8_t *nal;
++    size_t nal_size;
++
++    hxxx_iterator_init(&iterator, data, size, 0);
++    while (hxxx_annexb_iterate_next(&iterator, &nal, &nal_size))
++    {
++        if (nal_size < 1 || (nal[0] & 0x1f) != H264_NAL_SPS)
++            continue;
++
++        h264_sequence_parameter_set_t *sps =
++            h264_decode_sps(nal, nal_size, true);
++        if (!sps)
++            continue;
++
++        uint8_t profile;
++        uint8_t level;
++        uint8_t chroma;
++        uint8_t luma_depth;
++        uint8_t chroma_depth;
++        bool valid =
++            h264_get_sps_profile_tier_level(sps, &profile, &level) &&
++            h264_get_chroma_luma(sps, &chroma, &luma_depth, &chroma_depth) &&
++            chroma_from_idc(chroma) != LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN &&
++            luma_depth == chroma_depth;
++        h264_release_sps(sps);
++
++        if (!valid)
++            continue;
++
++        out->profile = profile;
++        out->chroma = chroma_from_idc(chroma);
++        out->bit_depth = luma_depth;
++        return true;
++    }
++    return false;
++}
++
++static bool
++inspect_hevc(const uint8_t *data, size_t size,
++             struct kymux_video_config *out)
++{
++    hxxx_iterator_ctx_t iterator;
++    const uint8_t *nal;
++    size_t nal_size;
++
++    hxxx_iterator_init(&iterator, data, size, 0);
++    while (hxxx_annexb_iterate_next(&iterator, &nal, &nal_size))
++    {
++        if (nal_size < 2 || hevc_getNALType(nal) != HEVC_NAL_SPS)
++            continue;
++
++        hevc_sequence_parameter_set_t *sps =
++            hevc_decode_sps(nal, nal_size, true);
++        if (!sps)
++            continue;
++
++        uint8_t profile;
++        uint8_t level;
++        uint8_t chroma;
++        uint8_t luma_depth;
++        uint8_t chroma_depth;
++        bool valid =
++            hevc_get_sps_profile_tier_level(sps, &profile, &level) &&
++            hevc_get_chroma_luma(sps, &chroma, &luma_depth, &chroma_depth) &&
++            chroma_from_idc(chroma) != LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN &&
++            luma_depth == chroma_depth;
++        hevc_rbsp_release_sps(sps);
++
++        if (!valid)
++            continue;
++
++        out->profile = profile;
++        out->chroma = chroma_from_idc(chroma);
++        out->bit_depth = luma_depth;
++        return true;
++    }
++    return false;
++}
++
++static bool
++inspect_av1(const uint8_t *data, size_t size,
++            struct kymux_video_config *out)
++{
++    AV1_OBU_iterator_ctx_t iterator;
++    const uint8_t *obu;
++    size_t obu_size;
++
++    AV1_OBU_iterator_init(&iterator, data, size);
++    while (AV1_OBU_iterate_next(&iterator, &obu, &obu_size))
++    {
++        if (AV1_OBUGetType(obu) != AV1_OBU_SEQUENCE_HEADER)
++            continue;
++
++        av1_OBU_sequence_header_t *sequence =
++            AV1_OBU_parse_sequence_header(obu, obu_size);
++        if (!sequence)
++            continue;
++
++        int profile;
++        int level;
++        int tier;
++        AV1_get_profile_level(sequence, &profile, &level, &tier);
++        vlc_fourcc_t fourcc = AV1_get_chroma(sequence);
++        AV1_release_sequence_header(sequence);
++
++        out->profile = profile;
++        switch (fourcc)
++        {
++            case VLC_CODEC_GREY:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_MONOCHROME;
++                out->bit_depth = 8;
++                break;
++            case VLC_CODEC_GREY_10L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_MONOCHROME;
++                out->bit_depth = 10;
++                break;
++            case VLC_CODEC_GREY_12L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_MONOCHROME;
++                out->bit_depth = 12;
++                break;
++            case VLC_CODEC_I420:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_420;
++                out->bit_depth = 8;
++                break;
++            case VLC_CODEC_I420_10L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_420;
++                out->bit_depth = 10;
++                break;
++            case VLC_CODEC_I420_12L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_420;
++                out->bit_depth = 12;
++                break;
++            case VLC_CODEC_I422:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_422;
++                out->bit_depth = 8;
++                break;
++            case VLC_CODEC_I422_10L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_422;
++                out->bit_depth = 10;
++                break;
++            case VLC_CODEC_I422_12L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_422;
++                out->bit_depth = 12;
++                break;
++            case VLC_CODEC_I444:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_444;
++                out->bit_depth = 8;
++                break;
++            case VLC_CODEC_I444_10L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_444;
++                out->bit_depth = 10;
++                break;
++            case VLC_CODEC_I444_12L:
++                out->chroma = LIBVLC_VIDEO_PATH_CHROMA_444;
++                out->bit_depth = 12;
++                break;
++            default:
++                return false;
++        }
++        return true;
++    }
++    return false;
++}
++
++bool
++kymux_video_config_Inspect(uint32_t codec, const uint8_t *data, size_t size,
++                           struct kymux_video_config *out)
++{
++    if (!out)
++        return false;
++
++    memset(out, 0, sizeof(*out));
++    out->codec = codec_from_kymux(codec);
++    if (out->codec == LIBVLC_VIDEO_PATH_CODEC_UNKNOWN)
++    {
++        out->unknown_reason =
++            LIBVLC_VIDEO_PATH_UNKNOWN_CODEC_UNSUPPORTED;
++        return false;
++    }
++    if (!data || size == 0)
++    {
++        out->unknown_reason =
++            LIBVLC_VIDEO_PATH_UNKNOWN_BITSTREAM_CONFIG_UNPARSEABLE;
++        return false;
++    }
++
++    bool valid;
++    switch (codec)
++    {
++        case KYMUX_CODEC_H264:
++            valid = inspect_h264(data, size, out);
++            break;
++        case KYMUX_CODEC_H265:
++            valid = inspect_hevc(data, size, out);
++            break;
++        case KYMUX_CODEC_AV1:
++            valid = inspect_av1(data, size, out);
++            break;
++        default:
++            vlc_assert_unreachable();
++    }
++
++    if (!valid)
++    {
++        out->chroma = LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN;
++        out->profile = 0;
++        out->bit_depth = 0;
++        out->unknown_reason =
++            LIBVLC_VIDEO_PATH_UNKNOWN_BITSTREAM_CONFIG_UNPARSEABLE;
++        return false;
++    }
++
++    out->unknown_reason = LIBVLC_VIDEO_PATH_UNKNOWN_NONE;
++    return true;
++}
+diff --git a/modules/access/kymux_video_config.h b/modules/access/kymux_video_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8e8710b4302d65e7738382d882eaf155c2767c9
+--- /dev/null
++++ b/modules/access/kymux_video_config.h
+@@ -0,0 +1,28 @@
++/*****************************************************************************
++ * kymux_video_config.h: bounded production Kymux video config inspection
++ *****************************************************************************/
++
++#ifndef VLC_KYMUX_VIDEO_CONFIG_H
++#define VLC_KYMUX_VIDEO_CONFIG_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define KYMUX_CODEC_H264 UINT32_C(0x68323634)
++#define KYMUX_CODEC_H265 UINT32_C(0x68323635)
++#define KYMUX_CODEC_AV1 UINT32_C(0x00617631)
++#define KYMUX_CODEC_OPUS UINT32_C(0x6F707573)
++
++struct kymux_video_config {
++    uint32_t codec;
++    uint32_t chroma;
++    uint32_t profile;
++    uint32_t bit_depth;
++    uint32_t unknown_reason;
++};
++
++bool kymux_video_config_Inspect(uint32_t codec, const uint8_t *data,
++                                size_t size, struct kymux_video_config *out);
++
++#endif
+diff --git a/modules/access/meson.build b/modules/access/meson.build
+index 322153dfe19df6844bdc2d068794a322fffae8c7..b89e997af6119b970efc62f6e0e39f227bef725b 100644
+--- a/modules/access/meson.build
++++ b/modules/access/meson.build
+@@ -565,11 +565,22 @@ if librist_dep.found()
+ endif
+ 
+ # Kymux access-demux
++kymux_video_config_lib = static_library(
++    'kymux_video_config',
++    files(
++        'kymux_video_config.c',
++        '../packetizer/av1_obu.c',
++    ),
++    include_directories: [vlc_include_dirs],
++    pic: true,
++    install: false,
++)
++
+ vlc_modules += {
+     'name' : 'kymux',
+     'sources' : files('kymux.c'),
+     'dependencies' : [socket_libs],
+-    'link_with' : [hxxxhelper_lib],
++    'link_with' : [kymux_video_config_lib, hxxxhelper_lib],
+ }
+ 
+ # RTP
+diff --git a/src/input/decoder_helpers.c b/src/input/decoder_helpers.c
+index b9d07431b0d61a2f3e1d7c33fb7706df35f9a335..adc63b079c48ad1b7f833dbdbda046e0b489e4b5 100644
+--- a/src/input/decoder_helpers.c
++++ b/src/input/decoder_helpers.c
+@@ -30,6 +30,7 @@
+ #include <vlc_codec.h>
+ #include <vlc_atomic.h>
+ #include <vlc_meta.h>
++#include <vlc_metrics.h>
+ #include <vlc_modules.h>
+ #include <vlc_picture.h>
+ #include "../libvlc.h"
+@@ -87,6 +88,20 @@ int decoder_LoadModule(decoder_t *dec, bool packetizer,
+     else
+         dec->p_module = module_need(dec, type, NULL, false);
+ 
++    if (dec->p_module && !packetizer && dec->fmt_in->i_cat == VIDEO_ES)
++    {
++        struct vlc_metrics *metrics = vlc_metrics_Get(VLC_OBJECT(dec));
++        if (metrics)
++        {
++            vlc_video_path_event event;
++            vlc_video_path_event_Init(
++                &event, LIBVLC_VIDEO_PATH_EVENT_DECODER_MODULE, false, 0);
++            vlc_video_path_event_SetText(
++                &event, module_get_object(dec->p_module));
++            (void) vlc_metrics_PushVideoPath(metrics, &event);
++        }
++    }
++
+     return dec->p_module == NULL ? VLC_ENOENT : VLC_SUCCESS;
+ }
+ 
+diff --git a/src/misc/metrics.c b/src/misc/metrics.c
+index 1d05f3c9b53070f2fec5552a515ad6594c8b18a2..7150cf17d5f77450ed6c9bfc3a266e1fa9eb6af8 100644
+--- a/src/misc/metrics.c
++++ b/src/misc/metrics.c
+@@ -3,28 +3,247 @@
+ #endif
+ 
+ #include <assert.h>
++#include <limits.h>
++#include <stddef.h>
++#include <string.h>
+ #include <vlc_common.h>
+ #include "player/player.h"
+ #include "metrics.h"
+ #include "libvlc.h"
+ 
+-struct vlc_metrics *vlc_metrics_New(vlc_metrics_cb cb, void *sys) {
+-    struct vlc_metrics *metrics = malloc(sizeof(*metrics));
++static uint_fast64_t
++atomic_saturating_add(atomic_uint_fast64_t *value, uint_fast64_t increment)
++{
++    uint_fast64_t current =
++        atomic_load_explicit(value, memory_order_seq_cst);
++
++    for (;;)
++    {
++        uint_fast64_t next = UINT_FAST64_MAX - current < increment
++                           ? UINT_FAST64_MAX : current + increment;
++        if (atomic_compare_exchange_weak_explicit(
++                value, &current, next, memory_order_seq_cst,
++                memory_order_seq_cst))
++            return next;
++    }
++}
++
++static void
++atomic_minimum(atomic_uint_fast64_t *value, uint_fast64_t candidate)
++{
++    uint_fast64_t current =
++        atomic_load_explicit(value, memory_order_seq_cst);
++    while (candidate < current &&
++           !atomic_compare_exchange_weak_explicit(
++               value, &current, candidate, memory_order_seq_cst,
++               memory_order_seq_cst));
++}
++
++static void
++atomic_maximum(atomic_uint_fast64_t *value, uint_fast64_t candidate)
++{
++    uint_fast64_t current =
++        atomic_load_explicit(value, memory_order_seq_cst);
++    while (candidate > current &&
++           !atomic_compare_exchange_weak_explicit(
++               value, &current, candidate, memory_order_seq_cst,
++               memory_order_seq_cst));
++}
++
++void
++vlc_metrics_video_path_loss_update_begin(struct vlc_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication, 1,
++                              memory_order_seq_cst);
++}
++
++void
++vlc_metrics_video_path_loss_update_end(struct vlc_metrics *metrics)
++{
++    atomic_fetch_add_explicit(&metrics->callback_loss_publication,
++                              VLC_VIDEO_PATH_LOSS_COMPLETION - 1,
++                              memory_order_seq_cst);
++}
++
++static void
++record_video_path_loss(struct vlc_metrics *metrics, uint64_t seq)
++{
++    vlc_metrics_video_path_loss_update_begin(metrics);
++    atomic_saturating_add(&metrics->callback_lost_events, 1);
++    atomic_minimum(&metrics->callback_loss_first_seq, seq);
++    atomic_maximum(&metrics->callback_loss_last_seq, seq);
++    vlc_metrics_video_path_loss_update_end(metrics);
++}
++
++bool
++vlc_metrics_video_path_loss_snapshot(
++    struct vlc_metrics *metrics, struct vlc_video_path_loss_snapshot *out)
++{
++    if (!metrics || !out)
++        return false;
++
++    uint_fast64_t publication_before =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++    if (publication_before & VLC_VIDEO_PATH_LOSS_ACTIVE_MASK)
++        return false;
++
++    uint_fast64_t events =
++        atomic_load_explicit(&metrics->callback_lost_events,
++                             memory_order_seq_cst);
++    uint_fast64_t first =
++        atomic_load_explicit(&metrics->callback_loss_first_seq,
++                             memory_order_seq_cst);
++    uint_fast64_t last =
++        atomic_load_explicit(&metrics->callback_loss_last_seq,
++                             memory_order_seq_cst);
++    uint_fast64_t publication_after =
++        atomic_load_explicit(&metrics->callback_loss_publication,
++                             memory_order_seq_cst);
++
++    if (publication_before != publication_after ||
++        (publication_after & VLC_VIDEO_PATH_LOSS_ACTIVE_MASK) ||
++        (events == 0 && (first != UINT_FAST64_MAX || last != 0)) ||
++        (events != 0 &&
++         (first == UINT_FAST64_MAX || last == 0 || first > last)))
++        return false;
++
++    out->events = events;
++    out->first_seq = events == 0 ? 0 : first;
++    out->last_seq = events == 0 ? 0 : last;
++    out->generation =
++        publication_after >> VLC_VIDEO_PATH_LOSS_ACTIVE_BITS;
++    return true;
++}
++
++struct vlc_metrics *
++vlc_metrics_New(void)
++{
++    struct vlc_metrics *metrics = calloc(1, sizeof(*metrics));
+     if (!metrics)
+         return NULL;
+ 
+-    metrics->cb = cb;
+-    metrics->sys = sys;
++    atomic_init(&metrics->next_video_path_seq, 1);
++    atomic_init(&metrics->callback_loss_publication, 0);
++    atomic_init(&metrics->callback_lost_events, 0);
++    atomic_init(&metrics->callback_loss_first_seq, UINT_FAST64_MAX);
++    atomic_init(&metrics->callback_loss_last_seq, 0);
+     return metrics;
+ }
+ 
+-void vlc_metrics_Delete(struct vlc_metrics *metrics) {
++void
++vlc_metrics_Delete(struct vlc_metrics *metrics)
++{
+     free(metrics);
+ }
+ 
+-int vlc_metrics_Push(struct vlc_metrics *metrics,
+-                     const vlc_metrics_entry *entries, size_t count) {
+-    return metrics->cb(metrics->sys, entries, count);
++int
++vlc_metrics_AttachScalar(struct vlc_metrics *metrics,
++                         vlc_metrics_cb cb, void *sys)
++{
++    if (!metrics || !cb)
++        return VLC_EINVAL;
++    if (metrics->scalar_cb)
++        return VLC_EGENERIC;
++
++    metrics->scalar_cb = cb;
++    metrics->scalar_sys = sys;
++    return VLC_SUCCESS;
++}
++
++int
++vlc_metrics_AttachVideoPath(struct vlc_metrics *metrics,
++                            vlc_video_path_cb cb, void *sys)
++{
++    if (!metrics || !cb)
++        return VLC_EINVAL;
++    if (metrics->video_path_cb)
++        return VLC_EGENERIC;
++
++    metrics->video_path_cb = cb;
++    metrics->video_path_sys = sys;
++    return VLC_SUCCESS;
++}
++
++int
++vlc_metrics_Push(struct vlc_metrics *metrics,
++                 const vlc_metrics_entry *entries, size_t count)
++{
++    if (!metrics || !metrics->scalar_cb)
++        return VLC_SUCCESS;
++    return metrics->scalar_cb(metrics->scalar_sys, entries, count);
++}
++
++void
++vlc_video_path_event_Init(vlc_video_path_event *event, uint32_t kind,
++                          bool pts_valid, int64_t pts)
++{
++    assert(event);
++    memset(event, 0, sizeof(*event));
++    event->version = LIBVLC_VIDEO_PATH_EVENT_VERSION;
++    event->struct_size = sizeof(*event);
++    event->kind = kind;
++    event->pts_valid = pts_valid;
++    event->pts = pts_valid ? pts : 0;
++}
++
++void
++vlc_video_path_event_SetText(vlc_video_path_event *event, const char *text)
++{
++    assert(event);
++    memset(event->text, 0, sizeof(event->text));
++    if (!text)
++        return;
++
++    size_t length = strnlen(text, sizeof(event->text) - 1);
++    memcpy(event->text, text, length);
++    event->text[length] = '\0';
++}
++
++static bool
++video_path_event_is_valid(const vlc_video_path_event *event)
++{
++    return event &&
++           event->version == LIBVLC_VIDEO_PATH_EVENT_VERSION &&
++           event->struct_size == sizeof(*event) &&
++           event->kind >= LIBVLC_VIDEO_PATH_EVENT_BITSTREAM_CONFIG &&
++           event->kind <= LIBVLC_VIDEO_PATH_EVENT_OBSERVATION_LIMIT &&
++           memchr(event->text, '\0', sizeof(event->text)) != NULL;
++}
++
++int
++vlc_metrics_PushVideoPath(struct vlc_metrics *metrics,
++                          vlc_video_path_event *event)
++{
++    if (!metrics || !video_path_event_is_valid(event))
++        return VLC_EINVAL;
++    if (!metrics->video_path_cb)
++        return VLC_SUCCESS;
++
++    event->producer_seq =
++        atomic_fetch_add_explicit(&metrics->next_video_path_seq, 1,
++                                  memory_order_relaxed);
++    event->monotonic_ts = vlc_tick_now();
++
++    event->callback_lost_events = 0;
++    event->callback_loss_first_seq = 0;
++    event->callback_loss_last_seq = 0;
++    event->callback_loss_generation = 0;
++
++    struct vlc_video_path_loss_snapshot loss;
++    if (vlc_metrics_video_path_loss_snapshot(metrics, &loss) &&
++        loss.events != 0)
++    {
++        event->callback_lost_events = loss.events;
++        event->callback_loss_first_seq = loss.first_seq;
++        event->callback_loss_last_seq = loss.last_seq;
++        event->callback_loss_generation = loss.generation;
++    }
++
++    int ret = metrics->video_path_cb(metrics->video_path_sys, event, 1);
++    if (ret != 0)
++        record_video_path_loss(metrics, event->producer_seq);
++    return ret;
+ }
+ 
+ struct vlc_metrics *
+@@ -32,3 +251,57 @@ vlc_metrics_Get(vlc_object_t *obj)
+ {
+     return var_InheritAddress(obj, "kyber-metrics");
+ }
++
++uint32_t
++vlc_video_path_NormalizeBooleanProperty(bool query_succeeded,
++                                        bool value_is_boolean, bool value)
++{
++    if (!query_succeeded || !value_is_boolean)
++        return LIBVLC_VIDEO_PATH_TRUTH_UNKNOWN;
++    return value ? LIBVLC_VIDEO_PATH_TRUTH_YES
++                 : LIBVLC_VIDEO_PATH_TRUTH_NO;
++}
++
++uint32_t
++vlc_video_path_ClassifyVTOutcome(
++    const struct vlc_video_path_vt_outcome_input *input)
++{
++    if (!input || input->status != 0)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_STATUS_ERROR;
++    if (input->frame_dropped)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_FRAME_DROPPED;
++    if (!input->image_buffer_present)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_NULL_BUFFER;
++    if (input->output_discarded)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_DISCARDED_OUTPUT;
++    if (!input->pts_valid)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_INVALID_PTS;
++    if (!input->buffer_nonempty)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_EMPTY_BUFFER;
++    if (!input->output_format_valid)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_FORMAT_FAILURE;
++    if (!input->picture_allocated)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_PICTURE_ALLOCATION_FAILURE;
++    if (!input->attachment_succeeded)
++        return LIBVLC_VIDEO_PATH_OUTCOME_VT_ATTACHMENT_FAILURE;
++    return LIBVLC_VIDEO_PATH_OUTCOME_VT_OUTPUT_SUCCESS;
++}
++
++uint32_t
++vlc_video_path_ClassifyRendererOutcome(
++    const struct vlc_video_path_renderer_outcome_input *input)
++{
++    if (!input || !input->layer_present)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_ABSENT;
++    if (!input->conversion_succeeded)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_CONVERSION_FAILURE;
++    if (!input->format_description_succeeded)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_FORMAT_DESCRIPTION_FAILURE;
++    if (!input->sample_buffer_succeeded)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_BUFFER_FAILURE;
++    if (!input->layer_ready)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_LAYER_BACKPRESSURE;
++    if (input->sample_enqueued)
++        return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_ENQUEUED;
++    return LIBVLC_VIDEO_PATH_OUTCOME_RENDERER_SAMPLE_BUFFER_FAILURE;
++}
+diff --git a/src/misc/metrics.h b/src/misc/metrics.h
+index 29a16b9581debe3fd12875e62e60d5ef98b5e8fb..3c9e8f611feb5106bcdd118c01b5e328831adbfd 100644
+--- a/src/misc/metrics.h
++++ b/src/misc/metrics.h
+@@ -2,14 +2,83 @@
+ #define VLC_METRICS_INTERNAL_H
+ 
+ #include <vlc_metrics.h>
++#include <stdatomic.h>
+ 
+ struct vlc_metrics {
+-    libvlc_metrics_cb cb;
+-    void *sys;
++    libvlc_metrics_cb scalar_cb;
++    void *scalar_sys;
++    libvlc_video_path_cb video_path_cb;
++    void *video_path_sys;
++
++    atomic_uint_fast64_t next_video_path_seq;
++    atomic_uint_fast64_t callback_loss_publication;
++    atomic_uint_fast64_t callback_lost_events;
++    atomic_uint_fast64_t callback_loss_first_seq;
++    atomic_uint_fast64_t callback_loss_last_seq;
++};
++
++#define VLC_VIDEO_PATH_LOSS_ACTIVE_BITS 16
++#define VLC_VIDEO_PATH_LOSS_ACTIVE_MASK \
++    ((((uint_fast64_t) 1) << VLC_VIDEO_PATH_LOSS_ACTIVE_BITS) - 1)
++#define VLC_VIDEO_PATH_LOSS_COMPLETION \
++    (((uint_fast64_t) 1) << VLC_VIDEO_PATH_LOSS_ACTIVE_BITS)
++
++struct vlc_video_path_loss_snapshot {
++    uint64_t events;
++    uint64_t first_seq;
++    uint64_t last_seq;
++    uint64_t generation;
++};
++
++struct vlc_video_path_vt_outcome_input {
++    int32_t status;
++    uint32_t flags;
++    bool frame_dropped;
++    bool image_buffer_present;
++    bool output_discarded;
++    bool pts_valid;
++    bool buffer_nonempty;
++    bool output_format_valid;
++    bool picture_allocated;
++    bool attachment_succeeded;
++};
++
++struct vlc_video_path_renderer_outcome_input {
++    bool layer_present;
++    bool conversion_succeeded;
++    bool format_description_succeeded;
++    bool sample_buffer_succeeded;
++    bool layer_ready;
++    bool sample_enqueued;
+ };
+ 
+-struct vlc_metrics *vlc_metrics_New(vlc_metrics_cb cb, void *sys);
++VLC_API struct vlc_metrics *vlc_metrics_New(void);
++
++VLC_API void vlc_metrics_Delete(struct vlc_metrics *metrics);
++
++VLC_API int vlc_metrics_AttachScalar(struct vlc_metrics *metrics,
++                                     vlc_metrics_cb cb, void *sys);
++
++VLC_API int vlc_metrics_AttachVideoPath(struct vlc_metrics *metrics,
++                                        vlc_video_path_cb cb, void *sys);
++
++VLC_API void
++vlc_metrics_video_path_loss_update_begin(struct vlc_metrics *metrics);
++
++VLC_API void
++vlc_metrics_video_path_loss_update_end(struct vlc_metrics *metrics);
++
++VLC_API bool vlc_metrics_video_path_loss_snapshot(
++    struct vlc_metrics *metrics, struct vlc_video_path_loss_snapshot *out);
++
++VLC_API uint32_t
++vlc_video_path_NormalizeBooleanProperty(bool query_succeeded,
++                                        bool value_is_boolean, bool value);
++
++VLC_API uint32_t vlc_video_path_ClassifyVTOutcome(
++    const struct vlc_video_path_vt_outcome_input *input);
+ 
+-void vlc_metrics_Delete(struct vlc_metrics *metrics);
++VLC_API uint32_t vlc_video_path_ClassifyRendererOutcome(
++    const struct vlc_video_path_renderer_outcome_input *input);
+ 
+ #endif
+diff --git a/src/player/player.c b/src/player/player.c
+index 2113333a31494101231380737945a815ba7924cf..bc2f60109b65f8a3dd5d8ec3eb5d5b1fee1fe029 100644
+--- a/src/player/player.c
++++ b/src/player/player.c
+@@ -2188,11 +2188,50 @@ vlc_player_GetObject(vlc_player_t *player)
+ 
+ int
+ vlc_player_SetMetricsCallback(vlc_player_t *player,
+-                              vlc_metrics_cb cb, void *sys) {
+-    struct vlc_metrics *metrics = vlc_metrics_New(cb, sys);
++                              vlc_metrics_cb cb, void *sys)
++{
++    vlc_player_assert_locked(player);
++    if (!cb || vlc_player_GetState(player) != VLC_PLAYER_STATE_STOPPED)
++        return VLC_EINVAL;
++
++    struct vlc_metrics *metrics = var_GetAddress(player, "kyber-metrics");
+     if (!metrics)
+-        return VLC_ENOMEM;
++    {
++        metrics = vlc_metrics_New();
++        if (!metrics)
++            return VLC_ENOMEM;
++        int ret = var_SetAddress(player, "kyber-metrics", metrics);
++        if (ret != VLC_SUCCESS)
++        {
++            vlc_metrics_Delete(metrics);
++            return ret;
++        }
++    }
++
++    return vlc_metrics_AttachScalar(metrics, cb, sys);
++}
++
++int
++vlc_player_SetVideoPathCallback(vlc_player_t *player,
++                                vlc_video_path_cb cb, void *sys)
++{
++    vlc_player_assert_locked(player);
++    if (!cb || vlc_player_GetState(player) != VLC_PLAYER_STATE_STOPPED)
++        return VLC_EINVAL;
++
++    struct vlc_metrics *metrics = var_GetAddress(player, "kyber-metrics");
++    if (!metrics)
++    {
++        metrics = vlc_metrics_New();
++        if (!metrics)
++            return VLC_ENOMEM;
++        int ret = var_SetAddress(player, "kyber-metrics", metrics);
++        if (ret != VLC_SUCCESS)
++        {
++            vlc_metrics_Delete(metrics);
++            return ret;
++        }
++    }
+ 
+-    assert(!var_GetAddress(player, "kyber-metrics"));
+-    return var_SetAddress(player, "kyber-metrics", metrics);
++    return vlc_metrics_AttachVideoPath(metrics, cb, sys);
+ }
+diff --git a/test/libvlc/meson.build b/test/libvlc/meson.build
+index 1ec58357fb786db810ae32a12109ca04d5e88070..21c7d05af09bc3ab418531703b1af82d9610c498 100644
+--- a/test/libvlc/meson.build
++++ b/test/libvlc/meson.build
+@@ -116,6 +116,19 @@ vlc_tests += {
+     'link_with' : [libvlc, libvlccore],
+ }
+ 
++vlc_tests += {
++    'name' : 'video_path_metrics',
++    'sources' : files('video_path_metrics.c'),
++    'suite' : ['libvlc'],
++    'c_args' : ['-UNDEBUG'],
++    'link_with' : [
++        libvlc,
++        libvlccore,
++        kymux_video_config_lib,
++        hxxxhelper_lib,
++    ],
++}
++
+ vlc_tests += {
+     'name' : 'test_libvlc_media_player_record',
+     'sources' : files('media_player_record.c'),
+diff --git a/test/libvlc/video_path_metrics.c b/test/libvlc/video_path_metrics.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f8ed36d9762b5195daf5248a7d39fe697fb1b10
+--- /dev/null
++++ b/test/libvlc/video_path_metrics.c
+@@ -0,0 +1,366 @@
++/*****************************************************************************
++ * video_path_metrics.c: additive native video-path telemetry tests
++ *****************************************************************************/
++
++#ifdef HAVE_CONFIG_H
++# include "config.h"
++#endif
++
++#include <assert.h>
++#include <stdatomic.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#include <vlc/vlc.h>
++#include <vlc_threads.h>
++
++#include "../../modules/access/kymux_video_config.h"
++#include "../../src/misc/metrics.h"
++
++struct callback_capture {
++    atomic_uint_fast64_t calls;
++    atomic_bool reject;
++    atomic_bool delay_first;
++    vlc_sem_t first_entered;
++    vlc_sem_t release_first;
++    struct libvlc_video_path_event last;
++};
++
++static int
++video_path_callback(void *opaque,
++                    const struct libvlc_video_path_event *events,
++                    size_t count)
++{
++    struct callback_capture *capture = opaque;
++    assert(events != NULL);
++    assert(count == 1);
++    atomic_fetch_add_explicit(&capture->calls, 1, memory_order_relaxed);
++
++    if (atomic_load_explicit(&capture->delay_first, memory_order_acquire) &&
++        events[0].producer_seq == 1)
++    {
++        vlc_sem_post(&capture->first_entered);
++        vlc_sem_wait(&capture->release_first);
++    }
++
++    if (atomic_load_explicit(&capture->reject, memory_order_acquire))
++        return -1;
++
++    capture->last = events[0];
++    return 0;
++}
++
++struct scalar_capture {
++    unsigned calls;
++    int64_t value;
++};
++
++static int
++scalar_callback(void *opaque, const struct libvlc_metrics_entry *entries,
++                size_t count)
++{
++    struct scalar_capture *capture = opaque;
++    assert(count == 1);
++    assert(strcmp(entries[0].key, "legacy-key") == 0);
++    capture->calls++;
++    capture->value = entries[0].value;
++    return 0;
++}
++
++static void
++init_capture(struct callback_capture *capture)
++{
++    memset(capture, 0, sizeof(*capture));
++    atomic_init(&capture->calls, 0);
++    atomic_init(&capture->reject, false);
++    atomic_init(&capture->delay_first, false);
++    vlc_sem_init(&capture->first_entered, 0);
++    vlc_sem_init(&capture->release_first, 0);
++}
++
++static void
++test_abi_and_validation(void)
++{
++    _Static_assert(LIBVLC_VIDEO_PATH_EVENT_VERSION == 1,
++                   "unexpected video path ABI version");
++    _Static_assert(sizeof(struct libvlc_video_path_event) <= UINT16_MAX,
++                   "video path record no longer fits struct_size");
++    _Static_assert(offsetof(struct libvlc_video_path_event, text) <
++                       sizeof(struct libvlc_video_path_event),
++                   "bounded text must be part of the v1 record");
++
++    struct callback_capture capture;
++    init_capture(&capture);
++    struct vlc_metrics *metrics = vlc_metrics_New();
++    assert(metrics != NULL);
++    assert(vlc_metrics_AttachVideoPath(
++               metrics, video_path_callback, &capture) == VLC_SUCCESS);
++    assert(vlc_metrics_AttachVideoPath(
++               metrics, video_path_callback, &capture) != VLC_SUCCESS);
++
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_DECODER_MODULE, false, 123);
++    assert(event.version == LIBVLC_VIDEO_PATH_EVENT_VERSION);
++    assert(event.struct_size == sizeof(event));
++    assert(!event.pts_valid);
++    assert(event.pts == 0);
++
++    char long_name[LIBVLC_VIDEO_PATH_TEXT_CAPACITY * 2];
++    memset(long_name, 'x', sizeof(long_name));
++    long_name[sizeof(long_name) - 1] = '\0';
++    vlc_video_path_event_SetText(&event, long_name);
++    assert(event.text[LIBVLC_VIDEO_PATH_TEXT_CAPACITY - 1] == '\0');
++    assert(strlen(event.text) == LIBVLC_VIDEO_PATH_TEXT_CAPACITY - 1);
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_SUCCESS);
++    assert(capture.last.producer_seq == 1);
++    assert(capture.last.monotonic_ts > 0);
++
++    uint_fast64_t calls =
++        atomic_load_explicit(&capture.calls, memory_order_relaxed);
++    event.version++;
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_EINVAL);
++    event.version = LIBVLC_VIDEO_PATH_EVENT_VERSION;
++    event.struct_size--;
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_EINVAL);
++    event.struct_size = sizeof(event);
++    memset(event.text, 'y', sizeof(event.text));
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_EINVAL);
++    assert(atomic_load_explicit(&capture.calls, memory_order_relaxed) == calls);
++
++    vlc_metrics_Delete(metrics);
++}
++
++static void
++test_legacy_and_additive_installation(void)
++{
++    libvlc_instance_t *instance = libvlc_new(0, NULL);
++    assert(instance != NULL);
++    libvlc_media_player_t *player = libvlc_media_player_new(instance);
++    assert(player != NULL);
++
++    struct scalar_capture scalar = {0};
++    struct callback_capture video;
++    init_capture(&video);
++    assert(libvlc_media_player_set_metrics_callback(
++               player, scalar_callback, &scalar) == VLC_SUCCESS);
++    assert(libvlc_media_player_set_video_path_callback(
++               player, video_path_callback, &video) == VLC_SUCCESS);
++    assert(libvlc_media_player_set_metrics_callback(
++               player, scalar_callback, &scalar) != VLC_SUCCESS);
++    assert(libvlc_media_player_set_video_path_callback(
++               player, video_path_callback, &video) != VLC_SUCCESS);
++
++    libvlc_media_player_release(player);
++    libvlc_release(instance);
++
++    struct vlc_metrics *metrics = vlc_metrics_New();
++    assert(metrics != NULL);
++    assert(vlc_metrics_AttachScalar(
++               metrics, scalar_callback, &scalar) == VLC_SUCCESS);
++    const vlc_metrics_entry entry = {
++        .key = "legacy-key",
++        .value = INT64_C(987654321),
++    };
++    assert(vlc_metrics_Push(metrics, &entry, 1) == VLC_SUCCESS);
++    assert(scalar.calls == 1);
++    assert(scalar.value == entry.value);
++    vlc_metrics_Delete(metrics);
++}
++
++static void
++test_forced_in_progress_snapshot(void)
++{
++    struct vlc_metrics *metrics = vlc_metrics_New();
++    assert(metrics != NULL);
++
++    vlc_metrics_video_path_loss_update_begin(metrics);
++    atomic_store_explicit(&metrics->callback_lost_events, 1,
++                          memory_order_seq_cst);
++
++    struct vlc_video_path_loss_snapshot snapshot;
++    assert(!vlc_metrics_video_path_loss_snapshot(metrics, &snapshot));
++
++    atomic_store_explicit(&metrics->callback_loss_first_seq, 7,
++                          memory_order_seq_cst);
++    atomic_store_explicit(&metrics->callback_loss_last_seq, 7,
++                          memory_order_seq_cst);
++    vlc_metrics_video_path_loss_update_end(metrics);
++
++    assert(vlc_metrics_video_path_loss_snapshot(metrics, &snapshot));
++    assert(snapshot.events == 1);
++    assert(snapshot.first_seq == 7);
++    assert(snapshot.last_seq == 7);
++    assert(snapshot.generation == 1);
++    vlc_metrics_Delete(metrics);
++}
++
++struct emit_args {
++    struct vlc_metrics *metrics;
++    unsigned count;
++};
++
++static void *
++emit_events(void *opaque)
++{
++    const struct emit_args *args = opaque;
++    for (unsigned i = 0; i < args->count; ++i)
++    {
++        vlc_video_path_event event;
++        vlc_video_path_event_Init(
++            &event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME, true, i);
++        (void) vlc_metrics_PushVideoPath(args->metrics, &event);
++    }
++    return NULL;
++}
++
++static void
++test_delayed_minmax_writer_ordering(void)
++{
++    struct callback_capture capture;
++    init_capture(&capture);
++    atomic_store_explicit(&capture.reject, true, memory_order_release);
++    atomic_store_explicit(&capture.delay_first, true, memory_order_release);
++
++    struct vlc_metrics *metrics = vlc_metrics_New();
++    assert(metrics != NULL);
++    assert(vlc_metrics_AttachVideoPath(
++               metrics, video_path_callback, &capture) == VLC_SUCCESS);
++
++    const struct emit_args args = {.metrics = metrics, .count = 1};
++    vlc_thread_t first;
++    vlc_thread_t second;
++    assert(vlc_clone(&first, emit_events, (void *) &args) == 0);
++    vlc_sem_wait(&capture.first_entered);
++    assert(vlc_clone(&second, emit_events, (void *) &args) == 0);
++    vlc_join(second, NULL);
++    vlc_sem_post(&capture.release_first);
++    vlc_join(first, NULL);
++
++    atomic_store_explicit(&capture.delay_first, false, memory_order_release);
++    atomic_store_explicit(&capture.reject, false, memory_order_release);
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME, false, 0);
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_SUCCESS);
++    assert(capture.last.callback_lost_events == 2);
++    assert(capture.last.callback_loss_first_seq == 1);
++    assert(capture.last.callback_loss_last_seq == 2);
++    vlc_metrics_Delete(metrics);
++}
++
++static void
++test_concurrent_exact_loss_totals(void)
++{
++    enum { THREAD_COUNT = 4, EVENTS_PER_THREAD = 500 };
++
++    struct callback_capture capture;
++    init_capture(&capture);
++    atomic_store_explicit(&capture.reject, true, memory_order_release);
++
++    struct vlc_metrics *metrics = vlc_metrics_New();
++    assert(metrics != NULL);
++    assert(vlc_metrics_AttachVideoPath(
++               metrics, video_path_callback, &capture) == VLC_SUCCESS);
++
++    const struct emit_args args = {
++        .metrics = metrics,
++        .count = EVENTS_PER_THREAD,
++    };
++    vlc_thread_t threads[THREAD_COUNT];
++    for (unsigned i = 0; i < THREAD_COUNT; ++i)
++        assert(vlc_clone(&threads[i], emit_events, (void *) &args) == 0);
++    for (unsigned i = 0; i < THREAD_COUNT; ++i)
++        vlc_join(threads[i], NULL);
++
++    atomic_store_explicit(&capture.reject, false, memory_order_release);
++    vlc_video_path_event event;
++    vlc_video_path_event_Init(
++        &event, LIBVLC_VIDEO_PATH_EVENT_VIDEOTOOLBOX_FRAME, false, 0);
++    assert(vlc_metrics_PushVideoPath(metrics, &event) == VLC_SUCCESS);
++
++    uint64_t expected = THREAD_COUNT * EVENTS_PER_THREAD;
++    assert(capture.last.callback_lost_events == expected);
++    assert(capture.last.callback_loss_first_seq == 1);
++    assert(capture.last.callback_loss_last_seq == expected);
++    assert(capture.last.callback_loss_generation == expected);
++    assert(capture.last.producer_seq == expected + 1);
++    vlc_metrics_Delete(metrics);
++}
++
++static void
++test_config_parsers(void)
++{
++    static const uint8_t h264[] = {
++        0x00, 0x00, 0x00, 0x01, 0x67, 0xf4, 0x00, 0x0a,
++        0x91, 0x9b, 0x2b, 0xd0, 0x80, 0x00, 0x00, 0x03,
++        0x00, 0x80, 0x00, 0x00, 0x19, 0x07, 0x89, 0x12,
++        0xcb,
++    };
++    static const uint8_t hevc[] = {
++        0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x0c, 0x01,
++        0xff, 0xff, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00,
++        0x9e, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x1e,
++        0x95, 0x98, 0x09, 0x00, 0x00, 0x01, 0x42, 0x01,
++        0x01, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00, 0x9e,
++        0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x1e, 0x90,
++        0x11, 0x08, 0xb2, 0xca, 0xcd, 0x57, 0x95, 0xcd,
++        0x40, 0x80, 0x80, 0x01, 0x00, 0x00, 0x03, 0x00,
++        0x01, 0x00, 0x00, 0x03, 0x00, 0x19, 0x08,
++    };
++    static const uint8_t av1[] = {
++        0x12, 0x00, 0x0a, 0x06, 0x18, 0x0c, 0xff, 0xda,
++        0x00, 0x80, 0x32, 0x0c, 0x18, 0x00, 0x00, 0x00,
++        0x50, 0x00, 0x00, 0x00, 0xa9, 0x8e, 0x58, 0xd4,
++    };
++    static const uint8_t malformed[] = {0x00, 0x01, 0x02};
++
++    struct kymux_video_config config;
++    assert(kymux_video_config_Inspect(
++        KYMUX_CODEC_H264, h264, sizeof(h264), &config));
++    assert(config.codec == LIBVLC_VIDEO_PATH_CODEC_H264);
++    assert(config.profile == 244);
++    assert(config.chroma == LIBVLC_VIDEO_PATH_CHROMA_444);
++    assert(config.bit_depth == 8);
++    assert(config.unknown_reason == LIBVLC_VIDEO_PATH_UNKNOWN_NONE);
++
++    assert(kymux_video_config_Inspect(
++        KYMUX_CODEC_H265, hevc, sizeof(hevc), &config));
++    assert(config.codec == LIBVLC_VIDEO_PATH_CODEC_HEVC);
++    assert(config.profile == 4);
++    assert(config.chroma == LIBVLC_VIDEO_PATH_CHROMA_444);
++    assert(config.bit_depth == 8);
++
++    assert(kymux_video_config_Inspect(
++        KYMUX_CODEC_AV1, av1, sizeof(av1), &config));
++    assert(config.codec == LIBVLC_VIDEO_PATH_CODEC_AV1);
++    assert(config.profile == 0);
++    assert(config.chroma == LIBVLC_VIDEO_PATH_CHROMA_420);
++    assert(config.bit_depth == 8);
++
++    assert(!kymux_video_config_Inspect(
++        KYMUX_CODEC_H264, malformed, sizeof(malformed), &config));
++    assert(config.codec == LIBVLC_VIDEO_PATH_CODEC_H264);
++    assert(config.chroma == LIBVLC_VIDEO_PATH_CHROMA_UNKNOWN);
++    assert(config.unknown_reason ==
++           LIBVLC_VIDEO_PATH_UNKNOWN_BITSTREAM_CONFIG_UNPARSEABLE);
++
++    assert(!kymux_video_config_Inspect(
++        UINT32_C(0xdeadbeef), malformed, sizeof(malformed), &config));
++    assert(config.codec == LIBVLC_VIDEO_PATH_CODEC_UNKNOWN);
++    assert(config.unknown_reason ==
++           LIBVLC_VIDEO_PATH_UNKNOWN_CODEC_UNSUPPORTED);
++}
++
++int
++main(void)
++{
++    test_abi_and_validation();
++    test_legacy_and_additive_installation();
++    test_forced_in_progress_snapshot();
++    test_delayed_minmax_writer_ordering();
++    test_concurrent_exact_loss_totals();
++    test_config_parsers();
++    return 0;
++}

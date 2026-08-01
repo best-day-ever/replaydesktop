@@ -1,0 +1,3 @@
+[submodule "upstream/kyber-desktop"]
+	path = upstream/kyber-desktop
+	url = https://gitlab.com/kyber/apps/kyber-desktop.git

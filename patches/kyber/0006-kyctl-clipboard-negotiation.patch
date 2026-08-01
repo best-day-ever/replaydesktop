@@ -1,0 +1,282 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 657ce1b..0975052 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3495,6 +3495,9 @@ dependencies = [
+  "libc",
+  "log",
+  "mio",
++ "objc2 0.5.2",
++ "objc2-app-kit",
++ "objc2-foundation 0.2.2",
+  "png",
+  "raw-window-handle",
+  "regex",
+diff --git a/kyclient/src/kymux_backend/host_service.rs b/kyclient/src/kymux_backend/host_service.rs
+index 6bb7e83..d0f9c1e 100644
+--- a/kyclient/src/kymux_backend/host_service.rs
++++ b/kyclient/src/kymux_backend/host_service.rs
+@@ -110,6 +110,10 @@ pub(crate) struct StartSessionInputResponse {
+     pub(crate) endpoint: u16,
+     #[serde(default)]
+     pub(crate) clipboard: bool,
++    #[serde(default)]
++    pub(crate) clipboard_allow_copy: bool,
++    #[serde(default)]
++    pub(crate) clipboard_allow_paste: bool,
+ }
+ 
+ #[derive(Debug, Deserialize, Serialize)]
+@@ -200,14 +204,96 @@ pub(crate) async fn start_stream(
+     );
+ 
+     let requested_clipboard = body.inputs.as_ref().is_some_and(|inputs| inputs.clipboard);
+-    let got_clipboard = response
+-        .input
+-        .as_ref()
+-        .is_some_and(|inputs| inputs.clipboard);
++    let (allow_local_read_send, allow_remote_write) =
++        negotiated_clipboard_permissions(requested_clipboard, response.input.as_ref());
+ 
+-    if requested_clipboard && !got_clipboard {
+-        warn!("Requested clipboard forwarding but server did not enable it.");
++    if requested_clipboard && !allow_local_read_send {
++        warn!("Clipboard paste to the host was requested but not enabled by the server.");
++    }
++    if requested_clipboard && !allow_remote_write {
++        warn!("Clipboard copy from the host was requested but not enabled by the server.");
+     }
+ 
+     Ok(response)
+ }
++
++pub(crate) fn negotiated_clipboard_permissions(
++    requested: bool,
++    response: Option<&StartSessionInputResponse>,
++) -> (bool, bool) {
++    if !requested {
++        return (false, false);
++    }
++
++    let Some(response) = response else {
++        return (false, false);
++    };
++
++    // Read but deliberately do not trust the legacy aggregate: an older host
++    // cannot express which pasteboard direction it authorized.
++    let _legacy_aggregate = response.clipboard;
++
++    // Host allow_paste authorizes reading/sending the local Mac clipboard.
++    // Host allow_copy authorizes writing remotely supplied data on the Mac.
++    (
++        response.clipboard_allow_paste,
++        response.clipboard_allow_copy,
++    )
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{negotiated_clipboard_permissions, StartSessionInputResponse};
++
++    fn response(copy: bool, paste: bool) -> StartSessionInputResponse {
++        StartSessionInputResponse {
++            endpoint: 7,
++            clipboard: copy || paste,
++            clipboard_allow_copy: copy,
++            clipboard_allow_paste: paste,
++        }
++    }
++
++    #[test]
++    fn disabled_request_denies_both_directions() {
++        assert_eq!(
++            negotiated_clipboard_permissions(false, Some(&response(true, true))),
++            (false, false)
++        );
++    }
++
++    #[test]
++    fn missing_or_legacy_response_fails_closed() {
++        assert_eq!(negotiated_clipboard_permissions(true, None), (false, false));
++        assert_eq!(
++            negotiated_clipboard_permissions(true, Some(&response(false, false))),
++            (false, false)
++        );
++        let legacy_only = StartSessionInputResponse {
++            endpoint: 7,
++            clipboard: true,
++            clipboard_allow_copy: false,
++            clipboard_allow_paste: false,
++        };
++        assert_eq!(
++            negotiated_clipboard_permissions(true, Some(&legacy_only)),
++            (false, false)
++        );
++    }
++
++    #[test]
++    fn maps_host_paste_to_local_read_and_host_copy_to_remote_write() {
++        assert_eq!(
++            negotiated_clipboard_permissions(true, Some(&response(false, true))),
++            (true, false)
++        );
++        assert_eq!(
++            negotiated_clipboard_permissions(true, Some(&response(true, false))),
++            (false, true)
++        );
++        assert_eq!(
++            negotiated_clipboard_permissions(true, Some(&response(true, true))),
++            (true, true)
++        );
++    }
++}
+diff --git a/kyclient/src/kymux_backend/mod.rs b/kyclient/src/kymux_backend/mod.rs
+index db7b13a..207c2e9 100644
+--- a/kyclient/src/kymux_backend/mod.rs
++++ b/kyclient/src/kymux_backend/mod.rs
+@@ -122,6 +122,16 @@ impl KymuxBackend {
+         // Start stream
+         let host_config = host_service::start_stream(&backend_config, has_metrics).await?;
+ 
++        if let Some(input_config) = backend_config.streaming_config.input.as_ref() {
++            let permissions = host_service::negotiated_clipboard_permissions(
++                input_config.clipboard,
++                host_config.input.as_ref(),
++            );
++            input_config
++                .pipeline
++                .configure_clipboard(permissions.0, permissions.1)?;
++        }
++
+         if let Some(metrics) = metrics {
+             start_metrics(&connection, &host_config, metrics).await?;
+         }
+diff --git a/kycontroller/src/kymux_controller/mod.rs b/kycontroller/src/kymux_controller/mod.rs
+index a87f1be..f16c6e5 100644
+--- a/kycontroller/src/kymux_controller/mod.rs
++++ b/kycontroller/src/kymux_controller/mod.rs
+@@ -543,22 +543,27 @@ async fn start_input(
+     let service_config = kynputservice_types::ServiceConfig {
+         cursor_format: inputs_request.cursor_format.clone(),
+         gamepad_force_xbox360: inputs_request.gamepad_force_xbox360,
+-        clipboard: inputs_request.clipboard,
++        clipboard_allow_copy: inputs_request.clipboard,
++        clipboard_allow_paste: inputs_request.clipboard,
+     };
+ 
+     let (inputservice, event) =
+         inputservice::Handler::start_kymux(process_factory, host_config, service_config, uri)
+             .await?;
+ 
+-    let clipboard = match event {
+-        Some(kynputservice_types::Event::Connected { clipboard }) => clipboard,
+-        _ => false,
++    let (clipboard_allow_copy, clipboard_allow_paste) = match event {
++        Some(kynputservice_types::Event::Connected {
++            clipboard_allow_copy,
++            clipboard_allow_paste,
++        }) => (clipboard_allow_copy, clipboard_allow_paste),
++        _ => (false, false),
+     };
+ 
+     Ok(Some(StartSessionInputResponse {
+         inputservice,
+         endpoint: endpoint_id,
+-        clipboard,
++        clipboard_allow_copy,
++        clipboard_allow_paste,
+     }))
+ }
+ 
+@@ -585,7 +590,8 @@ pub(crate) struct StartSessionAudioResponse {
+ pub(crate) struct StartSessionInputResponse {
+     inputservice: inputservice::Handler,
+     endpoint: u16,
+-    clipboard: bool,
++    clipboard_allow_copy: bool,
++    clipboard_allow_paste: bool,
+ }
+ 
+ pub(crate) struct StartSessionClockSyncResponse {
+diff --git a/kycontroller/src/kymux_controller/requests.rs b/kycontroller/src/kymux_controller/requests.rs
+index 76c33df..bfd9ba0 100644
+--- a/kycontroller/src/kymux_controller/requests.rs
++++ b/kycontroller/src/kymux_controller/requests.rs
+@@ -125,6 +125,16 @@ pub(crate) struct StartSessionInputResponse {
+     pub(crate) endpoint: u16,
+     #[serde(default)]
+     pub(crate) clipboard: bool,
++    #[serde(default)]
++    pub(crate) clipboard_allow_copy: bool,
++    #[serde(default)]
++    pub(crate) clipboard_allow_paste: bool,
++}
++
++fn legacy_clipboard_enabled(allow_copy: bool, allow_paste: bool) -> bool {
++    // Legacy clients only understand an all-or-nothing switch. Fail closed
++    // unless the host authorized both directions.
++    allow_copy && allow_paste
+ }
+ 
+ #[derive(Debug, Deserialize, Serialize)]
+@@ -230,7 +240,14 @@ pub(crate) async fn start_session(
+ 
+                 Some(StartSessionInputResponse {
+                     endpoint: input.endpoint,
+-                    clipboard: input.clipboard,
++                    // Retain the aggregate for older clients while new
++                    // clients enforce the two directions independently.
++                    clipboard: legacy_clipboard_enabled(
++                        input.clipboard_allow_copy,
++                        input.clipboard_allow_paste,
++                    ),
++                    clipboard_allow_copy: input.clipboard_allow_copy,
++                    clipboard_allow_paste: input.clipboard_allow_paste,
+                 })
+             } else {
+                 None
+@@ -271,3 +288,16 @@ pub(crate) async fn start_session(
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::legacy_clipboard_enabled;
++
++    #[test]
++    fn legacy_clipboard_fails_closed_for_one_way_permissions() {
++        assert!(!legacy_clipboard_enabled(false, false));
++        assert!(!legacy_clipboard_enabled(true, false));
++        assert!(!legacy_clipboard_enabled(false, true));
++        assert!(legacy_clipboard_enabled(true, true));
++    }
++}
+diff --git a/kycontroller/src/rtp/mod.rs b/kycontroller/src/rtp/mod.rs
+index e39a67e..69d8bf8 100644
+--- a/kycontroller/src/rtp/mod.rs
++++ b/kycontroller/src/rtp/mod.rs
+@@ -99,7 +99,8 @@ pub async fn start(
+         let service_config = kynputservice_types::ServiceConfig {
+             cursor_format: inputs_request.cursor_format,
+             gamepad_force_xbox360: inputs_request.gamepad_force_xbox360,
+-            clipboard: inputs_request.clipboard,
++            clipboard_allow_copy: inputs_request.clipboard,
++            clipboard_allow_paste: inputs_request.clipboard,
+         };
+ 
+         let (inputservice, _) =
+diff --git a/kycontroller/src/ws/mod.rs b/kycontroller/src/ws/mod.rs
+index 781944f..d16fe03 100644
+--- a/kycontroller/src/ws/mod.rs
++++ b/kycontroller/src/ws/mod.rs
+@@ -369,7 +369,8 @@ async fn start_handler(
+         let service_config = kynputservice_types::ServiceConfig {
+             cursor_format: inputs_request.cursor_format.clone(),
+             gamepad_force_xbox360: inputs_request.gamepad_force_xbox360,
+-            clipboard: inputs_request.clipboard,
++            clipboard_allow_copy: inputs_request.clipboard,
++            clipboard_allow_paste: inputs_request.clipboard,
+         };
+ 
+         let kycom = ctrl.kycom.as_mut().expect("ensure_kycom guarantees Some");

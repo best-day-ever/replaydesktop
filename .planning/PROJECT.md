@@ -157,6 +157,7 @@ and working clipboard synchronization.
 | Make 4K60 the first performance gate | It is demanding enough to prove viability while remaining a realistic first optimization target | — Pending |
 | Target macOS 15 through macOS 27 beta, arm64 only | This matches the internal client fleet and removes legacy Intel/macOS compatibility work | — Pending |
 | Keep topology to LAN/VPN direct IP or hostname | It proves the data plane without prematurely adding control-plane or NAT infrastructure | — Pending |
+| Add post-proof single-org direct admission through the UDM Pro SE | A temporary source-IP firewall lease plus a workstation-scoped Kymux ticket preserves the direct encrypted data path while centralizing login and authorization | — In progress (Phase 10) |
 | Defer faithful Wacom support until after the core proof | Pressure/tilt requires new capture, protocol, and Linux virtual-tablet work; mouse fallback is acceptable initially | — Pending |
 | Accept AGPLv3 for the internal prototype | Internal use and potential open sourcing align with the available Kyber license path | — Pending |
 

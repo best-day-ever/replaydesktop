@@ -177,8 +177,8 @@ private struct LauncherConfiguration {
                 throw LauncherError(message: "Single-display index must be between 0 and 15.")
             }
         case .multiple:
-            guard (2 ... 8).contains(result.displayValue) else {
-                throw LauncherError(message: "Multi-monitor count must be between 2 and 8.")
+            guard result.displayValue == 2 else {
+                throw LauncherError(message: "This prototype supports exactly 2 displays.")
             }
         }
 
@@ -855,7 +855,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             to: root,
             labelView: displayValueLabel,
             control: displayValueField,
-            detail: "Single index 0–15; multi-monitor count 2–8."
+            detail: "Single index 0–15; multi-monitor mode is fixed at 2 displays."
         )
 
         root.addArrangedSubview(sectionTitle("Audio and control"))
@@ -2055,6 +2055,23 @@ private func runSelfTest() -> Int32 {
         }
         try require(rejectedOptionHost, "option-shaped host was not rejected")
 
+        var rejectedThirdDisplay = false
+        do {
+            _ = try KyclientArguments.build(
+                for: LauncherConfiguration(
+                    host: "test-host.invalid",
+                    displayMode: .multiple,
+                    displayValue: 3
+                )
+            )
+        } catch {
+            rejectedThirdDisplay = true
+        }
+        try require(
+            rejectedThirdDisplay,
+            "prototype accepted more than two simultaneous displays"
+        )
+
         try require(
             !MacOSInputPolicy.immersiveSystemShortcutSuppressionAvailable
                 && MacOSInputPolicy.immersiveStatus == "Unavailable on macOS",
@@ -2079,7 +2096,8 @@ private func runSelfTest() -> Int32 {
         print(
             "SELF-TEST PASS: \(combinations) codec/display/audio/transport combinations; "
                 + "input toggles mouse + focused keyboard; immersive grab unavailable; "
-                + "AV1 4:4:4 and option-shaped hosts rejected; clipboard opt-in and independent; "
+                + "AV1 4:4:4, third displays, and option-shaped hosts rejected; "
+                + "clipboard opt-in and independent; "
                 + "metrics JSONL fixtures passed (Unknown/reset, split/out-of-order, "
                 + "same-clock deltas, sentinels, malformed, skipped, negative rejection)"
         )

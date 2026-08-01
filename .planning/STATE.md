@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 01
-current_phase_name: host-readiness-gate
-status: verifying
-stopped_at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
-last_updated: "2026-08-01T16:57:02Z"
+current_phase: 11
+current_phase_name: lan-broker-client-mvp
+status: complete
+stopped_at: LAN broker, host registrar, Kyber JWT handoff, and broker-first macOS client verified
+last_updated: "2026-08-01T19:07:48Z"
 last_activity: 2026-08-01
-last_activity_desc: "Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending"
+last_activity_desc: "Verified the Docker LAN broker and the complete Mac-to-broker-to-Kyber JWT control flow"
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 10
-  completed_plans: 10
+  total_phases: 2
+  completed_phases: 2
+  total_plans: 11
+  completed_plans: 11
 ---
 
 # Project State
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-26)
 
 **Core value:** Prove that a Linux-to-macOS Kyber pipeline can deliver a visually excellent, consistently low-latency 4K60 physical-desktop session with immersive control and working clipboard synchronization.
-**Current focus:** Phase 01 — host-readiness-gate
+**Current focus:** Phase 11 — lan-broker-client-mvp
 
 ## Current Position
 
-Phase: 01 (host-readiness-gate) — EXECUTING
-Plan: 10 of 10
-Status: Phase complete — ready for verification
-Last activity: 2026-08-01 — Prepared persistent dual-UHD virtual displays and exactly-two-window Mac client; live X activation pending
+Phase: 11 (lan-broker-client-mvp) — COMPLETE
+Plan: 1 of 1
+Status: Broker and client LAN control flow verified
+Last activity: 2026-08-01 — Verified Docker, live host registration/JWT acceptance, and the real Mac control flow
 
 Progress: [██████████] 100%
 
@@ -38,7 +38,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 9
+- Total plans completed: 11
 - Average duration: 44m
 - Total execution time: 6h 32m
 
@@ -68,11 +68,13 @@ Progress: [██████████] 100%
 | Phase 01-host-readiness-gate P08 | 1h 39m 25s | 3 tasks | 10 files |
 | Phase 01 P09 | 40m | 3 tasks | 12 files |
 | Phase 01 P10 | 58m | 3 tasks | 22 files |
+| Phase 11 P01 | 2h 15m | 3 tasks | 23 files |
 
 ## Accumulated Context
 
 ### Roadmap Evolution
 
+- Phase 11 added: LAN Broker Client MVP
 - Phase 10 added: Brokered Direct Access MVP
 - Phase 10 uses the public UDM Pro SE IPv4 fast path rather than a media relay:
   Replay Control authorizes, a UDP knock proves the client source, UniFi opens
@@ -131,6 +133,9 @@ Recent decisions affecting current work:
 - [Phase 10]: Keep Replay Control and the UniFi gateway adapter as separate trust boundaries even when they run in one process; only Replay Control signs workstation tickets.
 - [Phase 10]: Keep the UDM Pro SE in the media fast path through static DNAT and temporary source-IP policy; Replay server code never relays Kymux packets.
 - [Phase 10]: Treat the source-IP UniFi lease as exposure reduction only; enrolled workstation TLS and a strict one-use Kymux ticket remain the authorization boundary.
+- [Phase 11]: Keep the broker off the Kymux data path; it returns the registered LAN endpoint, certificate fingerprint, and an RS256 Kyber JWT after authorization.
+- [Phase 11]: Permit weak bootstrap credentials and non-loopback HTTP only inside explicit LAN mode, which hard-requires the no-firewall memory backend.
+- [Phase 11]: Treat settings edits during a child session as next-session changes and keep settings, live statistics, and disconnect available from a persistent macOS menu-bar item.
 
 ### Pending Todos
 
@@ -169,6 +174,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-01T16:57:02Z
-Stopped at: Persistent dual-UHD virtual-display source/package complete; explicit X restart and live proof pending
+Last session: 2026-08-01T19:07:48Z
+Stopped at: LAN broker, host registrar, Kyber JWT handoff, and broker-first macOS client verified
 Resume file: None

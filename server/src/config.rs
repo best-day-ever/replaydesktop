@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
@@ -26,6 +29,7 @@ pub enum Command {
         username: String,
     },
     CreateWorkstation(CreateWorkstationArgs),
+    RegisterHost(RegisterHostArgs),
     Grant {
         username: String,
         workstation: String,
@@ -48,10 +52,30 @@ pub struct ServeArgs {
     pub http_bind: SocketAddr,
     #[arg(long, env = "REPLAY_KNOCK_BIND", default_value = "0.0.0.0:8444")]
     pub knock_bind: SocketAddr,
-    #[arg(long, env = "REPLAY_PUBLIC_HOST")]
+    #[arg(long, env = "REPLAY_PUBLIC_HOST", default_value = "127.0.0.1")]
     pub public_host: String,
-    #[arg(long, env = "REPLAY_KNOCK_ENDPOINT")]
+    #[arg(long, env = "REPLAY_KNOCK_ENDPOINT", default_value = "127.0.0.1:8444")]
     pub knock_endpoint: String,
+    #[arg(long, env = "REPLAY_ALLOW_INSECURE_HTTP", default_value_t = false)]
+    pub allow_insecure_http: bool,
+    #[arg(long, env = "REPLAY_LAN_MODE", default_value_t = false)]
+    pub lan_mode: bool,
+    #[arg(long, env = "REPLAY_HOST_REGISTRATION_TOKEN_FILE")]
+    pub host_registration_token_file: Option<PathBuf>,
+    #[arg(long, env = "REPLAY_KYBER_JWT_PRIVATE_KEY")]
+    pub kyber_jwt_private_key: Option<PathBuf>,
+    #[arg(long, env = "REPLAY_HOST_OFFLINE_AFTER_SECONDS", default_value_t = 45)]
+    pub host_offline_after_seconds: u64,
+    #[arg(
+        long,
+        env = "REPLAY_ALLOW_INSECURE_DEV_BOOTSTRAP",
+        default_value_t = false
+    )]
+    pub allow_insecure_dev_bootstrap: bool,
+    #[arg(long, env = "REPLAY_DEV_BOOTSTRAP_USERNAME")]
+    pub dev_bootstrap_username: Option<String>,
+    #[arg(long, env = "REPLAY_DEV_BOOTSTRAP_PASSWORD")]
+    pub dev_bootstrap_password: Option<String>,
     #[arg(
         long,
         env = "REPLAY_TICKET_PRIVATE_KEY",
@@ -113,4 +137,30 @@ pub struct CreateWorkstationArgs {
     pub wan_port: u16,
     #[arg(long)]
     pub certificate_sha256: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RegisterHostArgs {
+    #[arg(long, env = "REPLAY_BROKER_URL")]
+    pub broker_url: String,
+    #[arg(
+        long,
+        env = "REPLAY_HOST_REGISTRATION_ID_FILE",
+        default_value = "/var/lib/replay-control/host-registration-id"
+    )]
+    pub registration_id_file: PathBuf,
+    #[arg(long, env = "REPLAY_HOST_REGISTRATION_TOKEN_FILE")]
+    pub token_file: PathBuf,
+    #[arg(long, env = "REPLAY_HOST_NAME")]
+    pub name: String,
+    #[arg(long, env = "REPLAY_HOST_HOSTNAME")]
+    pub hostname: String,
+    #[arg(long, env = "REPLAY_HOST_LAN_IPV4")]
+    pub lan_ipv4: Ipv4Addr,
+    #[arg(long, env = "REPLAY_HOST_KYMUX_PORT", default_value_t = 8080)]
+    pub kymux_port: u16,
+    #[arg(long, env = "REPLAY_HOST_CERTIFICATE_FILE")]
+    pub certificate_file: PathBuf,
+    #[arg(long, env = "REPLAY_HOST_HEARTBEAT_SECONDS", default_value_t = 15)]
+    pub heartbeat_seconds: u64,
 }

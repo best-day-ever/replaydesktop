@@ -17,6 +17,240 @@ private struct LauncherError: LocalizedError {
     }
 }
 
+private struct BrokerLoginRequest: Encodable {
+    let username: String
+    let password: String
+}
+
+private struct BrokerRefreshRequest: Encodable {
+    let refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case refreshToken = "refresh_token"
+    }
+}
+
+private struct BrokerTokens: Decodable {
+    let accessToken: String
+    let accessExpiresAt: Int64
+    let refreshToken: String
+    let refreshExpiresAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case accessExpiresAt = "access_expires_at"
+        case refreshToken = "refresh_token"
+        case refreshExpiresAt = "refresh_expires_at"
+    }
+}
+
+private struct BrokerWorkstation: Decodable {
+    let id: UUID
+    let name: String
+    let hostname: String?
+    let online: Bool
+    let lastSeenAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, hostname, online
+        case lastSeenAt = "last_seen_at"
+    }
+}
+
+private struct BrokerLanSession: Decodable {
+    let sessionID: UUID
+    let status: String
+    let directEndpoint: String
+    let workstationCertificateSHA256: String
+    let kyberToken: String
+    let expiresAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case sessionID = "session_id"
+        case directEndpoint = "direct_endpoint"
+        case workstationCertificateSHA256 = "workstation_certificate_sha256"
+        case kyberToken = "kyber_token"
+        case expiresAt = "expires_at"
+    }
+}
+
+private struct BrokerAPIError: Decodable {
+    let error: String
+}
+
+private enum BrokerAPI {
+    static func normalizedBaseURL(_ input: String) throws -> URL {
+        var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            throw LauncherError(message: "Enter the broker hostname or IP address.")
+        }
+        if !value.contains("://") {
+            value = "http://" + value
+        }
+        guard var components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              components.host != nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              components.path.isEmpty || components.path == "/"
+        else {
+            throw LauncherError(
+                message: "Broker must be an HTTP(S) hostname or IP without credentials, a path, or a query."
+            )
+        }
+        components.scheme = scheme
+        components.path = ""
+        if scheme == "http", components.port == nil {
+            components.port = 8_090
+        }
+        guard let url = components.url else {
+            throw LauncherError(message: "The broker URL is invalid.")
+        }
+        return url
+    }
+
+    static func login(
+        baseURL: URL,
+        username: String,
+        password: String,
+        completion: @escaping (Result<BrokerTokens, Error>) -> Void
+    ) {
+        request(
+            baseURL: baseURL,
+            path: "v1/auth/login",
+            method: "POST",
+            bearer: nil,
+            body: BrokerLoginRequest(username: username, password: password),
+            completion: completion
+        )
+    }
+
+    static func refresh(
+        baseURL: URL,
+        refreshToken: String,
+        completion: @escaping (Result<BrokerTokens, Error>) -> Void
+    ) {
+        request(
+            baseURL: baseURL,
+            path: "v1/auth/refresh",
+            method: "POST",
+            bearer: nil,
+            body: BrokerRefreshRequest(refreshToken: refreshToken),
+            completion: completion
+        )
+    }
+
+    static func workstations(
+        baseURL: URL,
+        accessToken: String,
+        completion: @escaping (Result<[BrokerWorkstation], Error>) -> Void
+    ) {
+        request(
+            baseURL: baseURL,
+            path: "v1/workstations",
+            method: "GET",
+            bearer: accessToken,
+            body: Optional<BrokerLoginRequest>.none,
+            completion: completion
+        )
+    }
+
+    static func createLanSession(
+        baseURL: URL,
+        workstationID: UUID,
+        accessToken: String,
+        completion: @escaping (Result<BrokerLanSession, Error>) -> Void
+    ) {
+        request(
+            baseURL: baseURL,
+            path: "v1/workstations/\(workstationID.uuidString)/lan-sessions",
+            method: "POST",
+            bearer: accessToken,
+            body: Optional<BrokerLoginRequest>.none,
+            completion: completion
+        )
+    }
+
+    static func logout(baseURL: URL, accessToken: String) {
+        request(
+            baseURL: baseURL,
+            path: "v1/auth/logout",
+            method: "POST",
+            bearer: accessToken,
+            body: Optional<BrokerLoginRequest>.none
+        ) { (_: Result<EmptyBrokerResponse, Error>) in }
+    }
+
+    static func closeSession(baseURL: URL, sessionID: UUID, accessToken: String) {
+        request(
+            baseURL: baseURL,
+            path: "v1/sessions/\(sessionID.uuidString)",
+            method: "DELETE",
+            bearer: accessToken,
+            body: Optional<BrokerLoginRequest>.none
+        ) { (_: Result<EmptyBrokerResponse, Error>) in }
+    }
+
+    private struct EmptyBrokerResponse: Decodable {}
+
+    private static func request<Response: Decodable, Body: Encodable>(
+        baseURL: URL,
+        path: String,
+        method: String,
+        bearer: String?,
+        body: Body?,
+        completion: @escaping (Result<Response, Error>) -> Void
+    ) {
+        let url = baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "accept")
+        if let bearer {
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "authorization")
+        }
+        do {
+            if let body {
+                request.httpBody = try JSONEncoder().encode(body)
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+            }
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+            guard let response = response as? HTTPURLResponse else {
+                completion(.failure(LauncherError(message: "Broker returned no HTTP response.")))
+                return
+            }
+            let data = data ?? Data()
+            guard (200 ... 299).contains(response.statusCode) else {
+                let detail = (try? JSONDecoder().decode(BrokerAPIError.self, from: data).error)
+                    ?? "HTTP \(response.statusCode)"
+                completion(.failure(LauncherError(message: "Broker request failed: \(detail)")))
+                return
+            }
+            if Response.self == EmptyBrokerResponse.self, data.isEmpty {
+                completion(.success(EmptyBrokerResponse() as! Response))
+                return
+            }
+            do {
+                completion(.success(try JSONDecoder().decode(Response.self, from: data)))
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+}
+
 private enum CodecMode: String, CaseIterable {
     case h264420
     case hevc420
@@ -146,6 +380,8 @@ private struct LauncherConfiguration {
     var audioTransport = KymuxAudioTransport.reliable
     var inputsEnabled = true
     var clipboardEnabled = false
+    var kyberToken: String?
+    var tlsFingerprint: String?
 
     func validated() throws -> LauncherConfiguration {
         var result = self
@@ -186,8 +422,31 @@ private struct LauncherConfiguration {
             throw LauncherError(message: "Audio buffer must be between 0 and 2000 ms.")
         }
 
+        if let token = result.kyberToken {
+            let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+            if token.count > 4_096 || segments.count != 3 || segments.contains(where: \.isEmpty) {
+                throw LauncherError(message: "The broker returned an invalid Kyber token.")
+            }
+        }
+        if let fingerprint = result.tlsFingerprint,
+           !isValidKyclientFingerprint(fingerprint)
+        {
+            throw LauncherError(message: "The broker returned an invalid TLS fingerprint.")
+        }
+
         return result
     }
+}
+
+private func isValidKyclientFingerprint(_ value: String) -> Bool {
+    let components = value.split(separator: ":", omittingEmptySubsequences: false)
+    let hexadecimal = CharacterSet(charactersIn: "0123456789ABCDEF")
+    return components.count == 33
+        && components.first == "sha256"
+        && components.dropFirst().allSatisfy { component in
+            component.count == 2
+                && component.unicodeScalars.allSatisfy { hexadecimal.contains($0) }
+        }
 }
 
 private func validatedBitrate(_ input: String) throws -> UInt32 {
@@ -233,6 +492,13 @@ private enum KyclientArguments {
         let configuration = try configuration.validated()
         var arguments = fixedBaseline
         arguments[0] = "--port=\(configuration.port)"
+        if let fingerprint = configuration.tlsFingerprint {
+            arguments.removeAll { $0 == "--tls-skip-verification" }
+            arguments.append("--tls-fingerprint=\(fingerprint)")
+        }
+        if let token = configuration.kyberToken {
+            arguments.append("--auth-token=\(token)")
+        }
 
         arguments.append("--video-codec=\(configuration.codec.codecArgument)")
         if configuration.codec.usesYUV444 {
@@ -312,10 +578,16 @@ private func shellQuoted(_ argument: String) -> String {
 }
 
 private func commandDescription(executable: URL, arguments: [String]) -> String {
-    ([executable.path] + arguments).map(shellQuoted).joined(separator: " ")
+    let redacted = arguments.map { argument in
+        argument.hasPrefix("--auth-token=") ? "--auth-token=<redacted>" : argument
+    }
+    return ([executable.path] + redacted).map(shellQuoted).joined(separator: " ")
 }
 
 private enum PreferenceKey {
+    static let brokerURL = "broker.url"
+    static let brokerUsername = "broker.username"
+    static let lastWorkstationID = "broker.lastWorkstationID"
     static let host = "prototype.host"
     static let port = "prototype.port"
     static let codec = "prototype.codec"
@@ -611,6 +883,15 @@ private enum MetricsCardField: Hashable {
 @MainActor
 private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private let window: NSWindow
+    private let brokerURLField = NSTextField()
+    private let brokerUsernameField = NSTextField()
+    private let brokerPasswordField = NSSecureTextField()
+    private let brokerStatus = NSTextField(labelWithString: "Enter a broker and log in")
+    private let loginButton = NSButton(title: "Log In", target: nil, action: nil)
+    private let logoutButton = NSButton(title: "Log Out", target: nil, action: nil)
+    private let workstationPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let refreshWorkstationsButton = NSButton(title: "Refresh", target: nil, action: nil)
+    private let settingsButton = NSButton(title: "⚙︎ Settings", target: nil, action: nil)
     private let hostField = NSTextField()
     private let portField = NSTextField()
     private let codecPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -656,6 +937,14 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
     private var metricsReducer = MetricsJSONLReducer()
     private var transcript = ""
     private var disconnectRequested = false
+    private var brokerBaseURL: URL?
+    private var brokerTokens: BrokerTokens?
+    private var workstations: [BrokerWorkstation] = []
+    private var workstationRefreshTimer: Timer?
+    private var brokerRequestInFlight = false
+    private var currentKyberToken: String?
+    private var currentTLSFingerprint: String?
+    private var currentBrokerSessionID: UUID?
 
     private let maximumTranscriptCharacters = 120_000
     private let initialTailBytes: UInt64 = 32 * 1_024
@@ -663,7 +952,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
     override init() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 1_000),
+            contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 920),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -675,10 +964,12 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         renderCurrentMetrics()
         loadPreferences()
         updateDerivedControls()
+        updateBrokerControls()
         updateCommandPreview()
 
-        window.title = "ReplayDesktop — Technical Launcher"
-        window.minSize = NSSize(width: 880, height: 820)
+        window.title = "ReplayDesktop"
+        window.minSize = NSSize(width: 880, height: 720)
+        window.isReleasedWhenClosed = false
         window.center()
         window.delegate = self
     }
@@ -695,21 +986,55 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
     }
 
     func terminateChildForApplicationExit() {
+        workstationRefreshTimer?.invalidate()
+        workstationRefreshTimer = nil
         telemetryTimer?.invalidate()
         telemetryTimer = nil
+        closeCurrentBrokerSession()
         if let child, child.isRunning {
             child.terminate()
         }
     }
 
     private func configureControls() {
+        brokerURLField.placeholderString = "192.168.33.42:8090"
+        brokerURLField.delegate = self
+        brokerURLField.setAccessibilityLabel("Broker hostname or IP address")
+        brokerUsernameField.placeholderString = "finn"
+        brokerUsernameField.delegate = self
+        brokerUsernameField.setAccessibilityLabel("Broker username")
+        brokerPasswordField.placeholderString = "Password"
+        brokerPasswordField.delegate = self
+        brokerPasswordField.setAccessibilityLabel("Broker password")
+
+        brokerStatus.textColor = .secondaryLabelColor
+        loginButton.target = self
+        loginButton.action = #selector(loginClicked(_:))
+        loginButton.bezelStyle = .rounded
+        logoutButton.target = self
+        logoutButton.action = #selector(logoutClicked(_:))
+        logoutButton.bezelStyle = .rounded
+        logoutButton.isEnabled = false
+        workstationPopup.target = self
+        workstationPopup.action = #selector(workstationChanged(_:))
+        workstationPopup.isEnabled = false
+        refreshWorkstationsButton.target = self
+        refreshWorkstationsButton.action = #selector(refreshWorkstationsClicked(_:))
+        refreshWorkstationsButton.bezelStyle = .rounded
+        refreshWorkstationsButton.isEnabled = false
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettingsAndStatistics(_:))
+        settingsButton.bezelStyle = .rounded
+
         hostField.placeholderString = "Direct LAN/VPN hostname or IP"
         hostField.delegate = self
         hostField.setAccessibilityLabel("Linux host name or IP address")
+        hostField.isEditable = false
 
         portField.delegate = self
         portField.alignment = .right
         portField.setAccessibilityLabel("Kyber port")
+        portField.isEditable = false
 
         codecPopup.addItems(withTitles: CodecMode.allCases.map(\.title))
         codecPopup.target = self
@@ -777,28 +1102,46 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         let content = NSView()
         window.contentView = content
 
+        let pageScrollView = NSScrollView()
+        pageScrollView.translatesAutoresizingMaskIntoConstraints = false
+        pageScrollView.hasVerticalScroller = true
+        pageScrollView.hasHorizontalScroller = false
+        pageScrollView.autohidesScrollers = true
+        pageScrollView.drawsBackground = false
+        content.addSubview(pageScrollView)
+
+        let page = NSView()
+        page.translatesAutoresizingMaskIntoConstraints = false
+        pageScrollView.documentView = page
+
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 10
         root.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(root)
+        page.addSubview(root)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-            root.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            pageScrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            pageScrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            pageScrollView.topAnchor.constraint(equalTo: content.topAnchor),
+            pageScrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            page.widthAnchor.constraint(equalTo: pageScrollView.contentView.widthAnchor),
+            page.heightAnchor.constraint(greaterThanOrEqualTo: pageScrollView.contentView.heightAnchor),
+            root.leadingAnchor.constraint(equalTo: page.leadingAnchor, constant: 20),
+            root.trailingAnchor.constraint(equalTo: page.trailingAnchor, constant: -20),
+            root.topAnchor.constraint(equalTo: page.topAnchor, constant: 18),
+            root.bottomAnchor.constraint(equalTo: page.bottomAnchor, constant: -18),
         ])
 
-        let title = NSTextField(labelWithString: "Direct Kyber connection")
+        let title = NSTextField(labelWithString: "ReplayDesktop")
         title.font = .systemFont(ofSize: 22, weight: .semibold)
         root.addArrangedSubview(title)
 
         let subtitle = NSTextField(
             wrappingLabelWithString:
-                "Technical prototype panel. It starts the unchanged Contents/MacOS/kyclient child; "
-                + "the raw child remains available for direct CLI use."
+                "Log in to your broker, choose an online workstation, then connect over the direct "
+                + "Kymux LAN path. The broker never carries the desktop stream."
         )
         subtitle.textColor = .secondaryLabelColor
         root.addArrangedSubview(subtitle)
@@ -806,20 +1149,60 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 
         let trustWarning = NSTextField(
             wrappingLabelWithString:
-                "Internal LAN/VPN prototype: TLS identity verification is intentionally bypassed. "
-                + "No CA, account, JWT, username, or password setup is provided here."
+                "LAN development profile: broker HTTP is unencrypted. The direct Kyber connection "
+                + "uses the workstation fingerprint and a short-lived broker-signed JWT."
         )
         trustWarning.textColor = .systemOrange
         trustWarning.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
         root.addArrangedSubview(trustWarning)
         constrainWidth(trustWarning, to: root)
 
+        root.addArrangedSubview(sectionTitle("Broker login"))
+        addRow(
+            to: root,
+            label: "Broker hostname / IP",
+            control: brokerURLField,
+            detail: "Remembered after first login and always changeable here."
+        )
+        let credentials = NSStackView(views: [brokerUsernameField, brokerPasswordField])
+        credentials.orientation = .horizontal
+        credentials.distribution = .fillEqually
+        credentials.spacing = 6
+        addRow(
+            to: root,
+            label: "Account",
+            control: credentials,
+            detail: "Local test profile: finn / 1337. Password is never saved."
+        )
+        let loginActions = NSStackView(views: [loginButton, logoutButton, brokerStatus])
+        loginActions.orientation = .horizontal
+        loginActions.alignment = .centerY
+        loginActions.spacing = 8
+        addRow(
+            to: root,
+            label: "Broker session",
+            control: loginActions,
+            detail: "Access and refresh tokens remain in memory only."
+        )
+
+        root.addArrangedSubview(sectionTitle("Workstations"))
+        let workstationActions = NSStackView(views: [workstationPopup, refreshWorkstationsButton])
+        workstationActions.orientation = .horizontal
+        workstationActions.alignment = .centerY
+        workstationActions.spacing = 6
+        addRow(
+            to: root,
+            label: "Available machines",
+            control: workstationActions,
+            detail: "● online, ○ offline. Stale hosts cannot start sessions."
+        )
+
         root.addArrangedSubview(sectionTitle("Connection and video"))
         addRow(
             to: root,
             label: "Linux host / IP",
             control: hostField,
-            detail: "Directly reachable host only; no discovery or relay."
+            detail: "Populated from the broker registration; media connects here directly."
         )
         addRow(
             to: root,
@@ -910,6 +1293,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         let actionRow = NSStackView(views: [
             connectButton,
             disconnectButton,
+            settingsButton,
             sessionStatus,
         ])
         actionRow.orientation = .horizontal
@@ -1197,6 +1581,8 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
     private func loadPreferences() {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
+            PreferenceKey.brokerURL: "",
+            PreferenceKey.brokerUsername: "finn",
             PreferenceKey.host: "",
             PreferenceKey.port: 8080,
             PreferenceKey.codec: CodecMode.h264420.rawValue,
@@ -1210,50 +1596,111 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             PreferenceKey.clipboardEnabled: false,
         ])
 
-        hostField.stringValue = defaults.string(forKey: PreferenceKey.host) ?? ""
-        portField.integerValue = defaults.integer(forKey: PreferenceKey.port)
+        brokerURLField.stringValue = defaults.string(forKey: PreferenceKey.brokerURL) ?? ""
+        brokerUsernameField.stringValue =
+            defaults.string(forKey: PreferenceKey.brokerUsername) ?? "finn"
+        brokerPasswordField.stringValue = "1337"
+        loadConnectionPreferences()
+    }
+
+    private func loadConnectionPreferences() {
+        hostField.stringValue = connectionString(PreferenceKey.host) ?? ""
+        portField.stringValue = String(connectionInteger(PreferenceKey.port))
 
         let codec = CodecMode(
-            rawValue: defaults.string(forKey: PreferenceKey.codec) ?? ""
+            rawValue: connectionString(PreferenceKey.codec) ?? ""
         ) ?? .h264420
         codecPopup.selectItem(at: CodecMode.allCases.firstIndex(of: codec) ?? 0)
 
-        bitrateField.stringValue = defaults.string(forKey: PreferenceKey.bitrate) ?? "100M"
+        bitrateField.stringValue = connectionString(PreferenceKey.bitrate) ?? "100M"
 
         let displayMode = DisplayMode(
-            rawValue: defaults.string(forKey: PreferenceKey.displayMode) ?? ""
+            rawValue: connectionString(PreferenceKey.displayMode) ?? ""
         ) ?? .single
         displayModePopup.selectItem(at: DisplayMode.allCases.firstIndex(of: displayMode) ?? 0)
-        displayValueField.integerValue = defaults.integer(forKey: PreferenceKey.displayValue)
+        displayValueField.stringValue = String(connectionInteger(PreferenceKey.displayValue))
 
-        audioCheckbox.state = defaults.bool(forKey: PreferenceKey.audioEnabled) ? .on : .off
-        audioBufferField.integerValue = defaults.integer(forKey: PreferenceKey.audioBuffer)
+        audioCheckbox.state = connectionBool(PreferenceKey.audioEnabled) ? .on : .off
+        audioBufferField.stringValue = String(connectionInteger(PreferenceKey.audioBuffer))
 
         let audioTransport = KymuxAudioTransport(
-            rawValue: defaults.string(forKey: PreferenceKey.audioTransport) ?? ""
+            rawValue: connectionString(PreferenceKey.audioTransport) ?? ""
         ) ?? .reliable
         audioTransportPopup.selectItem(
             at: KymuxAudioTransport.allCases.firstIndex(of: audioTransport) ?? 0
         )
 
-        inputsCheckbox.state = defaults.bool(forKey: PreferenceKey.inputsEnabled) ? .on : .off
+        inputsCheckbox.state = connectionBool(PreferenceKey.inputsEnabled) ? .on : .off
         clipboardCheckbox.state =
-            defaults.bool(forKey: PreferenceKey.clipboardEnabled) ? .on : .off
+            connectionBool(PreferenceKey.clipboardEnabled) ? .on : .off
+        updateDerivedControls()
     }
 
     private func savePreferences(_ configuration: LauncherConfiguration) {
         let defaults = UserDefaults.standard
-        defaults.set(configuration.host, forKey: PreferenceKey.host)
-        defaults.set(configuration.port, forKey: PreferenceKey.port)
-        defaults.set(configuration.codec.rawValue, forKey: PreferenceKey.codec)
-        defaults.set(configuration.bitrate, forKey: PreferenceKey.bitrate)
-        defaults.set(configuration.displayMode.rawValue, forKey: PreferenceKey.displayMode)
-        defaults.set(configuration.displayValue, forKey: PreferenceKey.displayValue)
-        defaults.set(configuration.audioEnabled, forKey: PreferenceKey.audioEnabled)
-        defaults.set(configuration.audioBufferMilliseconds, forKey: PreferenceKey.audioBuffer)
-        defaults.set(configuration.audioTransport.rawValue, forKey: PreferenceKey.audioTransport)
-        defaults.set(configuration.inputsEnabled, forKey: PreferenceKey.inputsEnabled)
-        defaults.set(configuration.clipboardEnabled, forKey: PreferenceKey.clipboardEnabled)
+        defaults.set(configuration.host, forKey: connectionPreferenceKey(PreferenceKey.host))
+        defaults.set(configuration.port, forKey: connectionPreferenceKey(PreferenceKey.port))
+        defaults.set(
+            configuration.codec.rawValue,
+            forKey: connectionPreferenceKey(PreferenceKey.codec)
+        )
+        defaults.set(configuration.bitrate, forKey: connectionPreferenceKey(PreferenceKey.bitrate))
+        defaults.set(
+            configuration.displayMode.rawValue,
+            forKey: connectionPreferenceKey(PreferenceKey.displayMode)
+        )
+        defaults.set(
+            configuration.displayValue,
+            forKey: connectionPreferenceKey(PreferenceKey.displayValue)
+        )
+        defaults.set(
+            configuration.audioEnabled,
+            forKey: connectionPreferenceKey(PreferenceKey.audioEnabled)
+        )
+        defaults.set(
+            configuration.audioBufferMilliseconds,
+            forKey: connectionPreferenceKey(PreferenceKey.audioBuffer)
+        )
+        defaults.set(
+            configuration.audioTransport.rawValue,
+            forKey: connectionPreferenceKey(PreferenceKey.audioTransport)
+        )
+        defaults.set(
+            configuration.inputsEnabled,
+            forKey: connectionPreferenceKey(PreferenceKey.inputsEnabled)
+        )
+        defaults.set(
+            configuration.clipboardEnabled,
+            forKey: connectionPreferenceKey(PreferenceKey.clipboardEnabled)
+        )
+    }
+
+    private func connectionPreferenceKey(_ base: String) -> String {
+        guard let workstationID = selectedWorkstation()?.id else {
+            return base
+        }
+        return "workstation.\(workstationID.uuidString).\(base)"
+    }
+
+    private func connectionObject(_ base: String) -> Any? {
+        let defaults = UserDefaults.standard
+        let scoped = connectionPreferenceKey(base)
+        if scoped != base, let value = defaults.object(forKey: scoped) {
+            return value
+        }
+        return defaults.object(forKey: base)
+    }
+
+    private func connectionString(_ base: String) -> String? {
+        connectionObject(base) as? String
+    }
+
+    private func connectionInteger(_ base: String) -> Int {
+        (connectionObject(base) as? NSNumber)?.intValue ?? 0
+    }
+
+    private func connectionBool(_ base: String) -> Bool {
+        (connectionObject(base) as? NSNumber)?.boolValue ?? false
     }
 
     private func selectedCodec() -> CodecMode {
@@ -1295,7 +1742,9 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             audioBufferMilliseconds: audioBuffer,
             audioTransport: selectedAudioTransport(),
             inputsEnabled: inputsCheckbox.state == .on,
-            clipboardEnabled: clipboardCheckbox.state == .on
+            clipboardEnabled: clipboardCheckbox.state == .on,
+            kyberToken: currentKyberToken,
+            tlsFingerprint: currentTLSFingerprint
         )
     }
 
@@ -1308,7 +1757,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         displayValueLabel.stringValue =
             displayMode == .single ? "Display index" : "Display count"
         if displayMode == .multiple && displayValueField.integerValue < 2 {
-            displayValueField.integerValue = 2
+            displayValueField.stringValue = "2"
         }
 
         let audioEnabled = audioCheckbox.state == .on
@@ -1325,6 +1774,9 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             )
             validationLabel.stringValue = ""
             connectButton.isEnabled = child == nil
+                && !brokerRequestInFlight
+                && brokerTokens != nil
+                && selectedWorkstation()?.online == true
         } catch {
             commandPreview.stringValue = "Command unavailable until the fields are valid."
             validationLabel.stringValue = error.localizedDescription
@@ -1343,34 +1795,347 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         persistCurrentPreferences()
     }
 
-    @objc private func connectClicked(_ sender: Any?) {
-        guard child == nil else {
+    private func selectedWorkstation() -> BrokerWorkstation? {
+        let index = workstationPopup.indexOfSelectedItem
+        guard index >= 0, index < workstations.count else {
+            return nil
+        }
+        return workstations[index]
+    }
+
+    @objc private func loginClicked(_ sender: Any?) {
+        guard !brokerRequestInFlight, child == nil else {
             return
         }
-
         do {
-            let configuration = try configurationFromControls().validated()
-            let arguments = try KyclientArguments.build(for: configuration)
-            let runtimeDirectory = try LauncherPaths.createApplicationSupportDirectory()
-            let executable = LauncherPaths.childExecutable
-
-            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-                throw LauncherError(
-                    message: "Streaming child is missing or not executable: \(executable.path)"
-                )
-            }
-
-            savePreferences(configuration)
-            try startChild(
-                executable: executable,
-                arguments: arguments,
-                runtimeDirectory: runtimeDirectory
+            let baseURL = try BrokerAPI.normalizedBaseURL(brokerURLField.stringValue)
+            let username = brokerUsernameField.stringValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
             )
+            let password = brokerPasswordField.stringValue
+            guard !username.isEmpty, !password.isEmpty else {
+                throw LauncherError(message: "Enter the broker username and password.")
+            }
+            brokerRequestInFlight = true
+            brokerStatus.stringValue = "Logging in…"
+            validationLabel.stringValue = ""
+            updateBrokerControls()
+            BrokerAPI.login(
+                baseURL: baseURL,
+                username: username,
+                password: password
+            ) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.brokerRequestInFlight = false
+                    switch result {
+                    case let .success(tokens):
+                        self.brokerBaseURL = baseURL
+                        self.brokerTokens = tokens
+                        self.brokerURLField.stringValue = baseURL.absoluteString
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        UserDefaults.standard.set(
+                            self.brokerURLField.stringValue,
+                            forKey: PreferenceKey.brokerURL
+                        )
+                        UserDefaults.standard.set(
+                            username,
+                            forKey: PreferenceKey.brokerUsername
+                        )
+                        self.brokerStatus.stringValue = "Logged in as \(username)"
+                        self.startWorkstationRefreshTimer()
+                        self.loadWorkstations()
+                    case let .failure(error):
+                        self.brokerStatus.stringValue = "Login failed"
+                        self.validationLabel.stringValue = error.localizedDescription
+                        self.updateBrokerControls()
+                    }
+                }
+            }
         } catch {
             validationLabel.stringValue = error.localizedDescription
-            sessionStatus.stringValue = "Launch failed"
-            appendTranscript("[launcher error] \(error.localizedDescription)\n")
+            brokerStatus.stringValue = "Login unavailable"
         }
+    }
+
+    @objc private func logoutClicked(_ sender: Any?) {
+        guard child == nil else {
+            validationLabel.stringValue = "Disconnect before logging out."
+            return
+        }
+        if let baseURL = brokerBaseURL, let accessToken = brokerTokens?.accessToken {
+            BrokerAPI.logout(baseURL: baseURL, accessToken: accessToken)
+        }
+        workstationRefreshTimer?.invalidate()
+        workstationRefreshTimer = nil
+        brokerTokens = nil
+        workstations = []
+        workstationPopup.removeAllItems()
+        currentKyberToken = nil
+        currentTLSFingerprint = nil
+        currentBrokerSessionID = nil
+        brokerPasswordField.stringValue = ""
+        brokerStatus.stringValue = "Logged out"
+        updateBrokerControls()
+        updateCommandPreview()
+    }
+
+    @objc private func refreshWorkstationsClicked(_ sender: Any?) {
+        loadWorkstations()
+    }
+
+    private func startWorkstationRefreshTimer() {
+        workstationRefreshTimer?.invalidate()
+        workstationRefreshTimer = Timer.scheduledTimer(
+            timeInterval: 15,
+            target: self,
+            selector: #selector(workstationRefreshTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func workstationRefreshTimerFired(_ timer: Timer) {
+        loadWorkstations()
+    }
+
+    private func loadWorkstations() {
+        guard !brokerRequestInFlight,
+              child == nil,
+              let baseURL = brokerBaseURL,
+              let tokens = brokerTokens
+        else {
+            return
+        }
+        let now = Int64(Date().timeIntervalSince1970)
+        if tokens.accessExpiresAt <= now + 15 {
+            guard tokens.refreshExpiresAt > now else {
+                brokerStatus.stringValue = "Session expired — log in again"
+                brokerTokens = nil
+                updateBrokerControls()
+                return
+            }
+            brokerRequestInFlight = true
+            brokerStatus.stringValue = "Refreshing login…"
+            updateBrokerControls()
+            BrokerAPI.refresh(baseURL: baseURL, refreshToken: tokens.refreshToken) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.brokerRequestInFlight = false
+                    switch result {
+                    case let .success(refreshed):
+                        self.brokerTokens = refreshed
+                        self.loadWorkstations()
+                    case let .failure(error):
+                        self.brokerTokens = nil
+                        self.brokerStatus.stringValue = "Session expired — log in again"
+                        self.validationLabel.stringValue = error.localizedDescription
+                        self.updateBrokerControls()
+                    }
+                }
+            }
+            return
+        }
+        brokerRequestInFlight = true
+        brokerStatus.stringValue = "Refreshing machines…"
+        updateBrokerControls()
+        BrokerAPI.workstations(baseURL: baseURL, accessToken: tokens.accessToken) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.brokerRequestInFlight = false
+                switch result {
+                case let .success(workstations):
+                    self.applyWorkstations(workstations)
+                    let online = workstations.filter(\.online).count
+                    self.brokerStatus.stringValue = "\(online) online / \(workstations.count) authorized"
+                    self.validationLabel.stringValue = ""
+                case let .failure(error):
+                    self.brokerStatus.stringValue = "Machine refresh failed"
+                    self.validationLabel.stringValue = error.localizedDescription
+                }
+                self.updateBrokerControls()
+                self.updateCommandPreview()
+            }
+        }
+    }
+
+    private func applyWorkstations(_ updated: [BrokerWorkstation]) {
+        let remembered = UserDefaults.standard.string(forKey: PreferenceKey.lastWorkstationID)
+        let previous = selectedWorkstation()?.id.uuidString ?? remembered
+        workstations = updated
+        workstationPopup.removeAllItems()
+        workstationPopup.addItems(withTitles: updated.map { workstation in
+            "\(workstation.online ? "●" : "○")  \(workstation.name)"
+        })
+        let selection = updated.firstIndex { $0.id.uuidString == previous }
+            ?? updated.firstIndex(where: \.online)
+            ?? (updated.isEmpty ? nil : 0)
+        if let selection {
+            workstationPopup.selectItem(at: selection)
+            workstationChanged(nil)
+        }
+    }
+
+    @objc private func workstationChanged(_ sender: Any?) {
+        guard let workstation = selectedWorkstation() else {
+            updateCommandPreview()
+            return
+        }
+        UserDefaults.standard.set(
+            workstation.id.uuidString,
+            forKey: PreferenceKey.lastWorkstationID
+        )
+        currentKyberToken = nil
+        currentTLSFingerprint = nil
+        currentBrokerSessionID = nil
+        loadConnectionPreferences()
+        hostField.stringValue = workstation.hostname ?? workstation.name
+        if Int(portField.stringValue) == nil || portField.stringValue == "0" {
+            portField.stringValue = "8080"
+        }
+        sessionStatus.stringValue = workstation.online ? "Ready to connect" : "Workstation offline"
+        updateCommandPreview()
+    }
+
+    private func updateBrokerControls() {
+        let loggedIn = brokerTokens != nil
+        loginButton.isEnabled = !brokerRequestInFlight && !loggedIn && child == nil
+        logoutButton.isEnabled = !brokerRequestInFlight && loggedIn && child == nil
+        brokerURLField.isEnabled = !loggedIn && child == nil
+        brokerUsernameField.isEnabled = !loggedIn && child == nil
+        brokerPasswordField.isEnabled = !loggedIn && child == nil
+        workstationPopup.isEnabled = loggedIn && !workstations.isEmpty && child == nil
+        refreshWorkstationsButton.isEnabled = loggedIn && !brokerRequestInFlight && child == nil
+    }
+
+    @objc func showSettingsAndStatistics(_ sender: Any?) {
+        show()
+        if child != nil {
+            validationLabel.stringValue =
+                "Settings remain editable; transport changes apply to the next connection."
+        }
+    }
+
+    func disconnectFromMenu() {
+        disconnectClicked(nil)
+    }
+
+    @objc private func connectClicked(_ sender: Any?) {
+        guard child == nil,
+              !brokerRequestInFlight,
+              let workstation = selectedWorkstation(),
+              workstation.online,
+              let baseURL = brokerBaseURL,
+              let tokens = brokerTokens
+        else {
+            return
+        }
+        brokerRequestInFlight = true
+        sessionStatus.stringValue = "Authorizing with broker…"
+        updateBrokerControls()
+        updateCommandPreview()
+        BrokerAPI.createLanSession(
+            baseURL: baseURL,
+            workstationID: workstation.id,
+            accessToken: tokens.accessToken
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.brokerRequestInFlight = false
+                switch result {
+                case let .success(session):
+                    do {
+                        guard session.status == "ready",
+                              session.expiresAt > Int64(Date().timeIntervalSince1970)
+                        else {
+                            throw LauncherError(
+                                message: "Broker returned a session that is not ready or already expired."
+                            )
+                        }
+                        let endpoint = try self.parseDirectEndpoint(session.directEndpoint)
+                        self.hostField.stringValue = endpoint.host
+                        self.portField.stringValue = String(endpoint.port)
+                        self.currentKyberToken = session.kyberToken
+                        self.currentTLSFingerprint = try self.kyclientFingerprint(
+                            session.workstationCertificateSHA256
+                        )
+                        self.currentBrokerSessionID = session.sessionID
+                        try self.launchSelectedSession()
+                    } catch {
+                        self.closeCurrentBrokerSession()
+                        self.validationLabel.stringValue = error.localizedDescription
+                        self.sessionStatus.stringValue = "Launch failed"
+                    }
+                case let .failure(error):
+                    self.validationLabel.stringValue = error.localizedDescription
+                    self.sessionStatus.stringValue = "Authorization failed"
+                }
+                self.updateBrokerControls()
+                self.updateCommandPreview()
+            }
+        }
+    }
+
+    private func launchSelectedSession() throws {
+        let configuration = try configurationFromControls().validated()
+        let arguments = try KyclientArguments.build(for: configuration)
+        let runtimeDirectory = try LauncherPaths.createApplicationSupportDirectory()
+        let executable = LauncherPaths.childExecutable
+
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            throw LauncherError(
+                message: "Streaming child is missing or not executable: \(executable.path)"
+            )
+        }
+
+        savePreferences(configuration)
+        try startChild(
+            executable: executable,
+            arguments: arguments,
+            runtimeDirectory: runtimeDirectory
+        )
+    }
+
+    private func parseDirectEndpoint(_ value: String) throws -> (host: String, port: Int) {
+        guard let separator = value.lastIndex(of: ":"),
+              separator != value.startIndex,
+              let port = Int(value[value.index(after: separator)...]),
+              (1 ... 65_535).contains(port)
+        else {
+            throw LauncherError(message: "Broker returned an invalid direct endpoint.")
+        }
+        return (String(value[..<separator]), port)
+    }
+
+    private func kyclientFingerprint(_ raw: String) throws -> String {
+        let value = raw.lowercased()
+        guard value.count == 64, value.allSatisfy({ $0.isHexDigit }) else {
+            throw LauncherError(message: "Broker returned an invalid workstation fingerprint.")
+        }
+        var pairs: [String] = []
+        var index = value.startIndex
+        while index < value.endIndex {
+            let next = value.index(index, offsetBy: 2)
+            pairs.append(String(value[index ..< next]).uppercased())
+            index = next
+        }
+        return "sha256:" + pairs.joined(separator: ":")
+    }
+
+    private func closeCurrentBrokerSession() {
+        if let baseURL = brokerBaseURL,
+           let accessToken = brokerTokens?.accessToken,
+           let sessionID = currentBrokerSessionID
+        {
+            BrokerAPI.closeSession(
+                baseURL: baseURL,
+                sessionID: sessionID,
+                accessToken: accessToken
+            )
+        }
+        currentBrokerSessionID = nil
+        currentKyberToken = nil
+        currentTLSFingerprint = nil
     }
 
     private func startChild(
@@ -1397,7 +2162,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         appendTranscript(
             "\n[launcher] cwd=\(runtimeDirectory.path)\n"
                 + "[launcher] command=\(commandDescription(executable: executable, arguments: arguments))\n"
-                + "[launcher] TLS identity verification is disabled for this internal prototype.\n"
+                + "[launcher] TLS identity is pinned to the broker-enrolled workstation fingerprint.\n"
         )
 
         process.terminationHandler = { [weak self, weak process] _ in
@@ -1425,6 +2190,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         sessionStatus.stringValue = "Running (PID \(process.processIdentifier))"
         validationLabel.stringValue = ""
         startTelemetryTimer()
+        updateBrokerControls()
     }
 
     private func configurePipe(_ pipe: Pipe, label: String) {
@@ -1450,6 +2216,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         sessionStatus.stringValue = "Disconnecting…"
         disconnectButton.isEnabled = false
         appendTranscript("[launcher] disconnect requested\n")
+        closeCurrentBrokerSession()
         process.terminate()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak process] in
@@ -1479,6 +2246,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
         stderrPipe = nil
         child = nil
         resetMetricsDashboard()
+        closeCurrentBrokerSession()
 
         let requested = disconnectRequested
         disconnectRequested = false
@@ -1492,6 +2260,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
             "[launcher] child exited: reason=\(process.terminationReason.rawValue) "
                 + "status=\(process.terminationStatus)\n"
         )
+        updateBrokerControls()
         updateCommandPreview()
     }
 
@@ -1587,16 +2356,18 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSWindowD
 @MainActor
 private final class LauncherAppDelegate: NSObject, NSApplicationDelegate {
     private var controller: LauncherController?
+    private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMainMenu()
+        configureStatusItem()
         let controller = LauncherController()
         self.controller = controller
         controller.show()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1622,7 +2393,62 @@ private final class LauncherAppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "q"
         )
         applicationItem.submenu = applicationMenu
+
+        let sessionItem = NSMenuItem()
+        mainMenu.addItem(sessionItem)
+        let sessionMenu = NSMenu(title: "Session")
+        let settingsItem = sessionMenu.addItem(
+            withTitle: "Settings & Statistics",
+            action: #selector(showSettingsAndStatistics(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        let disconnectItem = sessionMenu.addItem(
+            withTitle: "Disconnect",
+            action: #selector(disconnectSession(_:)),
+            keyEquivalent: "d"
+        )
+        disconnectItem.keyEquivalentModifierMask = [.command, .shift]
+        disconnectItem.target = self
+        sessionItem.submenu = sessionMenu
         NSApp.mainMenu = mainMenu
+    }
+
+    private func configureStatusItem() {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "ReplayDesktop"
+        statusItem.button?.toolTip = "ReplayDesktop session controls"
+
+        let menu = NSMenu(title: "ReplayDesktop")
+        let settingsItem = menu.addItem(
+            withTitle: "Settings & Statistics",
+            action: #selector(showSettingsAndStatistics(_:)),
+            keyEquivalent: ""
+        )
+        settingsItem.target = self
+        let disconnectItem = menu.addItem(
+            withTitle: "Disconnect",
+            action: #selector(disconnectSession(_:)),
+            keyEquivalent: ""
+        )
+        disconnectItem.target = self
+        menu.addItem(.separator())
+        let quitItem = menu.addItem(
+            withTitle: "Quit ReplayDesktop",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: ""
+        )
+        quitItem.target = NSApp
+        statusItem.menu = menu
+        self.statusItem = statusItem
+    }
+
+    @objc private func showSettingsAndStatistics(_ sender: Any?) {
+        controller?.showSettingsAndStatistics(sender)
+    }
+
+    @objc private func disconnectSession(_ sender: Any?) {
+        controller?.disconnectFromMenu()
     }
 }
 
@@ -2045,6 +2871,50 @@ private func runSelfTest() -> Int32 {
             "clipboard and general input toggles were conflated"
         )
 
+        let brokerURL = try BrokerAPI.normalizedBaseURL("broker.lan")
+        try require(
+            brokerURL.absoluteString == "http://broker.lan:8090",
+            "bare broker hostname did not select the LAN Docker port"
+        )
+        let secureBrokerURL = try BrokerAPI.normalizedBaseURL("https://broker.example")
+        try require(
+            secureBrokerURL.absoluteString == "https://broker.example",
+            "explicit HTTPS broker URL changed unexpectedly"
+        )
+        var rejectedBrokerPath = false
+        do {
+            _ = try BrokerAPI.normalizedBaseURL("http://broker.lan:8090/not-allowed")
+        } catch {
+            rejectedBrokerPath = true
+        }
+        try require(rejectedBrokerPath, "broker URL accepted an unsupported path prefix")
+
+        let brokerToken = "header.payload.signature"
+        let fingerprint = "sha256:"
+            + Array(repeating: "AA", count: 32).joined(separator: ":")
+        let brokerArguments = try KyclientArguments.build(
+            for: LauncherConfiguration(
+                host: "broker-selected-host.invalid",
+                kyberToken: brokerToken,
+                tlsFingerprint: fingerprint
+            )
+        )
+        try require(
+            brokerArguments.contains("--auth-token=\(brokerToken)")
+                && brokerArguments.contains("--tls-fingerprint=\(fingerprint)")
+                && !brokerArguments.contains("--tls-skip-verification"),
+            "broker session did not replace insecure TLS with JWT + fingerprint authentication"
+        )
+        let redactedCommand = commandDescription(
+            executable: LauncherPaths.childExecutable,
+            arguments: brokerArguments
+        )
+        try require(
+            redactedCommand.contains("--auth-token=<redacted>")
+                && !redactedCommand.contains(brokerToken),
+            "broker JWT leaked into the command preview"
+        )
+
         var rejectedOptionHost = false
         do {
             var optionHost = LauncherConfiguration()
@@ -2098,6 +2968,7 @@ private func runSelfTest() -> Int32 {
                 + "input toggles mouse + focused keyboard; immersive grab unavailable; "
                 + "AV1 4:4:4, third displays, and option-shaped hosts rejected; "
                 + "clipboard opt-in and independent; "
+                + "broker URL, JWT redaction, and pinned TLS arguments passed; "
                 + "metrics JSONL fixtures passed (Unknown/reset, split/out-of-order, "
                 + "same-clock deltas, sentinels, malformed, skipped, negative rejection)"
         )

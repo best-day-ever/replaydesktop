@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::domain::{
     ACCESS_TOKEN_TTL_SECONDS, ApiSession, ConnectionSession, ConnectionStatus, ExpiredLease,
     KNOCK_TTL_SECONDS, KnockAuthorization, LEASE_TTL_SECONDS, PendingConnection,
-    REFRESH_TOKEN_TTL_SECONDS, Role, User, Workstation,
+    REFRESH_TOKEN_TTL_SECONDS, Role, User, Workstation, WorkstationPresence,
 };
 
 const WORKSTATION_COLUMNS: &str = "
@@ -24,6 +24,13 @@ const WORKSTATION_COLUMNS: &str = "
     w.wan_port,
     w.certificate_sha256,
     w.active AS workstation_active
+";
+
+const WORKSTATION_PRESENCE_COLUMNS: &str = "
+    w.registration_id,
+    w.registered_hostname,
+    w.agent_version,
+    w.last_seen_at
 ";
 
 #[derive(Clone)]
@@ -52,6 +59,8 @@ pub enum StoreError {
     NotFound,
     #[error("access denied")]
     AccessDenied,
+    #[error("workstation is offline")]
+    HostOffline,
 }
 
 impl Store {
@@ -82,6 +91,7 @@ impl Store {
             ));
         }
         let id = Uuid::new_v4();
+        let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO users (id, username, password_hash, role, active, created_at)
              VALUES (?, ?, ?, ?, 1, ?)",
@@ -91,8 +101,18 @@ impl Store {
         .bind(password_hash)
         .bind(role.as_str())
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO workstation_grants (user_id, workstation_id, created_at)
+             SELECT ?, id, ? FROM workstations
+             WHERE active = 1 AND registration_id IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(User {
             id,
             username: username.to_owned(),
@@ -187,6 +207,119 @@ impl Store {
             certificate_sha256,
             active: true,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_host(
+        &self,
+        registration_id: Uuid,
+        name: &str,
+        hostname: &str,
+        lan_ipv4: Ipv4Addr,
+        kymux_port: u16,
+        certificate_sha256: &str,
+        agent_version: &str,
+        now: i64,
+    ) -> Result<WorkstationPresence, StoreError> {
+        let name = validated_text(name, "workstation name")?;
+        let hostname = validated_text(hostname, "hostname")?;
+        let agent_version = validated_text(agent_version, "agent version")?;
+        let certificate_sha256 = validated_fingerprint(certificate_sha256)?;
+        if registration_id.is_nil() {
+            return Err(StoreError::InvalidData(
+                "registration id cannot be nil".to_owned(),
+            ));
+        }
+
+        let mut transaction = self.pool.begin().await?;
+        let existing_by_registration =
+            sqlx::query("SELECT id FROM workstations WHERE registration_id = ?")
+                .bind(registration_id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let workstation_id = if let Some(row) = existing_by_registration {
+            parse_uuid(row.try_get::<String, _>("id")?)?
+        } else if let Some(row) = sqlx::query(
+            "SELECT id, registration_id FROM workstations WHERE name = ? COLLATE NOCASE",
+        )
+        .bind(name)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            let owner: Option<String> = row.try_get("registration_id")?;
+            if owner.is_some() {
+                return Err(StoreError::InvalidData(
+                    "workstation name belongs to another registered host".to_owned(),
+                ));
+            }
+            parse_uuid(row.try_get::<String, _>("id")?)?
+        } else {
+            let id = Uuid::new_v4();
+            let occupied: Option<i64> =
+                sqlx::query_scalar("SELECT wan_port FROM workstations WHERE wan_port = ?")
+                    .bind(i64::from(kymux_port))
+                    .fetch_optional(&mut *transaction)
+                    .await?;
+            let wan_port = if occupied.is_none() {
+                kymux_port
+            } else {
+                let next: i64 = sqlx::query_scalar(
+                    "SELECT COALESCE(MAX(wan_port), 19999) + 1 FROM workstations",
+                )
+                .fetch_one(&mut *transaction)
+                .await?;
+                u16::try_from(next).map_err(|_| {
+                    StoreError::InvalidData("no placeholder WAN port is available".to_owned())
+                })?
+            };
+            sqlx::query(
+                "INSERT INTO workstations (
+                    id, name, lan_ipv4, kymux_port, wan_port,
+                    certificate_sha256, active, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            )
+            .bind(id.to_string())
+            .bind(name)
+            .bind(lan_ipv4.to_string())
+            .bind(i64::from(kymux_port))
+            .bind(i64::from(wan_port))
+            .bind(&certificate_sha256)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+            id
+        };
+
+        sqlx::query(
+            "UPDATE workstations
+             SET name = ?, lan_ipv4 = ?, kymux_port = ?, certificate_sha256 = ?,
+                 registration_id = ?, registered_hostname = ?, agent_version = ?,
+                 last_seen_at = ?, active = 1
+             WHERE id = ?",
+        )
+        .bind(name)
+        .bind(lan_ipv4.to_string())
+        .bind(i64::from(kymux_port))
+        .bind(&certificate_sha256)
+        .bind(registration_id.to_string())
+        .bind(hostname)
+        .bind(agent_version)
+        .bind(now)
+        .bind(workstation_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO workstation_grants (user_id, workstation_id, created_at)
+             SELECT id, ?, ? FROM users WHERE active = 1",
+        )
+        .bind(workstation_id.to_string())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.workstation_presence(workstation_id)
+            .await?
+            .ok_or(StoreError::NotFound)
     }
 
     pub async fn grant_workstation(
@@ -352,6 +485,66 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(workstation_from_row).collect()
+    }
+
+    pub async fn list_workstations_with_presence(
+        &self,
+        user: &User,
+    ) -> Result<Vec<WorkstationPresence>, StoreError> {
+        let query = format!(
+            "SELECT {WORKSTATION_COLUMNS}, {WORKSTATION_PRESENCE_COLUMNS}
+             FROM workstations w
+             JOIN workstation_grants g ON g.workstation_id = w.id
+             WHERE g.user_id = ? AND w.active = 1
+             ORDER BY w.name COLLATE NOCASE"
+        );
+        let rows = sqlx::query(&query)
+            .bind(user.id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(workstation_presence_from_row).collect()
+    }
+
+    pub async fn create_lan_connection(
+        &self,
+        user: &User,
+        workstation_id: Uuid,
+        offline_cutoff: i64,
+        kyber_token: &str,
+        token_expires_at: i64,
+        now: i64,
+    ) -> Result<(Uuid, Workstation), StoreError> {
+        let presence = self
+            .authorized_workstation_presence(user, workstation_id)
+            .await?
+            .ok_or(StoreError::AccessDenied)?;
+        if presence
+            .last_seen_at
+            .is_none_or(|last_seen| last_seen < offline_cutoff)
+        {
+            return Err(StoreError::HostOffline);
+        }
+        let session_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO connection_sessions (
+                id, user_id, workstation_id, knock_hash, status,
+                ticket_token, ticket_issued_at, ticket_expires_at,
+                created_at, knock_expires_at, lease_expires_at
+             ) VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(session_id.to_string())
+        .bind(user.id.to_string())
+        .bind(workstation_id.to_string())
+        .bind(token_digest(&random_secret()).as_slice())
+        .bind(kyber_token)
+        .bind(now)
+        .bind(token_expires_at)
+        .bind(now)
+        .bind(now)
+        .bind(token_expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok((session_id, presence.workstation))
     }
 
     pub async fn create_pending_connection(
@@ -716,6 +909,42 @@ impl Store {
             .await?;
         row.map(|row| workstation_from_row(&row)).transpose()
     }
+
+    async fn authorized_workstation_presence(
+        &self,
+        user: &User,
+        workstation_id: Uuid,
+    ) -> Result<Option<WorkstationPresence>, StoreError> {
+        let query = format!(
+            "SELECT {WORKSTATION_COLUMNS}, {WORKSTATION_PRESENCE_COLUMNS}
+             FROM workstations w
+             JOIN workstation_grants g ON g.workstation_id = w.id
+             WHERE w.id = ? AND g.user_id = ? AND w.active = 1"
+        );
+        let row = sqlx::query(&query)
+            .bind(workstation_id.to_string())
+            .bind(user.id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| workstation_presence_from_row(&row))
+            .transpose()
+    }
+
+    async fn workstation_presence(
+        &self,
+        workstation_id: Uuid,
+    ) -> Result<Option<WorkstationPresence>, StoreError> {
+        let query = format!(
+            "SELECT {WORKSTATION_COLUMNS}, {WORKSTATION_PRESENCE_COLUMNS}
+             FROM workstations w WHERE w.id = ?"
+        );
+        let row = sqlx::query(&query)
+            .bind(workstation_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| workstation_presence_from_row(&row))
+            .transpose()
+    }
 }
 
 #[cfg(unix)]
@@ -834,6 +1063,40 @@ fn workstation_from_row(row: &SqliteRow) -> Result<Workstation, StoreError> {
         certificate_sha256: row.try_get("certificate_sha256")?,
         active: row.try_get::<i64, _>("workstation_active")? != 0,
     })
+}
+
+fn workstation_presence_from_row(row: &SqliteRow) -> Result<WorkstationPresence, StoreError> {
+    let registration_id = row
+        .try_get::<Option<String>, _>("registration_id")?
+        .map(parse_uuid)
+        .transpose()?;
+    Ok(WorkstationPresence {
+        workstation: workstation_from_row(row)?,
+        registration_id,
+        hostname: row.try_get("registered_hostname")?,
+        agent_version: row.try_get("agent_version")?,
+        last_seen_at: row.try_get("last_seen_at")?,
+    })
+}
+
+fn validated_text<'a>(value: &'a str, label: &str) -> Result<&'a str, StoreError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err(StoreError::InvalidData(format!(
+            "{label} must contain between 1 and 128 non-control characters"
+        )));
+    }
+    Ok(value)
+}
+
+fn validated_fingerprint(value: &str) -> Result<String, StoreError> {
+    let value = value.to_ascii_lowercase();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(StoreError::InvalidData(
+            "certificate fingerprint must be 64 hexadecimal characters".to_owned(),
+        ));
+    }
+    Ok(value)
 }
 
 fn connection_from_row(row: &SqliteRow) -> Result<ConnectionSession, StoreError> {

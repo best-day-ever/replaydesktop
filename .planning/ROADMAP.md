@@ -267,3 +267,24 @@ phases.
 Plans:
 
 - [x] 10-01-PLAN.md — Persistent single-org control server, UDP source proof, UniFi lease adapter, and Kymux tickets
+
+### Phase 11: LAN Broker Client MVP
+
+**Goal:** As a user, I want to connect to a LAN host through my broker, so that I can use my workstation remotely.
+**Mode:** mvp
+**Requirements:** CTRL-01, CTRL-02, CTRL-03, CTRL-04, CTRL-05, AUTH-01, AUTH-02
+**Depends on:** Phase 10
+**Success Criteria** (what must be TRUE):
+
+  1. A local Docker profile starts the broker on TCP 8090, persists SQLite and signing keys, explicitly disables router/firewall admission, seeds only the requested insecure development account `finn / 1337`, and does not weaken the production-safe defaults.
+  2. A host registrar publishes this laptop's stable host identity, `192.168.33.42:8080` endpoint, TLS fingerprint, and heartbeat; the authenticated workstation response changes to offline after the heartbeat TTL and an offline host cannot start a session.
+  3. The broker login returns only authorized workstations, and LAN connect returns a bounded RS256 Kyber JWT plus the registered direct endpoint without carrying any session media or mutating UniFi.
+  4. The macOS launcher remembers a changeable broker URL, logs in, renders a Parsec-style machine picker, and launches the selected machine with the broker-issued JWT and registered certificate fingerprint.
+  5. Codec/input/clipboard/display choices persist per workstation; settings, disconnect, and the existing live statistics panel remain reachable from the app menu while connected, with changes honestly labeled as applying to the next session when Kyber cannot renegotiate them live.
+
+**Gate:** LAN broker tracer — Docker health, host heartbeat, `finn / 1337` login, authorized discovery, signed direct session, and denial/offline tests pass while the workstation stream endpoint remains directly addressed.
+**Plans:** 1 plan
+
+Plans:
+
+- [x] 11-01-PLAN.md — Broker heartbeat/JWT API, local Docker runtime, and broker-first macOS client

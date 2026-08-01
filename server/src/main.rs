@@ -1,7 +1,8 @@
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
+    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -16,12 +17,18 @@ use replay_control::{
     admission::{AdmissionBackend, MemoryAdmission, UnifiAdmission},
     api::AppState,
     build_router,
-    config::{AdmissionMode, Cli, Command, CreateUserArgs, InitKeysArgs, ServeArgs, UserRole},
-    domain::Role,
+    config::{
+        AdmissionMode, Cli, Command, CreateUserArgs, InitKeysArgs, RegisterHostArgs, ServeArgs,
+        UserRole,
+    },
+    domain::{HostRegistrationRequest, Role},
     knock::{KnockService, unix_time},
-    password::hash_password,
+    kyber_jwt::KyberJwtIssuer,
+    password::{hash_insecure_development_password, hash_password},
     ticket::TicketIssuer,
 };
+use reqwest::{Client, Url};
+use sha2::{Digest, Sha256};
 use tokio::{net::UdpSocket, task::JoinHandle};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -65,6 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "workstation created"
             );
         }
+        Command::RegisterHost(args) => register_host(&args).await?,
         Command::Grant {
             username,
             workstation,
@@ -87,14 +95,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn serve(database_url: &str, args: ServeArgs) -> Result<(), Box<dyn Error>> {
-    if !args.http_bind.ip().is_loopback() {
+    if !args.http_bind.ip().is_loopback() && (!args.allow_insecure_http || !args.lan_mode) {
         return Err(
-            "the HTTP API must bind to loopback; publish it through an authenticated TLS proxy"
-                .into(),
+            "the HTTP API may bind beyond loopback only in explicitly enabled LAN mode; publish all other deployments through an authenticated TLS proxy"
+                .into()
+        );
+    }
+    if !args.http_bind.ip().is_loopback() {
+        warn!(
+            bind = %args.http_bind,
+            "INSECURE LAN DEVELOPMENT HTTP IS ENABLED; do not expose this listener to the internet"
+        );
+    }
+    if args.lan_mode && args.admission_backend != AdmissionMode::Memory {
+        return Err(
+            "LAN mode requires the memory admission backend so it cannot mutate a firewall".into(),
         );
     }
     let store = replay_control::Store::connect(database_url).await?;
+    bootstrap_development_user(&store, &args).await?;
     let private_key = read_private_key(&args.ticket_private_key)?;
     let ticket_issuer =
         TicketIssuer::from_pem(&private_key, args.ticket_issuer, args.ticket_key_id)?;
@@ -122,12 +143,36 @@ async fn serve(database_url: &str, args: ServeArgs) -> Result<(), Box<dyn Error>
             "closed admission leases left by an interrupted session"
         );
     }
-    let state = AppState::new(
+    let mut state = AppState::new(
         store,
         Arc::clone(&knock),
         args.public_host,
         args.knock_endpoint,
     );
+    if args.lan_mode {
+        let token_path = args
+            .host_registration_token_file
+            .as_deref()
+            .ok_or("REPLAY_HOST_REGISTRATION_TOKEN_FILE is required in LAN mode")?;
+        let host_token = read_trimmed_secret(token_path)?;
+        if host_token.len() < 32 || host_token.len() > 256 {
+            return Err("host registration token must contain between 32 and 256 bytes".into());
+        }
+        let jwt_path = args
+            .kyber_jwt_private_key
+            .as_deref()
+            .ok_or("REPLAY_KYBER_JWT_PRIVATE_KEY is required in LAN mode")?;
+        let jwt_issuer = KyberJwtIssuer::from_pem(&read_private_key(jwt_path)?)?;
+        let offline_after = i64::try_from(args.host_offline_after_seconds)?;
+        if !(10..=3600).contains(&offline_after) {
+            return Err("host offline threshold must be between 10 and 3600 seconds".into());
+        }
+        state = state.with_lan_mode(jwt_issuer, &host_token, offline_after);
+        warn!(
+            offline_after,
+            "LAN mode enabled: direct sessions bypass UDP proof and firewall admission"
+        );
+    }
     let app = build_router(state)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -161,6 +206,168 @@ async fn serve(database_url: &str, args: ServeArgs) -> Result<(), Box<dyn Error>
     udp_task.abort();
     cleanup_task.abort();
     Ok(())
+}
+
+async fn bootstrap_development_user(
+    store: &replay_control::Store,
+    args: &ServeArgs,
+) -> Result<(), Box<dyn Error>> {
+    let credentials = match (
+        args.dev_bootstrap_username.as_deref(),
+        args.dev_bootstrap_password.as_deref(),
+    ) {
+        (None, None) => return Ok(()),
+        (Some(username), Some(password)) => (username, password),
+        _ => {
+            return Err(
+                "both REPLAY_DEV_BOOTSTRAP_USERNAME and REPLAY_DEV_BOOTSTRAP_PASSWORD are required"
+                    .into(),
+            );
+        }
+    };
+    if !args.allow_insecure_dev_bootstrap {
+        return Err(
+            "development credentials require REPLAY_ALLOW_INSECURE_DEV_BOOTSTRAP=true".into(),
+        );
+    }
+    if !args.lan_mode {
+        return Err("development credentials are available only in explicit LAN mode".into());
+    }
+    if store.user_by_username(credentials.0).await?.is_some() {
+        warn!(
+            username = credentials.0,
+            "development bootstrap user already exists; password was not reset"
+        );
+        return Ok(());
+    }
+    let password_hash = hash_insecure_development_password(credentials.1)?;
+    store
+        .create_user(credentials.0, &password_hash, Role::Admin, unix_time())
+        .await?;
+    warn!(
+        username = credentials.0,
+        "INSECURE DEVELOPMENT ACCOUNT CREATED; remove it before any public deployment"
+    );
+    Ok(())
+}
+
+async fn register_host(args: &RegisterHostArgs) -> Result<(), Box<dyn Error>> {
+    if args.heartbeat_seconds < 5 || args.heartbeat_seconds > 300 {
+        return Err("host heartbeat interval must be between 5 and 300 seconds".into());
+    }
+    let registration_id = load_or_create_registration_id(&args.registration_id_file)?;
+    let token = String::from_utf8(read_trimmed_secret(&args.token_file)?)?;
+    if token.len() < 32 || token.len() > 256 {
+        return Err("host registration token must contain between 32 and 256 bytes".into());
+    }
+    let certificate_sha256 = certificate_sha256(&args.certificate_file)?;
+    let url = registration_url(&args.broker_url)?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let request = HostRegistrationRequest {
+        registration_id,
+        name: args.name.clone(),
+        hostname: args.hostname.clone(),
+        lan_ipv4: args.lan_ipv4,
+        kymux_port: args.kymux_port,
+        certificate_sha256,
+        agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+    };
+    let mut interval = tokio::time::interval(Duration::from_secs(args.heartbeat_seconds));
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::net::TcpStream::connect((args.lan_ipv4, args.kymux_port)),
+                ).await {
+                    Ok(Ok(_stream)) => {
+                        let response = client
+                            .post(url.clone())
+                            .header("x-replay-host-token", &token)
+                            .json(&request)
+                            .send()
+                            .await?;
+                        if !response.status().is_success() {
+                            return Err(format!(
+                                "broker rejected host registration with HTTP {}",
+                                response.status()
+                            ).into());
+                        }
+                        info!(
+                            %registration_id,
+                            host = %request.name,
+                            endpoint = %format!("{}:{}", request.lan_ipv4, request.kymux_port),
+                            "host heartbeat registered"
+                        );
+                    }
+                    Ok(Err(error)) => warn!(%error, "Kyber endpoint is unavailable; heartbeat withheld"),
+                    Err(_) => warn!("Kyber endpoint probe timed out; heartbeat withheld"),
+                }
+            }
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                info!("host registrar shutdown requested");
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn registration_url(value: &str) -> Result<Url, Box<dyn Error>> {
+    let mut url = Url::parse(value)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("broker URL must be HTTP(S) without credentials, query, or fragment".into());
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(url.join("v1/hosts/register")?)
+}
+
+fn certificate_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    while let Some(item) = rustls_pemfile::read_one(&mut reader)? {
+        if let rustls_pemfile::Item::X509Certificate(certificate) = item {
+            return Ok(hex::encode(Sha256::digest(certificate.as_ref())));
+        }
+    }
+    Err(format!("{} does not contain an X.509 certificate", path.display()).into())
+}
+
+fn load_or_create_registration_id(path: &Path) -> Result<uuid::Uuid, Box<dyn Error>> {
+    match fs::read_to_string(path) {
+        Ok(value) => Ok(uuid::Uuid::parse_str(value.trim())?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let id = uuid::Uuid::new_v4();
+            write_new_secret(path, format!("{id}\n").as_bytes())?;
+            Ok(id)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_trimmed_secret(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    Ok(bytes[start..end].to_vec())
 }
 
 fn spawn_cleanup(knock: Arc<KnockService>) -> JoinHandle<()> {

@@ -12,14 +12,18 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
     domain::{
-        ConnectionResponse, ConnectionStatus, CreateConnectionResponse, LoginRequest,
-        LoginResponse, RefreshRequest, User, WorkstationSummary,
+        ConnectionResponse, ConnectionStatus, CreateConnectionResponse, HostRegistrationRequest,
+        LanConnectionResponse, LoginRequest, LoginResponse, RefreshRequest, User,
+        WorkstationPresence, WorkstationSummary,
     },
     knock::{KnockError, KnockService, unix_time},
+    kyber_jwt::KyberJwtIssuer,
     password::verify_password,
     store::{ApiTokens, Store, StoreError},
 };
@@ -34,7 +38,15 @@ pub struct AppState {
     pub knock: Arc<KnockService>,
     pub public_host: String,
     pub knock_endpoint: String,
+    lan_mode: Option<LanModeState>,
     login_limiter: LoginLimiter,
+}
+
+#[derive(Clone)]
+struct LanModeState {
+    issuer: Arc<KyberJwtIssuer>,
+    host_token_digest: [u8; 32],
+    offline_after_seconds: i64,
 }
 
 impl AppState {
@@ -50,8 +62,24 @@ impl AppState {
             knock,
             public_host: public_host.into(),
             knock_endpoint: knock_endpoint.into(),
+            lan_mode: None,
             login_limiter: LoginLimiter::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_lan_mode(
+        mut self,
+        issuer: KyberJwtIssuer,
+        host_registration_token: &[u8],
+        offline_after_seconds: i64,
+    ) -> Self {
+        self.lan_mode = Some(LanModeState {
+            issuer: Arc::new(issuer),
+            host_token_digest: Sha256::digest(host_registration_token).into(),
+            offline_after_seconds,
+        });
+        self
     }
 }
 
@@ -141,6 +169,20 @@ impl ApiError {
             message: "internal server error",
         }
     }
+
+    const fn bad_request() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "invalid request",
+        }
+    }
+
+    const fn conflict(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -155,7 +197,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/refresh", post(refresh))
         .route("/v1/auth/logout", post(logout))
+        .route("/v1/hosts/register", post(register_host))
         .route("/v1/workstations", get(list_workstations))
+        .route(
+            "/v1/workstations/{workstation_id}/lan-sessions",
+            post(create_lan_connection),
+        )
         .route(
             "/v1/workstations/{workstation_id}/sessions",
             post(create_connection),
@@ -246,13 +293,79 @@ async fn list_workstations(
     let user = authenticated_user(&state.store, &headers).await?;
     let workstations = state
         .store
-        .list_workstations(&user)
+        .list_workstations_with_presence(&user)
         .await
         .map_err(store_error)?
         .into_iter()
-        .map(WorkstationSummary::from)
+        .map(|presence| workstation_summary(presence, unix_time(), state.lan_mode.as_ref()))
         .collect();
     Ok(Json(workstations))
+}
+
+async fn register_host(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<HostRegistrationRequest>,
+) -> Result<(StatusCode, Json<WorkstationSummary>), ApiError> {
+    let lan = state.lan_mode.as_ref().ok_or_else(ApiError::not_found)?;
+    authenticate_host(lan, &headers)?;
+    let now = unix_time();
+    let presence = state
+        .store
+        .register_host(
+            request.registration_id,
+            &request.name,
+            &request.hostname,
+            request.lan_ipv4,
+            request.kymux_port,
+            &request.certificate_sha256,
+            &request.agent_version,
+            now,
+        )
+        .await
+        .map_err(store_error)?;
+    Ok((
+        StatusCode::OK,
+        Json(workstation_summary(presence, now, Some(lan))),
+    ))
+}
+
+async fn create_lan_connection(
+    State(state): State<AppState>,
+    Path(workstation_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<LanConnectionResponse>), ApiError> {
+    let lan = state.lan_mode.as_ref().ok_or_else(ApiError::not_found)?;
+    let user = authenticated_user(&state.store, &headers).await?;
+    let now = unix_time();
+    let issued = lan.issuer.issue(&user.username, now).map_err(|error| {
+        tracing::error!(%error, "Kyber LAN JWT signing failed");
+        ApiError::internal()
+    })?;
+    let cutoff = now.saturating_sub(lan.offline_after_seconds);
+    let (session_id, workstation) = state
+        .store
+        .create_lan_connection(
+            &user,
+            workstation_id,
+            cutoff,
+            &issued.token,
+            issued.expires_at,
+            now,
+        )
+        .await
+        .map_err(store_error)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(LanConnectionResponse {
+            session_id,
+            status: ConnectionStatus::Ready.as_str(),
+            direct_endpoint: format!("{}:{}", workstation.lan_ipv4, workstation.kymux_port),
+            workstation_certificate_sha256: workstation.certificate_sha256,
+            kyber_token: issued.token,
+            expires_at: issued.expires_at,
+        }),
+    ))
 }
 
 async fn create_connection(
@@ -351,6 +464,39 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
     Ok(value)
 }
 
+fn authenticate_host(lan: &LanModeState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let token = headers
+        .get("x-replay-host-token")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| (32..=256).contains(&value.len()))
+        .ok_or_else(ApiError::unauthorized)?;
+    let supplied: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    if supplied.ct_eq(&lan.host_token_digest).into() {
+        Ok(())
+    } else {
+        Err(ApiError::unauthorized())
+    }
+}
+
+fn workstation_summary(
+    presence: WorkstationPresence,
+    now: i64,
+    lan: Option<&LanModeState>,
+) -> WorkstationSummary {
+    let online = lan.is_some_and(|lan| {
+        presence
+            .last_seen_at
+            .is_some_and(|last_seen| last_seen >= now.saturating_sub(lan.offline_after_seconds))
+    });
+    WorkstationSummary {
+        id: presence.workstation.id,
+        name: presence.workstation.name,
+        hostname: presence.hostname,
+        online,
+        last_seen_at: presence.last_seen_at,
+    }
+}
+
 fn dummy_password_hash() -> &'static str {
     static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
     DUMMY_PASSWORD_HASH
@@ -366,10 +512,9 @@ fn store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::NotFound => ApiError::not_found(),
         StoreError::AccessDenied => ApiError::forbidden(),
-        StoreError::Io(_)
-        | StoreError::Database(_)
-        | StoreError::Migration(_)
-        | StoreError::InvalidData(_) => {
+        StoreError::HostOffline => ApiError::conflict("workstation is offline"),
+        StoreError::InvalidData(_) => ApiError::bad_request(),
+        StoreError::Io(_) | StoreError::Database(_) | StoreError::Migration(_) => {
             tracing::error!(%error, "API store operation failed");
             ApiError::internal()
         }

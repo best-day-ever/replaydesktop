@@ -4,7 +4,48 @@
 server for ReplayDesktop. It handles identities and short control messages. It
 does not proxy Kymux video, input, or clipboard traffic.
 
-The deployed flow is:
+## Local LAN broker
+
+The current Docker profile is deliberately local and does not call UniFi or
+open firewall rules. From the repository root:
+
+```console
+scripts/run-lan-broker.sh
+scripts/verify-lan-broker.sh
+```
+
+This starts two containers:
+
+- `broker` provides login, workstation discovery, and direct-session admission
+  on TCP 8090; and
+- `registrar` heartbeats this Linux host's LAN address, Kyber port, hostname,
+  and enrolled certificate fingerprint every 15 seconds.
+
+The development account is `finn` / `1337`. It is created only when the local
+database has no such user and is gated behind explicit LAN-development flags.
+The profile uses cleartext broker HTTP and must not be exposed to the internet.
+Its SQLite database, registration secret, Ed25519 ticket key, and RSA Kyber JWT
+key persist below `.runtime/`, which is ignored by Git.
+
+The Kyber controller must enable its built-in RS256 JWT backend with the public
+key generated at `.runtime/lan-broker/kyber-jwt-public.pem`:
+
+```toml
+[kycontroller.auth.jwt]
+enabled = true
+algorithm = "RS256"
+key = { file = "/absolute/path/to/.runtime/lan-broker/kyber-jwt-public.pem" }
+```
+
+Restart Kyber after changing that config. The verification script proves not
+only the broker API but also that the live Kyber controller accepts a newly
+issued broker JWT. The macOS launcher remembers the broker URL and username,
+keeps passwords/tokens in memory only, remembers settings per workstation, and
+pins the direct Kyber connection to the registered certificate fingerprint.
+
+## Future public direct-admission flow
+
+The planned public flow is:
 
 1. The client logs in over HTTPS and requests an allowed workstation.
 2. The server returns a 30-second, one-use UDP knock.
@@ -20,7 +61,7 @@ The deployed flow is:
 This gives one public ingress IP, but not one port: HTTPS and the knock UDP port
 reach this service, while every workstation has a unique direct UDP WAN port.
 
-## Current status
+## Public-mode status
 
 The isolated login-to-ready tracer, denial cases, UniFi request serialization,
 ticket validation, and cleanup paths are automated. The real UniFi backend is
@@ -137,6 +178,7 @@ POST   /v1/auth/login
 POST   /v1/auth/refresh
 POST   /v1/auth/logout
 GET    /v1/workstations
+POST   /v1/workstations/{workstation_id}/lan-sessions
 POST   /v1/workstations/{workstation_id}/sessions
 GET    /v1/sessions/{session_id}
 DELETE /v1/sessions/{session_id}

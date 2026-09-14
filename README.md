@@ -1,6 +1,12 @@
 # ReplayDesktop
 
-ReplayDesktop is currently an internal Linux-to-macOS remote-desktop
+> [!WARNING]
+> **Experimental development and testing only.** This is work-in-progress
+> prototype software, not a production-ready remote desktop solution. Features
+> may be incomplete, unstable, or change without notice. Use only in controlled
+> development and test environments.
+
+ReplayDesktop is an experimental Linux-to-macOS remote-desktop
 prototype built on the pinned Kyber/Kymux stack.
 
 ## Direct-admission control server
@@ -17,7 +23,7 @@ included strict ticket verifier into the pinned Kyber workstation accept path.
 
 ## Apple Silicon prototype client
 
-The native technical clipboard spike is published as a private GitHub
+The native technical clipboard spike is published as an experimental GitHub
 prerelease:
 
 <https://github.com/best-day-ever/replaydesktop/releases/tag/v0.3.0-spike.1>
@@ -51,10 +57,11 @@ with `Invalid argument` before Opus encoding begins, so this prerelease makes
 no working-audio claim. Choosing or adapting a compatible monitor remains
 follow-up work.
 
-This is an internal LAN/Tailscale prototype. The operator explicitly approved
-fixed development credentials, TLS certificate-verification bypass, and
+This prototype is intended for controlled LAN/Tailscale testing. The operator
+explicitly approved fixed development credentials, TLS certificate-verification bypass, and
 ad-hoc signing without notarization for this spike. Those exceptions are not
-production-safe and do not apply to a public release.
+production-safe; the public repository and experimental prerelease builds are
+for development and testing only.
 
 The tracked `prototype/macos/engine-baseline.lock` binds packaging to the exact
 known raw-input `kyclient` SHA-256, executable-payload SHA-256, code-signature

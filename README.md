@@ -135,10 +135,8 @@ git -C upstream/kyber-desktop apply \
   ../../patches/kyber/0007-kyber-desktop-clipboard-input-pipeline.patch
 ```
 
-The first patch removes upstream test identities from Linux and macOS
-packages and supplies ReplayDesktop bundle metadata. The second keeps the
-Linux FFmpeg build on the CUDA/NVENC path while disabling its unused,
-currently incompatible Vulkan codec path. The fourth preserves the established
+Patch 0002 keeps the Linux FFmpeg build on the CUDA/NVENC path while disabling
+its unused, currently incompatible Vulkan codec path. Patch 0004 preserves the established
 macOS scroll conversion while emitting Linux `REL_WHEEL_HI_RES` and
 `REL_HWHEEL_HI_RES` events immediately, with accumulated legacy detents for
 compatibility. Patch 0005 adds the bounded native macOS pasteboard handler and
